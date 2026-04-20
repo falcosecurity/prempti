@@ -62,16 +62,23 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 # Verify architecture matches the package.
+# `file` reports all slices for universal binaries, e.g.
+#   "Mach-O universal binary ... [arm64:...] [x86_64:...]"
+# so we collect every arch and accept the package as long as the host arch is
+# one of them. Without this, universal tarballs would be rejected on Intel
+# Macs (the first arch reported by `file` is arm64).
 CURRENT_ARCH="$(uname -m)"
-PACKAGE_ARCH="$(file "$SCRIPT_DIR/bin/falco" 2>/dev/null | grep -oE 'arm64|x86_64' | head -1 || true)"
-if [[ -n "$PACKAGE_ARCH" && "$CURRENT_ARCH" != "$PACKAGE_ARCH" ]]; then
-    # Normalize: arm64 == aarch64 for comparison purposes.
-    NORM_CURRENT="$CURRENT_ARCH"
-    NORM_PACKAGE="$PACKAGE_ARCH"
-    [[ "$NORM_CURRENT" == "arm64" ]] && NORM_CURRENT="aarch64"
-    [[ "$NORM_PACKAGE" == "arm64" ]] && NORM_PACKAGE="aarch64"
-    if [[ "$NORM_CURRENT" != "$NORM_PACKAGE" ]]; then
-        err "Architecture mismatch: package is for $PACKAGE_ARCH but this machine is $CURRENT_ARCH."
+[[ "$CURRENT_ARCH" == "arm64" ]] && CURRENT_ARCH="aarch64"
+PACKAGE_ARCHS="$(file "$SCRIPT_DIR/bin/falco" 2>/dev/null | grep -oE 'arm64|x86_64' | sort -u | tr '\n' ' ' || true)"
+# Normalize arm64 → aarch64 in the arch list.
+PACKAGE_ARCHS="${PACKAGE_ARCHS//arm64/aarch64}"
+if [[ -n "$PACKAGE_ARCHS" ]]; then
+    MATCH=false
+    for a in $PACKAGE_ARCHS; do
+        [[ "$a" == "$CURRENT_ARCH" ]] && MATCH=true && break
+    done
+    if ! $MATCH; then
+        err "Architecture mismatch: package is for ${PACKAGE_ARCHS% } but this machine is $CURRENT_ARCH."
     fi
 fi
 
