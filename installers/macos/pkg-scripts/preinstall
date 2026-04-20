@@ -11,9 +11,13 @@ USER_HOME="${INSTALL_LOCATION}"
 PLIST_FILE="${USER_HOME}/Library/LaunchAgents/dev.falcosecurity.coding-agents-kit.plist"
 OWNER=$(stat -f '%Su' "$USER_HOME" 2>/dev/null)
 
-# Stop existing service if running.
+# Stop existing service if running. See postinstall for a description of the
+# root-vs-user invocation cases — `su` only works as root, so we only drop
+# privileges when we're actually root. Otherwise run launchctl directly in
+# the current session so the existing agent is genuinely unloaded before the
+# new binaries overwrite it.
 if [[ -f "$PLIST_FILE" ]]; then
-    if [[ -n "$OWNER" && "$OWNER" != "root" ]]; then
+    if [[ "$(id -u)" -eq 0 && -n "$OWNER" && "$OWNER" != "root" ]]; then
         su "$OWNER" -c "launchctl unload '$PLIST_FILE'" 2>/dev/null || true
     else
         launchctl unload "$PLIST_FILE" 2>/dev/null || true

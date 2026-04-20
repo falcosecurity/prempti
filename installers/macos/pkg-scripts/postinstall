@@ -45,12 +45,23 @@ fi
 # ---------------------------------------------------------------------------
 # Start service
 # ---------------------------------------------------------------------------
+#
+# Postinstall runs either:
+#   - as root, when the user invokes `installer` via sudo or authenticates in
+#     the GUI Installer for a system-scoped component; OR
+#   - as the installing user, when the pkg is user-domain (our case, via
+#     `enable_currentUserHome="true"`) and the GUI Installer.app or
+#     `installer -target CurrentUserHomeDirectory` runs the scripts without
+#     elevation.
+#
+# Only drop privileges via `su` when we are actually root; otherwise run
+# `launchctl` directly so the agent is loaded into the current user's session.
+# Running `su $OWNER` as a non-root user fails (password prompt) and was
+# silently swallowed, leaving the agent unloaded until the next login.
 
-# Get the actual username from the install location path.
 OWNER=$(stat -f '%Su' "$USER_HOME")
 
-# Load launchd agent as the installing user (postinstall runs as root).
-if [[ -n "$OWNER" && "$OWNER" != "root" ]]; then
+if [[ "$(id -u)" -eq 0 && -n "$OWNER" && "$OWNER" != "root" ]]; then
     su "$OWNER" -c "launchctl load '$PLIST_FILE'" 2>/dev/null || true
 else
     launchctl load "$PLIST_FILE" 2>/dev/null || true
