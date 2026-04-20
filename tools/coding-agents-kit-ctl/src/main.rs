@@ -502,11 +502,35 @@ const RUN_VALUE_NAME: &str = "CodingAgentsKit";
 
 #[cfg(target_os = "windows")]
 fn is_falco_running() -> bool {
-    Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq falco.exe", "/NH"])
+    falco_pids().is_some()
+}
+
+/// Return the list of running `falco.exe` PIDs, or `None` on error / no match.
+/// Uses CSV output (`/FO CSV /NH`) so the parser is robust against localized
+/// header text in non-English Windows installations.
+#[cfg(target_os = "windows")]
+fn falco_pids() -> Option<Vec<u32>> {
+    let out = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq falco.exe", "/FO", "CSV", "/NH"])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("falco.exe"))
-        .unwrap_or(false)
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Each line is: "falco.exe","<pid>","<session>","<session#>","<mem>"
+    let pids: Vec<u32> = text
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(',').collect();
+            if fields.len() < 2 {
+                return None;
+            }
+            fields[1].trim_matches('"').parse::<u32>().ok()
+        })
+        .collect();
+    if pids.is_empty() {
+        None
+    } else {
+        Some(pids)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -522,18 +546,31 @@ fn service_start() {
         eprintln!("Is coding-agents-kit installed?");
         process::exit(1);
     }
+    // Spawn the launcher via PowerShell's `Start-Process` rather than a
+    // direct `CreateProcess`. `Start-Process` goes through the Windows Shell
+    // (ShellExecute), which creates the new process entirely outside of our
+    // console, job object and stdio chain — so a caller that captures our
+    // stdout (a PS pipeline `& ctl start 2>&1`, bash `$(ctl start)`, …) is
+    // released the moment ctl itself exits, instead of hanging on the
+    // long-lived launcher's handles. Direct `CreateProcess` with
+    // `CREATE_BREAKAWAY_FROM_JOB` is insufficient: PowerShell sessions do
+    // not set `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so the flag is a no-op and
+    // the launcher stays in the caller's job, keeping the pipeline open.
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let ps_cmd = format!(
+        "Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','{}') -WindowStyle Hidden",
+        launcher.display()
+    );
     let ok = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-WindowStyle",
-            "Hidden",
-            "-File",
-            &launcher.to_string_lossy(),
-        ])
-        .spawn()
-        .is_ok();
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     if !ok {
         eprintln!("Failed to start service.");
         process::exit(1);
@@ -556,22 +593,50 @@ fn service_start() {
 
 #[cfg(target_os = "windows")]
 fn service_stop() {
-    if !is_falco_running() {
+    let Some(pids) = falco_pids() else {
         println!("Service not running.");
         return;
+    };
+
+    // First attempt graceful shutdown: taskkill without /F sends WM_CLOSE /
+    // CTRL_CLOSE_EVENT to the target process, letting Falco flush its state
+    // and exit cleanly. We target PIDs rather than the image name so unrelated
+    // `falco.exe` instances from other projects are left alone. Redirect
+    // stdout/stderr so the user doesn't see the localized "can't terminate"
+    // taskkill error when we fall through to /F — that path is expected.
+    for pid in &pids {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
-    let ok = Command::new("taskkill")
-        .args(["/F", "/IM", "falco.exe"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if ok {
-        println!("Service stopped.");
-        warn_hook_still_registered();
-    } else {
-        eprintln!("Failed to stop service.");
-        process::exit(1);
+
+    // Wait up to ~3s for graceful exit; escalate to /F on anything still alive.
+    let mut alive: Vec<u32> = pids.clone();
+    for _ in 0..12 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        alive = match falco_pids() {
+            Some(p) => p.into_iter().filter(|p| pids.contains(p)).collect(),
+            None => Vec::new(),
+        };
+        if alive.is_empty() {
+            break;
+        }
     }
+
+    if !alive.is_empty() {
+        for pid in &alive {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    println!("Service stopped.");
+    warn_hook_still_registered();
 }
 
 #[cfg(target_os = "windows")]
@@ -609,12 +674,61 @@ fn service_disable() {
     }
 }
 
+/// Parse one CSV row from tasklist /V output into (PID, mem, cpu_time).
+/// Falls back to `None` on any parse issue so localized Windows installs
+/// don't break the `status` command.
+#[cfg(target_os = "windows")]
+fn parse_tasklist_row(row: &str) -> Option<(u32, String, String)> {
+    // Fields: "Image Name","PID","Session","Session#","Mem","Status","User","CPU Time","Window Title"
+    let unquoted: Vec<String> = row
+        .split("\",\"")
+        .map(|s| s.trim_matches('"').to_string())
+        .collect();
+    if unquoted.len() < 8 {
+        return None;
+    }
+    let pid: u32 = unquoted[1].parse().ok()?;
+    Some((pid, unquoted[4].clone(), unquoted[7].clone()))
+}
+
 #[cfg(target_os = "windows")]
 fn service_status() {
-    if is_falco_running() {
-        println!("Service running.");
-    } else {
-        println!("Service not running.");
+    match falco_pids() {
+        Some(pids) => {
+            println!("Service running.");
+            for pid in &pids {
+                let row = Command::new("tasklist")
+                    .args([
+                        "/FI",
+                        &format!("PID eq {pid}"),
+                        "/FO",
+                        "CSV",
+                        "/NH",
+                        "/V",
+                    ])
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                match parse_tasklist_row(&row) {
+                    Some((_, mem, cpu)) => println!("  PID {pid}  mem={mem}  cpu={cpu}"),
+                    None => println!("  PID {pid}"),
+                }
+            }
+        }
+        None => println!("Service not running."),
+    }
+    // Surface whether the Run key is registered so users can tell at a
+    // glance whether the service will come back on next login.
+    let run_check = Command::new("reg")
+        .args(["query", RUN_KEY, "/v", RUN_VALUE_NAME])
+        .output();
+    if let Ok(o) = run_check {
+        if o.status.success() {
+            println!("Auto-start: enabled (HKCU Run key {RUN_VALUE_NAME}).");
+        } else {
+            println!("Auto-start: disabled.");
+        }
     }
 }
 
@@ -662,18 +776,17 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
     }
     #[cfg(target_os = "windows")]
     {
-        // Stop Falco if running.
+        // Reuse the graceful stop path so logs flush and the launcher's
+        // finally block can run hook-remove itself if it is still alive.
         if is_falco_running() {
             println!("Stopping service...");
-            let _ = Command::new("taskkill")
-                .args(["/F", "/IM", "falco.exe"])
-                .status();
+            service_stop();
         }
         // Remove auto-start registry key.
         let _ = Command::new("reg")
             .args(["delete", RUN_KEY, "/v", RUN_VALUE_NAME, "/f"])
             .status();
-        // Remove hook.
+        // Remove hook (belt-and-braces; service_stop's launcher trap also does this).
         hook_remove();
     }
 
