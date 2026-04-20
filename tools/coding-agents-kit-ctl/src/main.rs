@@ -466,9 +466,13 @@ fn service_enable() {
     }
     // On macOS, the plist has RunAtLoad=true, so loading it both
     // enables auto-start and starts the service immediately.
+    // `-w` clears any persistent "disabled" override left behind by
+    // `launchctl unload -w` (our `disable` command). Without `-w`,
+    // a previously disabled agent would refuse to load with
+    // "Load failed: 5: Input/output error".
     if !is_service_loaded() {
         let ok = Command::new("launchctl")
-            .args(["load", &plist.to_string_lossy()])
+            .args(["load", "-w", &plist.to_string_lossy()])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
