@@ -50,11 +50,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            hooks/claude-code/target
-            plugins/coding-agent-plugin/target
-            tools/coding-agents-kit-ctl/target
-            tests/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('hooks/claude-code/Cargo.lock', 'plugins/coding-agent-plugin/Cargo.lock', 'tools/coding-agents-kit-ctl/Cargo.lock', 'tests/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.arch }}-cargo-
 
@@ -97,6 +94,15 @@ jobs:
       - name: Install make
         run: choco install make -y
 
+      - name: Cache vcpkg installed tree
+        uses: actions/cache@v4
+        with:
+          # GitHub-hosted Windows runners ship vcpkg at C:\vcpkg. Cache only
+          # the `installed/<triplet>` subdir so a triplet change invalidates
+          # independently.
+          path: C:\vcpkg\installed\${{ matrix.vcpkg_triplet }}
+          key: vcpkg-${{ matrix.vcpkg_triplet }}-curl-${{ hashFiles('.github/workflows/ci.yaml') }}
+
       - name: Install vcpkg curl
         run: vcpkg install curl:${{ matrix.vcpkg_triplet }}
 
@@ -106,11 +112,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            hooks/claude-code/target
-            plugins/coding-agent-plugin/target
-            tools/coding-agents-kit-ctl/target
-            tests/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('hooks/claude-code/Cargo.lock', 'plugins/coding-agent-plugin/Cargo.lock', 'tools/coding-agents-kit-ctl/Cargo.lock', 'tests/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.arch }}-cargo-
 
@@ -133,6 +136,26 @@ jobs:
 
       - name: Run e2e tests
         run: make test-e2e
+
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix
+          wix eula accept wix7
+
+      - name: Build MSI
+        run: >-
+          powershell -NoProfile -ExecutionPolicy Bypass -File installers/windows/package.ps1
+          -Arch ${{ matrix.arch }} -SkipRustBuild -SkipFalcoBuild
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}-msi
+          path: |
+            build/out/*.msi
+            build/out/Install-CodingAgentsKit.ps1
+            build/out/Uninstall-CodingAgentsKit.ps1
+          if-no-files-found: error
 
   build-test-macos:
     name: Build & Test (macOS ${{ matrix.arch }})
@@ -160,11 +183,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            hooks/claude-code/target
-            plugins/coding-agent-plugin/target
-            tools/coding-agents-kit-ctl/target
-            tests/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('hooks/claude-code/Cargo.lock', 'plugins/coding-agent-plugin/Cargo.lock', 'tools/coding-agents-kit-ctl/Cargo.lock', 'tests/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.arch }}-cargo-
 

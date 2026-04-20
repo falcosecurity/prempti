@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Release
+
+# Triggered on tag push (vX.Y.Z) or manual dispatch. Builds the platform
+# packages for every supported arch and uploads them to the GitHub Release
+# that matches the tag.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Release (Linux ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Package
+        run: make linux-${{ matrix.arch }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: build/coding-agents-kit-*-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  macos:
+    name: Release (macOS ${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: brew install cmake openssl@3
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+
+      - name: Cache Falco build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/falco-*-darwin-*
+            build/falco-src-*
+          key: falco-macos-${{ matrix.arch }}-${{ hashFiles('installers/macos/build-falco.sh', 'installers/macos/falco-macos-http-output.patch') }}
+
+      - name: Package
+        run: make macos-${{ matrix.arch }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            build/coding-agents-kit-*-darwin-*.tar.gz
+            build/coding-agents-kit-*-darwin-*.pkg
+          if-no-files-found: error
+
+  windows:
+    name: Release (Windows ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            vcpkg_triplet: x64-windows-static
+          - arch: arm64
+            runner: windows-11-arm
+            vcpkg_triplet: arm64-windows-static
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install make
+        run: choco install make -y
+
+      - name: Cache vcpkg installed tree
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed\${{ matrix.vcpkg_triplet }}
+          key: vcpkg-${{ matrix.vcpkg_triplet }}-curl-${{ hashFiles('.github/workflows/release.yaml') }}
+
+      - name: Install vcpkg curl
+        run: vcpkg install curl:${{ matrix.vcpkg_triplet }}
+
+      - name: Cache Falco build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/falco-*-windows-*
+            build/falco-src-*
+          key: falco-windows-${{ matrix.arch }}-${{ hashFiles('installers/windows/build-falco.ps1', 'installers/windows/falco-windows-*.patch') }}
+
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix
+          wix eula accept wix7
+
+      - name: Build MSI
+        run: >-
+          powershell -NoProfile -ExecutionPolicy Bypass -File installers/windows/package.ps1
+          -Arch ${{ matrix.arch }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: |
+            build/out/*.msi
+            build/out/Install-CodingAgentsKit.ps1
+            build/out/Uninstall-CodingAgentsKit.ps1
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/linux-x86_64/*
+            artifacts/linux-aarch64/*
+            artifacts/macos-aarch64/*
+            artifacts/windows-x64/*
+            artifacts/windows-arm64/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
