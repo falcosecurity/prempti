@@ -79,6 +79,7 @@ fi
 for f in bin/falco bin/claude-interceptor bin/coding-agents-kit-ctl \
          share/libcoding_agent.dylib \
          config/falco.yaml config/falco.coding_agents_plugin.yaml \
+         rules/default/coding_agents_rules.yaml \
          rules/seen.yaml launchd/dev.falcosecurity.coding-agents-kit.plist \
          launchd/coding-agents-kit-launcher.sh; do
     [[ -f "$SCRIPT_DIR/$f" ]] || err "Missing package file: $f (are you running from the extracted package?)"
