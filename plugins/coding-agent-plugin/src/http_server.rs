@@ -45,20 +45,28 @@ impl HttpServerHandle {
 
 /// Start the HTTP alert receiver in a background thread.
 /// Listens for Falco JSON alerts via http_output and resolves verdicts.
-/// Returns a handle that can be used to shut down the server.
+///
+/// Returns an error if the port is already in use. Returning an error —
+/// rather than panicking — lets Falco report a clean plugin init failure
+/// without taking the host process down and without any side effects on
+/// the existing (possibly-running) coding-agents-kit instance.
 pub fn start(
     config: &CodingAgentConfig,
     broker: Arc<Broker>,
-) -> HttpServerHandle {
+) -> anyhow::Result<HttpServerHandle> {
     let deny_tags = config.deny_tags.clone();
     let ask_tags = config.ask_tags.clone();
     let seen_tags = config.seen_tags.clone();
     let bind_addr = format!("127.0.0.1:{}", config.http_port);
 
-    let server = Arc::new(
-        tiny_http::Server::http(&bind_addr)
-            .unwrap_or_else(|e| panic!("failed to bind HTTP server on {bind_addr}: {e}")),
-    );
+    let server = Arc::new(tiny_http::Server::http(&bind_addr).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to bind HTTP alert receiver on {bind_addr}: {e}. \
+             Is another coding-agents-kit Falco instance already running? \
+             Either stop it first or set a different `http_port` in \
+             falco.coding_agents_plugin.yaml (plugin init_config)."
+        )
+    })?);
 
     log::info!(
         "HTTP alert receiver listening on {}",
@@ -72,9 +80,9 @@ pub fn start(
     let thread = std::thread::Builder::new()
         .name("cak-http-server".to_string())
         .spawn(move || run_server(server_clone, &deny_tags, &ask_tags, &seen_tags, &broker))
-        .expect("failed to spawn HTTP server thread");
+        .map_err(|e| anyhow::anyhow!("failed to spawn HTTP server thread: {e}"))?;
 
-    HttpServerHandle { thread, server }
+    Ok(HttpServerHandle { thread, server })
 }
 
 fn run_server(

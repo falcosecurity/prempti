@@ -87,17 +87,22 @@ impl Plugin for CodingAgentPlugin {
         let broker = Arc::new(Broker::new());
         broker.set_monitor_mode(config.mode == "monitor");
 
-        // Spawn Unix socket server thread.
+        // Bring up the socket server first so its bind-time check cleanly
+        // rejects a second Falco trying to share the same socket *before*
+        // anything mutates shared state (stale socket file, HTTP port, etc).
         let socket_thread = Some(socket_server::start(
             config.socket_path.clone(),
             event_tx,
             Arc::clone(&broker),
-        ));
+        )?);
 
-        // Spawn HTTP alert receiver thread.
-        let http_handle = Some(http_server::start(&config, Arc::clone(&broker)));
+        // HTTP alert receiver. Port collisions surface as Err here rather
+        // than a panic — Falco reports it as a clean plugin init failure.
+        let http_handle = Some(http_server::start(&config, Arc::clone(&broker))?);
 
-        // Spawn pending request reaper thread (TTL cleanup).
+        // Pending request reaper (TTL cleanup). Thread-spawn failure here is
+        // fatal — but it effectively never happens and the panic is isolated
+        // because start_reaper uses the expect idiom inside the SDK path.
         let reaper_thread = Some(Broker::start_reaper(Arc::clone(&broker)));
 
         Ok(CodingAgentPlugin {
