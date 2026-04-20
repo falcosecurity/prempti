@@ -37,9 +37,28 @@
                   Impersonate="yes"
                   Return="check" />
 
+    <!-- Run pre-uninstall cleanup at the start of MSI uninstall so Apps &
+         Features / msiexec /x both stop the service, remove the Claude Code
+         hook and the Run-key entry, and clean up the user PATH BEFORE the
+         script file itself is removed by RemoveFiles. Return="ignore" so
+         a failure does not block the uninstall — the worst case is a stale
+         hook, which is no worse than skipping the CA entirely. -->
+    <CustomAction Id="SetRunUninstallCmdLine"
+                  Property="RunUninstall"
+                  Value='"[System64Folder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "[#UninstallScriptFile]"' />
+
+    <CustomAction Id="RunUninstall"
+                  BinaryRef="$(var.UtilCABinaryRef)"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore" />
+
     <InstallExecuteSequence>
       <Custom Action="SetRunPostInstallCmdLine" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
       <Custom Action="RunPostInstall" After="SetRunPostInstallCmdLine" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="SetRunUninstallCmdLine" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="RunUninstall" After="SetRunUninstallCmdLine" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
   </Package>
 

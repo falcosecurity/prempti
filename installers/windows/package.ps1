@@ -286,9 +286,8 @@ if (`$state -eq 5) {
 
 `$p = Start-Process msiexec -ArgumentList '/i', `$msi, '/quiet' -Wait -PassThru
 if (`$p.ExitCode -ne 0) { Write-Error "MSI install failed (exit `$(`$p.ExitCode))"; exit 1 }
-# Run post-install setup
-`$prefix = Join-Path `$env:LOCALAPPDATA 'coding-agents-kit'
-& "`$prefix\scripts\postinstall.ps1" -Prefix `$prefix
+# postinstall.ps1 runs automatically via the MSI deferred custom action
+# (see installers\windows\Package.wxs). No manual follow-up is required.
 Write-Host "coding-agents-kit installation complete"
 "@ | Set-Content $installScript -Encoding UTF8
 

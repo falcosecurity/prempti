@@ -144,4 +144,44 @@ if (Test-Path $launcherScript) {
   }
 }
 
-Write-Host "Post-install complete: coding-agents-kit is installed and configured."
+# ---------------------------------------------------------------------------
+# Start the service now
+# ---------------------------------------------------------------------------
+# The Run key above only fires at next login. Bring the service up right
+# now so the Claude Code hook we just registered has a live broker to talk
+# to - otherwise fail-closed would block every tool call from the moment
+# the MSI finishes until the user's next logout/login.
+# Skip if another launcher is already running (e.g. MSI repair / re-run).
+
+$falcoRunning = @(Get-Process -Name falco -ErrorAction SilentlyContinue).Count -gt 0
+if (-not $falcoRunning -and (Test-Path $launcherScript)) {
+    try {
+        $startArgs = @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-WindowStyle', 'Hidden',
+            '-File', $launcherScript
+        )
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $startArgs -WindowStyle Hidden | Out-Null
+        # Wait up to 5s for Falco to appear before declaring success.
+        $started = $false
+        for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Milliseconds 250
+            if (Get-Process -Name falco -ErrorAction SilentlyContinue) {
+                $started = $true
+                break
+            }
+        }
+        if ($started) {
+            Write-Host "Service started."
+        } else {
+            Write-Warning "Service start kicked off but Falco not detected yet - run 'coding-agents-kit-ctl status' to check."
+        }
+    } catch {
+        Write-Warning "Could not start the service: $($_.Exception.Message). Run 'coding-agents-kit-ctl start' manually."
+    }
+} elseif ($falcoRunning) {
+    Write-Host "Service already running."
+}
+
+Write-Host "Post-install complete: coding-agents-kit is installed, configured, and running."

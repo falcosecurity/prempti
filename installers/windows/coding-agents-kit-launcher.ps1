@@ -25,6 +25,34 @@ $StdoutLog = Join-Path $LogDir 'falco.log'
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
+# Rotate log files at startup if they are larger than the cap.
+# Linux uses journald and macOS relies on launchd's StandardOutPath; Windows
+# has no equivalent out of the box, so we do size-based rotation here to
+# stop log files from growing unbounded.
+$LogMaxBytes = 10MB
+$LogKeep = 3
+
+function Rotate-LogFile([string]$Path) {
+    if (-not (Test-Path $Path)) { return }
+    try {
+        $size = (Get-Item -LiteralPath $Path).Length
+    } catch {
+        return
+    }
+    if ($size -lt $LogMaxBytes) { return }
+    for ($i = $LogKeep; $i -ge 1; $i--) {
+        $older = "$Path.$i"
+        $newer = if ($i -eq 1) { $Path } else { "$Path.$($i - 1)" }
+        if (Test-Path $older) { Remove-Item -LiteralPath $older -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $newer) {
+            try { Move-Item -LiteralPath $newer -Destination $older -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+}
+
+Rotate-LogFile -Path $StdoutLog
+Rotate-LogFile -Path $StderrLog
+
 # Register hook before starting Falco (suppress stderr to avoid ErrorActionPreference=Stop)
 if (Test-Path $CtlExe) {
     $prevPref = $ErrorActionPreference
