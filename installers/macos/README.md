@@ -22,8 +22,9 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 Build a distributable package from the repo root:
 
 ```bash
+make macos              # Native architecture of the host
 make macos-aarch64      # Apple Silicon
-make macos-x86_64       # Intel (must build on matching hardware or via Rosetta)
+make macos-x86_64       # Intel (native on Intel, or Rosetta cross-compile on Apple Silicon)
 make macos-universal    # Universal binary (requires Rosetta + x86_64 Homebrew)
 ```
 
@@ -85,10 +86,10 @@ bash install.sh --dry-run                # Show what would be done
 
 ### Gatekeeper
 
-Since the binaries are not code-signed, macOS Gatekeeper may block them. Go to **System Settings > Privacy & Security** and allow the blocked binary, or run:
+Since the binaries are not code-signed, macOS Gatekeeper may block them (especially when installing from a tarball downloaded via a browser). Go to **System Settings > Privacy & Security** and allow the blocked binary, or clear the quarantine attribute from the entire install tree — both the executables in `bin/` and the plugin library in `share/` can be flagged:
 
 ```bash
-xattr -dr com.apple.quarantine ~/.coding-agents-kit/bin/*
+xattr -dr com.apple.quarantine ~/.coding-agents-kit
 ```
 
 ## Uninstallation

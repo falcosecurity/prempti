@@ -57,9 +57,9 @@ The macOS Installer wizard guides you through the setup. Once complete, the serv
 
 > [!NOTE]
 > Since the binaries are not code-signed, macOS Gatekeeper may block them on first run.
-> Go to **System Settings > Privacy & Security** and allow the blocked binary, or run:
+> Go to **System Settings > Privacy & Security** and allow the blocked binary, or clear the quarantine attribute from the whole install tree (executables in `bin/` and the plugin library in `share/` can both be flagged):
 > ```bash
-> xattr -dr com.apple.quarantine ~/.coding-agents-kit/bin/*
+> xattr -dr com.apple.quarantine ~/.coding-agents-kit
 > ```
 
 ### Linux
@@ -268,8 +268,9 @@ brew install cmake openssl@3
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Build
+make macos              # Native architecture of the host
 make macos-aarch64      # Apple Silicon
-make macos-x86_64       # Intel (must build on matching hardware or via Rosetta)
+make macos-x86_64       # Intel (native on Intel, or Rosetta cross-compile on Apple Silicon)
 make macos-universal    # Universal binary (requires Rosetta + x86_64 Homebrew)
 ```
 
