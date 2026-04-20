@@ -1,13 +1,54 @@
 <html>
-<body style="font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 13px;">
+<head>
+<style>
+:root {
+    color-scheme: light dark;
+    --text: #000;
+    --muted: #555;
+    --code-bg: #f0f0f0;
+    --code-fg: #1a1a1a;
+    --code-border: #dcdcdc;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --text: #eaeaea;
+        --muted: #a8a8a8;
+        --code-bg: #2a2a2a;
+        --code-fg: #f2f2f2;
+        --code-border: #3d3d3d;
+    }
+}
+body {
+    font-family: -apple-system, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--text);
+}
+pre, code {
+    color: var(--code-fg);
+    background: var(--code-bg);
+}
+pre {
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px solid var(--code-border);
+    white-space: pre-wrap;
+}
+code {
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+.tip { margin-top: 16px; color: var(--muted); }
+</style>
+</head>
+<body>
 <h2>Installation Complete</h2>
 <p>coding-agents-kit has been installed to <code>~/.coding-agents-kit/</code>.</p>
 <p><b>Verify the installation:</b></p>
-<pre style="background: #f0f0f0; padding: 8px; border-radius: 4px;">~/.coding-agents-kit/bin/coding-agents-kit-ctl status
+<pre>~/.coding-agents-kit/bin/coding-agents-kit-ctl status
 ~/.coding-agents-kit/bin/coding-agents-kit-ctl hook status</pre>
 <p><b>To uninstall:</b></p>
-<pre style="background: #f0f0f0; padding: 8px; border-radius: 4px;">~/.coding-agents-kit/bin/coding-agents-kit-ctl uninstall</pre>
-<p style="margin-top: 16px; color: #666;"><b>Tip:</b> To use <code>coding-agents-kit-ctl</code> without the full path, add this to your shell profile (<code>~/.zshrc</code> or <code>~/.bashrc</code>):</p>
-<pre style="background: #f0f0f0; padding: 8px; border-radius: 4px;">export PATH="$HOME/.coding-agents-kit/bin:$PATH"</pre>
+<pre>~/.coding-agents-kit/bin/coding-agents-kit-ctl uninstall</pre>
+<p class="tip"><b>Tip:</b> To use <code>coding-agents-kit-ctl</code> without the full path, add this to your shell profile (<code>~/.zshrc</code> or <code>~/.bashrc</code>):</p>
+<pre>export PATH="$HOME/.coding-agents-kit/bin:$PATH"</pre>
 </body>
 </html>

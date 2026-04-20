@@ -1,5 +1,39 @@
 <html>
-<body style="font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 13px;">
+<head>
+<style>
+:root {
+    color-scheme: light dark;
+    --text: #000;
+    --code-bg: #f0f0f0;
+    --code-fg: #1a1a1a;
+    --code-border: #dcdcdc;
+    --link: #0066cc;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --text: #eaeaea;
+        --code-bg: #2a2a2a;
+        --code-fg: #f2f2f2;
+        --code-border: #3d3d3d;
+        --link: #66b3ff;
+    }
+}
+body {
+    font-family: -apple-system, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--text);
+}
+a { color: var(--link); }
+code {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border: 1px solid var(--code-border);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+</style>
+</head>
+<body>
 <h2>coding-agents-kit</h2>
 <p>Runtime Security for AI Coding Agents with <a href="https://falco.org">Falco</a>.</p>
 <p>This installer will:</p>
