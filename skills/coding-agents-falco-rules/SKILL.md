@@ -109,7 +109,7 @@ output: >
 | Transformer | Usage |
 |-------------|-------|
 | `val()` | Field-to-field comparison: `tool.real_file_path startswith val(agent.real_cwd)` |
-| `basename()` | Extract filename: `basename(tool.file_path) = ".env"` |
+| `basename()` | Extract filename: `basename(tool.real_file_path) = ".env"` (POSIX split on `/` — use `real_file_path`, which the plugin normalizes to forward slashes on every platform) |
 | `tolower()` | Case-insensitive comparison: `tolower(tool.input_command) startswith "sudo "` |
 | `len()` | String length: `len(tool.input_command) > 1000` — detect anomalous inputs |
 
@@ -194,21 +194,40 @@ After writing a rule, always validate it with Falco. The validation step catches
 
 ### Finding the Falco binary
 
-Check these locations in order:
+Check these locations in order. The "installed" locations are written by the platform packagers; the "development build" locations are produced by `make falco-*` and `make download-falco-linux`.
+
+**Linux / macOS**
 
 1. **Installed binary** (most common): `~/.coding-agents-kit/bin/falco`
 2. **System PATH**: `falco` (if installed globally)
-3. **Development build**: `build/falco-*/usr/bin/falco` or `build/falco-*-darwin-*/falco` (relative to the project root)
+3. **Development build**: `build/falco-*-<arch>/usr/bin/falco` (Linux, downloaded) or `build/falco-*-darwin-<arch>/falco` (macOS, source)
+
+**Windows** (PowerShell)
+
+1. **Installed binary**: `$env:LOCALAPPDATA\coding-agents-kit\bin\falco.exe`
+2. **System PATH**: `falco.exe` (rare on Windows — `PATH` usually points to the installed bin dir via the post-install step)
+3. **Development build**: `build\falco-0.43.0-windows-<arch>\falco.exe` (built via `make falco-windows-x64` / `falco-windows-arm64`)
 
 ### Running validation
 
-Use the installed config so the plugin is loaded and all fields are recognized:
+Use the installed config so the plugin is loaded and all fields are recognized.
+
+**Linux / macOS**
 
 ```bash
 ~/.coding-agents-kit/bin/falco \
   -c ~/.coding-agents-kit/config/falco.yaml \
   --disable-source syscall \
   -V ~/.coding-agents-kit/rules/user/my_rules.yaml
+```
+
+**Windows** (PowerShell)
+
+```powershell
+& "$env:LOCALAPPDATA\coding-agents-kit\bin\falco.exe" `
+  -c "$env:LOCALAPPDATA\coding-agents-kit\config\falco.yaml" `
+  --disable-source syscall `
+  -V "$env:LOCALAPPDATA\coding-agents-kit\rules\user\my_rules.yaml"
 ```
 
 This validates:
@@ -346,9 +365,9 @@ Flag to the user that the rule was not machine-validated.
 condition: tool.name = "Bash" and tool.input_command startswith "sudo "
 ```
 
-**Match files by name regardless of directory**:
+**Match files by name regardless of directory** (use `real_file_path` so `basename()` works on Windows too):
 ```yaml
-condition: basename(tool.file_path) = "Dockerfile"
+condition: basename(tool.real_file_path) = "Dockerfile"
 ```
 
 **Match files inside the working directory** (use `val()` for field comparison):

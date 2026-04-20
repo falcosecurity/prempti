@@ -2,7 +2,6 @@
 
 | Field    | Value                    |
 |----------|--------------------------|
-| Version  | 0.2.0                    |
 | Binary   | `claude-interceptor`     |
 | Source   | `hooks/claude-code/`     |
 | Language | Rust                     |
@@ -97,11 +96,13 @@ The following Claude Code hook output fields are not currently used but may be e
 
 ### Transport
 
-- **Socket type**: Unix domain stream socket (`AF_UNIX`, `SOCK_STREAM`)
-- **Default path**: `$HOME/.coding-agents-kit/run/broker.sock`
+- **Socket type**: Unix domain stream socket (`AF_UNIX`, `SOCK_STREAM` — native kernel support on Windows 10+ via the `uds_windows` crate)
+- **Default path**:
+  - Linux / macOS: `$HOME/.coding-agents-kit/run/broker.sock`
+  - Windows: `%LOCALAPPDATA%/coding-agents-kit/run/broker.sock` (forward slashes — Windows `AF_UNIX` treats the path as an opaque address, so both ends must produce identical byte strings)
 - **Override**: `CODING_AGENTS_KIT_SOCKET` environment variable
 - **Framing**: Newline-terminated JSON (one line per request/response)
-- **Shutdown**: The interceptor shuts down the write half after sending the request, signaling to the broker that the full request has been delivered.
+- **Shutdown**: On Unix, the interceptor shuts down the write half after sending the request so the broker's `read_line` sees EOF alongside `\n`. **Skipped on Windows** — `shutdown(SD_SEND)` on AF_UNIX resets the connection on some Windows builds and prevents the broker's response from reaching the interceptor.
 
 ### Request (interceptor → broker)
 
@@ -158,10 +159,10 @@ If JSON serialization fails, the interceptor emits a hardcoded deny JSON literal
 
 ## Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CODING_AGENTS_KIT_SOCKET` | `$HOME/.coding-agents-kit/run/broker.sock` | Broker socket path |
-| `CODING_AGENTS_KIT_TIMEOUT_MS` | `5000` | Socket timeout in ms (clamped to 100–30000) |
+| Variable | Default (Unix) | Default (Windows) | Description |
+|----------|----------------|-------------------|-------------|
+| `CODING_AGENTS_KIT_SOCKET` | `$HOME/.coding-agents-kit/run/broker.sock` | `%LOCALAPPDATA%/coding-agents-kit/run/broker.sock` | Broker socket path |
+| `CODING_AGENTS_KIT_TIMEOUT_MS` | `5000` | `5000` | Socket timeout in ms (clamped to 100–30000) |
 
 ## Limits
 

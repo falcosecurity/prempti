@@ -50,7 +50,7 @@ Security policies are written as standard [Falco rules](https://falco.org/docs/r
 Download the `.pkg` installer from the [latest release](https://github.com/leogr/coding-agents-kit/releases/latest) and open it:
 
 ```bash
-open coding-agents-kit-0.1.0-darwin-universal.pkg
+open coding-agents-kit-<version>-darwin-universal.pkg
 ```
 
 The macOS Installer wizard guides you through the setup. Once complete, the service starts automatically on login.
@@ -67,8 +67,8 @@ The macOS Installer wizard guides you through the setup. Once complete, the serv
 Download the package for your architecture from the [latest release](https://github.com/leogr/coding-agents-kit/releases/latest):
 
 ```bash
-tar xzf coding-agents-kit-0.1.0-linux-x86_64.tar.gz
-cd coding-agents-kit-0.1.0-linux-x86_64
+tar xzf coding-agents-kit-<version>-linux-x86_64.tar.gz
+cd coding-agents-kit-<version>-linux-x86_64
 bash install.sh
 ```
 
@@ -76,57 +76,92 @@ The installer copies all components to `~/.coding-agents-kit/`, starts a systemd
 
 ### Windows
 
-Download the `.msi` installer from the [latest release](https://github.com/leogr/coding-agents-kit/releases/latest) and run:
+From the [latest release](https://github.com/leogr/coding-agents-kit/releases/latest), download **both** the `.msi` for your CPU architecture and the `Install-CodingAgentsKit.ps1` helper, then run:
 
 ```powershell
-powershell -File Install-CodingAgentsKit.ps1
+powershell -ExecutionPolicy Bypass -File Install-CodingAgentsKit.ps1
 ```
 
-The installer deploys all components to `%LOCALAPPDATA%\coding-agents-kit\`, registers the Claude Code hook, and sets up auto-start on login.
+The helper runs the MSI, deploys all components to `%LOCALAPPDATA%\coding-agents-kit\`, adds `bin\` to your user `PATH`, registers the Claude Code hook, registers an auto-start entry for subsequent logins, and starts the service immediately so Claude Code is protected without any extra step.
 
 > [!NOTE]
-> x86_64 builds work on both x86_64 and ARM64 Windows (via emulation). See [`installers/windows/`](installers/windows/) for build prerequisites and details.
+> Pick the MSI that matches your CPU: `coding-agents-kit-<version>-windows-x64.msi` on Intel/AMD64, `coding-agents-kit-<version>-windows-arm64.msi` on Windows ARM64. The x64 MSI can install under emulation on ARM64 hosts but prefer the native ARM64 MSI for best performance. See [`installers/windows/`](installers/windows/) for build prerequisites and details.
+
 
 ### Verify
+
+**Linux / macOS**
 
 ```bash
 ~/.coding-agents-kit/bin/coding-agents-kit-ctl status
 ~/.coding-agents-kit/bin/coding-agents-kit-ctl hook status
+~/.coding-agents-kit/bin/coding-agents-kit-ctl health
 ```
 
 > **Tip:** Add `export PATH="$HOME/.coding-agents-kit/bin:$PATH"` to your shell profile to use `coding-agents-kit-ctl` without the full path.
 
+**Windows**
+
+The installer starts the service automatically. Open a **new** terminal (so the updated `PATH` is picked up) and verify:
+
+```powershell
+coding-agents-kit-ctl status
+coding-agents-kit-ctl hook status
+coding-agents-kit-ctl health
+```
+
+Expected `health` output: `OK: pipeline healthy (synthetic event → allow)`.
+
+If the service is not running (rare — e.g. the post-install timed out), start it manually with `coding-agents-kit-ctl start`. Auto-start on every login is already registered.
+
 ## Managing
+
+The installer adds `bin/` to your shell `PATH` on Windows automatically; on Linux/macOS add it to your shell profile (see [Verify](#verify)). Once `coding-agents-kit-ctl` is on your `PATH`, the commands below are the same on every platform:
 
 ```bash
 # Check status
-~/.coding-agents-kit/bin/coding-agents-kit-ctl status
+coding-agents-kit-ctl status
+
+# Check pipeline health (sends a synthetic event through the full stack)
+coding-agents-kit-ctl health
 
 # Monitor mode — rules evaluate and log, but verdicts are not enforced
-~/.coding-agents-kit/bin/coding-agents-kit-ctl mode monitor
+coding-agents-kit-ctl mode monitor
 
 # Enforcement mode (default) — verdicts are enforced
-~/.coding-agents-kit/bin/coding-agents-kit-ctl mode enforcement
+coding-agents-kit-ctl mode enforcement
 
 # View live logs
-~/.coding-agents-kit/bin/coding-agents-kit-ctl logs
+coding-agents-kit-ctl logs
 
 # Temporarily disable interception (tool calls proceed unmonitored)
-~/.coding-agents-kit/bin/coding-agents-kit-ctl hook remove
+coding-agents-kit-ctl hook remove
 
 # Re-enable interception
-~/.coding-agents-kit/bin/coding-agents-kit-ctl hook add
+coding-agents-kit-ctl hook add
 
 # Stop / start the service
-~/.coding-agents-kit/bin/coding-agents-kit-ctl stop
-~/.coding-agents-kit/bin/coding-agents-kit-ctl start
+coding-agents-kit-ctl stop
+coding-agents-kit-ctl start
 ```
 
 ### Uninstall
 
+**Linux / macOS**
+
 ```bash
 ~/.coding-agents-kit/bin/coding-agents-kit-ctl uninstall
 ```
+
+**Windows**
+
+Any of these paths works — they all run the same cleanup custom action:
+
+- `Uninstall-CodingAgentsKit.ps1` (bundled with the release),
+- Apps & Features,
+- `msiexec /x <product-code>`.
+
+The MSI removes the Claude Code hook, the auto-start entry, and the `bin\` `PATH` entry before removing files, so Claude Code is not left in a fail-closed state.
 
 ## Default Rules
 
@@ -215,7 +250,7 @@ make linux-x86_64       # x86_64 only
 make linux-aarch64      # aarch64 only (requires cross toolchain)
 ```
 
-Output: `build/coding-agents-kit-0.1.0-linux-{arch}.tar.gz`
+Output: `build/coding-agents-kit-<version>-linux-{arch}.tar.gz`
 
 See [`installers/linux/`](installers/linux/) for details.
 
@@ -238,7 +273,7 @@ make macos-x86_64       # Intel (must build on matching hardware or via Rosetta)
 make macos-universal    # Universal binary (requires Rosetta + x86_64 Homebrew)
 ```
 
-Output: `build/coding-agents-kit-0.1.0-darwin-{arch}.{tar.gz,pkg}`
+Output: `build/coding-agents-kit-<version>-darwin-{arch}.{tar.gz,pkg}`
 
 > Falco does not ship pre-built macOS binaries. The first build compiles Falco from source (~5 min). Subsequent builds use the cached binary.
 
@@ -249,13 +284,13 @@ See [`installers/macos/`](installers/macos/) for details.
 <details>
 <summary><strong>Windows</strong></summary>
 
-Requires: Rust (latest stable), Visual Studio 2022+ with C++ workload, CMake 3.24+, vcpkg with curl, .NET Runtime 8+, WiX Toolset v4.
+Requires: Rust (latest stable), Visual Studio 2022+ with C++ workload, CMake 3.24+, vcpkg with curl, .NET Runtime 9+, WiX Toolset v7.
 
 ```powershell
-powershell -File installers\windows\package.ps1 -Version 0.1.2
+powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1
 ```
 
-Output: `build/out/coding-agents-kit-0.1.2-windows-x64.msi`
+Output: `build/out/coding-agents-kit-<version>-windows-<arch>.msi` (plus `Install-CodingAgentsKit.ps1` and `Uninstall-CodingAgentsKit.ps1` helpers).
 
 > Falco is built from source on the first run (~10 min). Subsequent builds use the cached binary.
 

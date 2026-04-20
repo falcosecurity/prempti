@@ -127,7 +127,7 @@ WiX v7 requires explicit OSMF EULA acceptance. Without this, packaging fails wit
 ```powershell
 # From the repository root (VCPKG_ROOT must be set):
 $env:VCPKG_ROOT = 'C:\path\to\vcpkg'
-powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1 -Version 0.1.2
+powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1
 ```
 
 This single command:
@@ -158,7 +158,7 @@ powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1 -SkipRus
 
 | Flag | Description |
 |------|-------------|
-| `-Version 0.1.2` | Package version (semantic versioning) |
+| `-Version X.Y.Z` | Override the version (default: workspace `Cargo.toml`) |
 | `-Arch x64` or `-Arch arm64` | Target architecture (default: auto-detected from hardware) |
 | `-SkipRustBuild` | Skip Rust compilation (use pre-built binaries) |
 | `-SkipFalcoBuild` | Skip Falco build (use cached build) |
@@ -166,50 +166,64 @@ powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1 -SkipRus
 
 ## Installing
 
-### MSI install + post-install setup
+### Recommended: `Install-CodingAgentsKit.ps1`
 
-```powershell
-# 1. Install the MSI (shows wizard, or use /quiet for silent)
-msiexec /i build\out\coding-agents-kit-0.1.2-windows-arm64.msi
-
-# 2. Run post-install setup (generates config, registers hook, adds bin/ to PATH)
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\coding-agents-kit\scripts\postinstall.ps1"
-
-# 3. Open a NEW terminal (so the updated PATH takes effect), then:
-coding-agents-kit-ctl start
-Start-Sleep 5
-coding-agents-kit-ctl health
-```
-
-Expected output: `OK: pipeline healthy (synthetic event → allow)`
-
-### Helper script (alternative)
-
-The `Install-CodingAgentsKit.ps1` helper script runs the MSI silently and then runs post-install setup:
+The `Install-CodingAgentsKit.ps1` helper (emitted next to the MSI in `build\out\`) is the recommended path. It runs the MSI silently and, if the product is already installed, opens the MSI maintenance UI instead of forcing a silent reinstall:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build\out\Install-CodingAgentsKit.ps1
 ```
 
-If the product is already installed, it opens the MSI maintenance UI instead of forcing a silent reinstall.
+### Manual `msiexec`
+
+```powershell
+msiexec /i build\out\coding-agents-kit-<version>-windows-arm64.msi
+```
+
+The MSI runs `postinstall.ps1` automatically via a deferred custom action. No manual follow-up script is required. The post-install step:
+
+- generates the Falco config with resolved Windows paths,
+- registers the Claude Code hook,
+- adds `bin\` to the user `PATH`,
+- registers an auto-start entry for subsequent logins, **and**
+- starts the service straight away so Claude Code works immediately.
+
+### First-time verification
+
+The installer already started the service. Open a **new** terminal (so the updated `PATH` is picked up) and verify:
+
+```powershell
+coding-agents-kit-ctl status
+coding-agents-kit-ctl health
+```
+
+Expected output: `OK: pipeline healthy (synthetic event → allow)`.
+
+If the service did not come up (check `ctl status`), start it manually:
+
+```powershell
+coding-agents-kit-ctl start
+```
 
 ### What the installer does
 
 - Deploys binaries, plugin DLL, rules, and scripts to `%LOCALAPPDATA%\coding-agents-kit\`
-- Post-install generates Falco configuration with resolved Windows paths
-- Registers the Claude Code interceptor hook in `~/.claude/settings.json`
-- Adds `bin/` to the user PATH (persistent, so `coding-agents-kit-ctl` works without full path)
-- Sets up auto-start via Registry Run key
+- Generates Falco configuration with resolved Windows paths
+- Registers the Claude Code interceptor hook in `%USERPROFILE%\.claude\settings.json`
+- Adds `bin\` to the user `PATH` (persistent, so `coding-agents-kit-ctl` works without full path)
+- Registers auto-start via `HKCU\…\Run\CodingAgentsKit`
 
 ### Uninstalling
 
-**Always use the uninstall helper script** — it runs the cleanup script, removes the Claude Code hook, removes the auto-start registry key, and then removes the MSI-managed files:
+Any of the three paths works — the MSI runs `uninstall.ps1` as a deferred custom action whenever `REMOVE=ALL`, so Apps & Features, `msiexec /x`, and the bundled helper all stop the service, remove the Claude Code hook, remove the auto-start Run-key entry, and clean `bin\` from the user `PATH` before removing files.
+
+The bundled helper is still the most convenient:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File Uninstall-CodingAgentsKit.ps1
 ```
 
-> **Warning**: Do NOT uninstall via Apps & Features or `msiexec /x` directly. The MSI alone cannot run cleanup scripts (Windows limitation for per-user installs), so the Claude Code hook and auto-start registry key would be left behind, leaving Claude Code in a fail-closed state.
+> **Older 0.1.x builds**: MSI packages from before the uninstall custom action was added required the helper script — without it, Apps & Features would leave the Claude Code hook registered and brick Claude Code until `coding-agents-kit-ctl hook remove` was run manually.
 
 ## Running Tests
 

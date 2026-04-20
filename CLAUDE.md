@@ -279,11 +279,75 @@ macOS uses launchd instead of systemd. Key differences:
 
 The macOS implementation includes `is_service_loaded()` for idempotent start/stop.
 
+### Windows: Falco build from source
+
+Falco does not ship pre-built Windows binaries. The Windows build system (`installers/windows/build-falco.ps1`) clones Falco 0.43.0, applies a single patch, and builds with MSVC + vcpkg.
+
+#### http_output patch
+
+Falco's upstream CMake configuration does not enable `http_output` on Windows (gated out, and `curl.cmake` tries to pull OpenSSL unconditionally). `installers/windows/falco-windows-http-output.patch` removes those barriers with the same `HAS_HTTP_OUTPUT` pattern used for macOS:
+
+1. **Root CMakeLists.txt**: wraps `find_package(CURL REQUIRED)` in a Windows branch that bypasses `curl.cmake` (which unconditionally includes OpenSSL).
+2. **userspace/falco/CMakeLists.txt**: compiles `outputs_http.cpp` on Windows and links `CURL::libcurl` + `ws2_32`. The imported `CURL::libcurl` target propagates `CURL_STATICLIB` and transitive deps (`crypt32`, `secur32`, …) automatically.
+3. **falco_outputs.cpp**: adds a separate `#if defined(HAS_HTTP_OUTPUT) && defined(MINIMAL_BUILD)` block so http output works without gRPC/webserver.
+4. **outputs_http.cpp**: wraps `CURLOPT_NOPROXY="*"` in a `_WIN32` block that tolerates `CURLE_NOT_BUILT_IN` — the vcpkg `curl` we build against uses the SChannel backend, which omits proxy support. Same tolerance is added around `CURLOPT_CAINFO` / `CURLOPT_CAPATH`: SChannel uses the Windows Certificate Store and does not implement these options, and we only target localhost anyway.
+5. **configuration.h** (plugin library_path): replaces the POSIX-only `path[0] != '/'` relative-path check with `std::filesystem::path::has_root_path()` so absolute Windows paths like `C:/.../coding_agent.dll` are recognized instead of being prepended with the default plugins directory.
+
+Equivalent to the macOS design choice: `MINIMAL_BUILD=ON` + `HAS_HTTP_OUTPUT` preprocessor define. No gRPC, no protobuf, no webserver — only curl-based http output.
+
+#### vcpkg + SChannel, no OpenSSL
+
+Windows uses **static curl from vcpkg with the SChannel backend** (`curl:x64-windows-static` / `curl:arm64-windows-static`). Rationale:
+
+- SChannel is the Windows-native TLS implementation; no need to bundle or link OpenSSL on Windows.
+- Static linking produces a self-contained `falco.exe` that runs without any redistributable DLL dependencies.
+- The curl/vcpkg `schannel` feature name is not required on recent baselines — the build only needs `libcurl.lib` under the selected triplet.
+
+The build script validates `VCPKG_ROOT` (or `VCPKG_INSTALLATION_ROOT`) and refuses to continue if the triplet's `libcurl.lib` is missing. A clean error is much better than a confusing CMake failure deep inside the Falco build.
+
+#### Nested CMake generator forwarding
+
+Falco's `falcosecurity-libs.cmake` spawns a nested `cmake` configure for libscap/libsinsp. Without explicit generator/platform forwarding, the nested run can pick a different Visual Studio generator/platform than the top-level build on ARM64 hosts, producing `VCTargetsPath` / platform mismatch errors at link time. `installers/windows/falco-windows-cmake-generator.patch` adds `-G "${CMAKE_GENERATOR}" -A "${CMAKE_GENERATOR_PLATFORM}"` to the nested configure. If Falco upstream ever changes that file, the patch fails loudly at `git apply --check` instead of silently regressing ARM64 builds.
+
+#### Git Bash caveats
+
+Several Windows-specific traps worth knowing:
+
+- **Path interpretation**: Git Bash's `/usr/bin/tar` interprets `C:` as a remote host. `build-falco.ps1` prepends `C:\Windows\System32` to `PATH` so native `tar.exe` is used instead.
+- **CRLF normalization**: `git apply` on Windows inherits `core.autocrlf`. `build-falco.ps1` clones with `core.autocrlf=false` and normalizes the patch file to LF before applying, otherwise the patch silently fails to match.
+- **Falco launched from Git Bash**: Falco can segfault when launched directly from a Git Bash shell because of stdin/stdout handle differences. The service launcher (`coding-agents-kit-launcher.ps1`), `ctl start`, and the test scripts all spawn Falco via PowerShell or `cmd.exe` to avoid this. When running Falco manually for rule validation, prefer PowerShell.
+
+### Windows: service management
+
+Windows has no user-level systemd or launchd equivalent, so coding-agents-kit uses a **PowerShell launcher script invoked by a Registry Run key**. This is per-user, requires no admin, and mirrors how many user-space productivity apps auto-start on Windows.
+
+- **Run key**: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodingAgentsKit` — value points at `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <launcher>`. Set by `postinstall.ps1` and by `ctl enable`; removed by `uninstall.ps1` and `ctl disable`.
+- **Launcher**: `coding-agents-kit-launcher.ps1` runs `ctl hook add` before starting Falco and registers a `finally` block that runs `ctl hook remove` + `Process.Kill` on exit. This is the Windows equivalent of Linux's `ExecStartPost`/`ExecStopPost` and macOS's `trap EXIT TERM INT`. Falco runs via `System.Diagnostics.Process.Start` with `UseShellExecute=$false` and async stdout/stderr drains into log files; this is required to avoid OS pipe-buffer deadlocks.
+- **No Windows Service**: the installer intentionally does not create a Windows Service. A per-user install cannot register a service without admin, and interception must run under the user's session anyway (it modifies `~/.claude/settings.json` in the user profile, and per-user-socket lifetime follows the user).
+- **Path separators**: all runtime paths (broker socket, library_path, rules_files, http_output URL) are normalized to forward slashes at config-generation time. The plugin also canonicalizes paths to forward slashes for rule matching (stripping the Windows `\\?\` long-path prefix that `std::fs::canonicalize` sometimes adds).
+- **AF_UNIX**: the broker socket is a real Unix domain socket (Windows 10+ has kernel `AF_UNIX` support). The `uds_windows` crate provides Rust bindings. The socket path must be referenced identically by both ends — the interceptor and plugin both normalize to forward slashes so the strings match byte-for-byte.
+- **Plugin library**: `coding_agent.dll` on Windows (vs `.so` on Linux and `.dylib` on macOS). The Windows packager copies the DLL into `%LOCALAPPDATA%\coding-agents-kit\share\` and the post-install script renders a `library_path` in `falco.coding_agents_plugin.yaml` that points at the absolute path with forward slashes.
+- **Fail-safety on MSI uninstall**: the MSI declares a deferred `REMOVE=ALL` custom action (`installers/windows/Package.wxs`) that runs `uninstall.ps1` before `RemoveFiles`, so Apps & Features, `msiexec /x` and the bundled helper all stop the service, remove the hook, drop the Run-key entry and clean `bin\` from the user `PATH`. `Return="ignore"` on the CA keeps a user-edited `settings.json` from blocking the uninstall.
+- **`ctl start` detachment**: the launcher is a long-lived descendant (it waits on Falco), so a direct `CreateProcess` of the launcher is tracked by the caller's PowerShell job object and keeps a captured pipeline (`& ctl start 2>&1`) open until Falco exits. To break that chain, `service_start` in `tools/coding-agents-kit-ctl/src/main.rs` invokes PowerShell's `Start-Process` (which uses ShellExecute), producing a grandchild that's fully independent of the caller. Caveat: `Start-Process -Wait ctl start` from a script still hangs because `-Wait` follows the whole process tree — the captured form `& ctl start 2>&1` is the one to use.
+- **Post-install auto-start fail-safety**: `postinstall.ps1` starts the service via `Start-Process` after registering the hook, polls up to 5s for Falco, and falls through to a `Write-Warning` if it doesn't see Falco in time. Install still completes; the user recovers with `coding-agents-kit-ctl start` manually. If Falco fails to start at all (port conflict, missing DLL, etc.) the user is not silently left with a registered hook and a dead broker.
+
+### Windows: `coding-agents-kit-ctl` service commands
+
+| Command | Linux (systemctl) | macOS (launchctl) | Windows |
+|---------|-------------------|-------------------|---------|
+| `start` | `systemctl --user start` | `launchctl load <plist>` | `powershell … -File <launcher>` (spawned, polled via `tasklist`) |
+| `stop` | `systemctl --user stop` | `launchctl unload <plist>` | `taskkill /F /IM falco.exe` |
+| `enable` | `systemctl --user enable` | `launchctl load <plist>` | `reg add <Run key>` |
+| `disable` | `systemctl --user disable` | `launchctl unload -w <plist>` | `reg delete <Run key>` |
+| `status` | `systemctl --user status` | `launchctl list <label>` | `tasklist /FI "IMAGENAME eq falco.exe"` |
+
+All three platforms share `ctl health` (synthetic event through the full pipeline), `ctl hook add / remove / status`, `ctl mode`, and `ctl logs` with per-OS tail implementations (`tail -f` vs `Get-Content -Wait -Tail 50`).
+
 ## Technology Stack
 
 - **Falco 0.43** — rule engine, running in `nodriver` mode (no kernel instrumentation)
 - **Rust** — interceptor and plugin (using `falco_plugin` crate v0.5.0)
-- **Platforms** — Linux (official Falco builds), macOS (Falco built from source with http_output patch), Windows (Falco built from source with http_output patch, system curl via vcpkg)
+- **Platforms** — Linux (official Falco builds), macOS (Falco built from source with http_output patch, system OpenSSL+curl), Windows (Falco built from source with http_output patch, static curl via vcpkg, SChannel backend)
 
 ## Build & Development
 

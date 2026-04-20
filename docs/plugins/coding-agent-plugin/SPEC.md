@@ -2,8 +2,7 @@
 
 | Field    | Value                        |
 |----------|------------------------------|
-| Version  | 0.1.0                        |
-| Library  | `libcoding_agent.so`  |
+| Library  | `libcoding_agent.so` (Linux) / `libcoding_agent.dylib` (macOS) / `coding_agent.dll` (Windows) |
 | Source   | `plugins/coding-agent-plugin/` |
 | Language | Rust (falco_plugin SDK v0.5) |
 
@@ -201,7 +200,7 @@ Plugin config via `falco.yaml` → `init_config`:
 ```yaml
 init_config:
   mode: enforcement        # "enforcement" or "monitor"
-  socket_path: ${HOME}/.coding-agents-kit/run/broker.sock
+  socket_path: ${HOME}/.coding-agents-kit/run/broker.sock   # Linux / macOS
   http_port: 2802
   deny_tags: [coding_agent_deny]
   ask_tags: [coding_agent_ask]
@@ -209,6 +208,17 @@ init_config:
 ```
 
 All fields have defaults. `${HOME}` is expanded by Falco before reaching the plugin.
+
+Windows defaults (rendered by `postinstall.ps1` with absolute paths and forward slashes — `%LOCALAPPDATA%` is not expanded by Falco):
+
+```yaml
+init_config:
+  mode: enforcement
+  socket_path: C:/Users/<user>/AppData/Local/coding-agents-kit/run/broker.sock
+  http_port: 2802
+```
+
+On startup the plugin refuses to clobber a socket already held by another running instance and refuses to bind an HTTP port already in use — both surface as clean plugin init errors, not panics, so a stray `falco.exe -V ...` cannot take down a running coding-agents-kit service.
 
 Mode switching via `coding-agents-kit-ctl mode <enforcement|monitor>` modifies this file. Falco's `watch_config_files: true` detects the change and performs a full restart (destroy → init).
 
