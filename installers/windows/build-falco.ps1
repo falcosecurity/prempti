@@ -131,7 +131,12 @@ if (-not (Test-Path (Join-Path $SrcDir 'CMakeLists.txt'))) {
 
 $PatchDir = $ScriptDir  # patches are alongside this script
 $patches = @(
-    (Join-Path $PatchDir 'falco-windows-http-output.patch')
+    (Join-Path $PatchDir 'falco-windows-http-output.patch'),
+    # Forward the top-level CMake generator + platform to the nested
+    # falcosecurity-libs configure. Without this, ARM64 hosts can end up
+    # with a mismatched Visual Studio generator/platform pair in the nested
+    # build and fail with "VCTargetsPath" / platform errors at link time.
+    (Join-Path $PatchDir 'falco-windows-cmake-generator.patch')
 )
 
 foreach ($patchPath in $patches) {
@@ -191,18 +196,6 @@ foreach ($patchPath in $patches) {
     Remove-Item $tmpPatch -Force -ErrorAction SilentlyContinue
 }
 
-# Ensure nested falcosecurity-libs configure uses the same generator/platform
-# as the top-level build. On ARM64 hosts, failing to forward these values can
-# cause an unexpected VS/ARM64 fallback in nested CMake runs.
-$libsCmake = Join-Path $SrcDir 'cmake\modules\falcosecurity-libs.cmake'
-if (Test-Path $libsCmake) {
-    $libsText = Get-Content $libsCmake -Raw
-    if ($libsText -notmatch '-G "\$\{CMAKE_GENERATOR\}"') {
-        $libsText = $libsText -replace '(COMMAND\s+"\$\{CMAKE_COMMAND\}"\s+-DCMAKE_BUILD_TYPE="\$\{CMAKE_BUILD_TYPE\}")', '$1 -G "${CMAKE_GENERATOR}" -A "${CMAKE_GENERATOR_PLATFORM}"'
-        Set-Content -Path $libsCmake -Value $libsText -Encoding UTF8
-        Write-Host 'Applied nested CMake generator/platform forwarding fix.'
-    }
-}
 
 # ---------------------------------------------------------------------------
 # Build

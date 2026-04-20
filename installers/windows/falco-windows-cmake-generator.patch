@@ -1,0 +1,13 @@
+diff --git a/cmake/modules/falcosecurity-libs.cmake b/cmake/modules/falcosecurity-libs.cmake
+index 1ead76f..f5b3e0d 100644
+--- a/cmake/modules/falcosecurity-libs.cmake
++++ b/cmake/modules/falcosecurity-libs.cmake
+@@ -51,7 +51,7 @@ else()
+ 	# cd /path/to/build && cmake /path/to/source
+ 	execute_process(
+ 		COMMAND
+-			"${CMAKE_COMMAND}" -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
++			"${CMAKE_COMMAND}" -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" -G "${CMAKE_GENERATOR}" -A "${CMAKE_GENERATOR_PLATFORM}"
+ 			-DFALCOSECURITY_LIBS_REPO=${FALCOSECURITY_LIBS_REPO}
+ 			-DFALCOSECURITY_LIBS_VERSION=${FALCOSECURITY_LIBS_VERSION}
+ 			-DFALCOSECURITY_LIBS_CHECKSUM=${FALCOSECURITY_LIBS_CHECKSUM}
