@@ -22,8 +22,13 @@ pub fn interceptor_path() -> PathBuf {
     } else {
         "claude-interceptor"
     };
-    // Check common build locations.
+    // Check common build locations. Cargo workspace layout puts binaries at
+    // the workspace root target/; legacy per-crate layout is kept for
+    // backwards compatibility.
     let candidates = [
+        root.join("target/release").join(bin_name),
+        root.join("target/x86_64-pc-windows-msvc/release").join(bin_name),
+        root.join("target/aarch64-pc-windows-msvc/release").join(bin_name),
         root.join("hooks/claude-code/target/release").join(bin_name),
         root.join("hooks/claude-code/target/x86_64-pc-windows-msvc/release")
             .join(bin_name),

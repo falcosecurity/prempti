@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Skills for coding-agents-kit — runtime security for AI coding agents powered by Falco",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {

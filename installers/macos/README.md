@@ -35,7 +35,7 @@ bash installers/macos/package.sh --target aarch64      # Apple Silicon
 bash installers/macos/package.sh --target x86_64       # Intel
 ```
 
-Output: `build/coding-agents-kit-0.1.0-darwin-<arch>.{tar.gz,pkg}`
+Output: `build/coding-agents-kit-<version>-darwin-<arch>.{tar.gz,pkg}`
 
 The package is self-contained: Falco binary (built from source), interceptor, plugin, ctl tool, configs, rules, launchd plist, launcher script, and installer.
 
@@ -56,7 +56,7 @@ The build applies a patch (`falco-macos-http-output.patch`) to enable http_outpu
 ### From .pkg (recommended)
 
 ```bash
-open coding-agents-kit-0.1.0-darwin-universal.pkg
+open coding-agents-kit-<version>-darwin-universal.pkg
 ```
 
 The macOS Installer wizard guides you through the setup.
@@ -64,8 +64,8 @@ The macOS Installer wizard guides you through the setup.
 ### From tar.gz
 
 ```bash
-tar xzf coding-agents-kit-0.1.0-darwin-aarch64.tar.gz
-cd coding-agents-kit-0.1.0-darwin-aarch64
+tar xzf coding-agents-kit-<version>-darwin-aarch64.tar.gz
+cd coding-agents-kit-<version>-darwin-aarch64
 bash install.sh
 ```
 

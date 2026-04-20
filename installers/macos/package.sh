@@ -13,7 +13,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 ROOT_DIR="$(cd -- "$SCRIPT_DIR/../.." &>/dev/null && pwd)"
 
-VERSION="0.1.0"
+# Read version from workspace Cargo.toml (single source of truth).
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/Cargo.toml" | head -1)"
 FALCO_VERSION="0.43.0"
 TARGET_ARCH=""
 

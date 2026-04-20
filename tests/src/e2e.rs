@@ -65,12 +65,14 @@ pub fn find_plugin_lib() -> Option<PathBuf> {
     } else {
         ("lib", "so")
     };
-    let base = root.join("plugins/coding-agent-plugin/target/release");
-    let lib = base.join(format!("{prefix}coding_agent.{ext}"));
-    if lib.exists() {
-        return Some(lib);
-    }
-    None
+    let name = format!("{prefix}coding_agent.{ext}");
+    // Check the workspace target/ tree first (cargo workspace layout);
+    // fall back to the legacy per-crate target/ for older checkouts.
+    let candidates = [
+        root.join("target/release").join(&name),
+        root.join("plugins/coding-agent-plugin/target/release").join(&name),
+    ];
+    candidates.into_iter().find(|p| p.exists())
 }
 
 /// Macro to skip a test if Falco or the plugin is not available.

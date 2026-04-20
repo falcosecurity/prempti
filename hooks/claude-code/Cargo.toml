@@ -1,8 +1,8 @@
 [package]
 name = "claude-interceptor"
-version = "0.1.0"
-edition = "2021"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "claude-interceptor"
@@ -14,10 +14,3 @@ serde_json = { version = "1", features = ["raw_value"] }
 
 [target.'cfg(windows)'.dependencies]
 uds_windows = "1.2"
-
-[profile.release]
-opt-level = "z"
-lto = true
-strip = true
-codegen-units = 1
-panic = "abort"

@@ -48,9 +48,21 @@ pub struct CodingAgentPlugin {
     reaper_thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Plugin version pulled from `CARGO_PKG_VERSION` so the workspace `version`
+/// is the single source of truth. The const match is evaluated at compile
+/// time; a missing trailing NUL would be a build-time error, not a runtime
+/// panic.
+const PLUGIN_VERSION_CSTR: &CStr = {
+    let bytes = concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes();
+    match CStr::from_bytes_with_nul(bytes) {
+        Ok(s) => s,
+        Err(_) => panic!("CARGO_PKG_VERSION is not a valid C string"),
+    }
+};
+
 impl Plugin for CodingAgentPlugin {
     const NAME: &'static CStr = c"coding_agent";
-    const PLUGIN_VERSION: &'static CStr = c"0.1.0";
+    const PLUGIN_VERSION: &'static CStr = PLUGIN_VERSION_CSTR;
     const DESCRIPTION: &'static CStr =
         c"coding-agents-kit - Runtime Security for AI Coding Agents with Falco";
     const CONTACT: &'static CStr = c"https://github.com/falcosecurity/coding-agents-kit";
@@ -133,3 +145,18 @@ impl Drop for CodingAgentPlugin {
 plugin!(CodingAgentPlugin);
 source_plugin!(CodingAgentPlugin);
 extract_plugin!(CodingAgentPlugin);
+
+#[cfg(test)]
+mod version_tests {
+    use super::PLUGIN_VERSION_CSTR;
+
+    #[test]
+    fn plugin_version_matches_cargo_package_version() {
+        let expected = env!("CARGO_PKG_VERSION");
+        let reported = PLUGIN_VERSION_CSTR.to_str().expect("valid UTF-8");
+        assert_eq!(
+            reported, expected,
+            "plugin version drifted from Cargo workspace version"
+        );
+    }
+}

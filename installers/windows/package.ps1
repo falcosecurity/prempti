@@ -8,7 +8,7 @@
     all files, and produces an MSI installer via WiX v4.
 
 .PARAMETER Version
-    Package version (default: 0.1.2).
+    Package version. Defaults to the workspace version from Cargo.toml.
 
 .PARAMETER Arch
     Target architecture: x64 or arm64 (default: native).
@@ -23,7 +23,7 @@
     Path to pre-built falco.exe (overrides Falco build).
 #>
 param(
-    [string]$Version = '0.1.2',
+    [string]$Version = '',
     [string]$Arch = '',
     [switch]$SkipFalcoBuild,
     [switch]$SkipRustBuild,
@@ -36,6 +36,19 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 $BuildDir = Join-Path $RootDir 'build'
+
+# Read version from workspace Cargo.toml when not explicitly overridden.
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $cargoToml = Join-Path $RootDir 'Cargo.toml'
+    if (-not (Test-Path $cargoToml)) {
+        throw "Workspace Cargo.toml not found at $cargoToml"
+    }
+    $match = Select-String -Path $cargoToml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+    if (-not $match) {
+        throw "Could not parse version from $cargoToml"
+    }
+    $Version = $match.Matches[0].Groups[1].Value
+}
 
 # Detect native architecture. PROCESSOR_ARCHITECTURE can lie when running under
 # x64 emulation on ARM64 (returns AMD64 instead of ARM64). Check the registry
@@ -150,9 +163,14 @@ Copy-Item $FalcoExe (Join-Path $StageDir 'bin\falco.exe') -Force
 
 Write-Host "Staging files..."
 
-# Find built artifacts: check target-specific dir first, then default release/
+# Find built artifacts in the workspace target/ tree. Check the target-triple
+# subdir first (used when `cargo build --target <triple>` was invoked),
+# then fall back to the plain release/ dir (used when no --target was passed).
+# Also support legacy per-crate target/ dirs for older layouts.
 function Find-Artifact([string]$CrateDir, [string]$FileName) {
     $candidates = @(
+        (Join-Path $RootDir "target\$RustTarget\release\$FileName"),
+        (Join-Path $RootDir "target\release\$FileName"),
         (Join-Path $CrateDir "target\$RustTarget\release\$FileName"),
         (Join-Path $CrateDir "target\release\$FileName")
     )

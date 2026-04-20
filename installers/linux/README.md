@@ -19,15 +19,15 @@ bash installers/linux/package.sh                    # Native architecture
 bash installers/linux/package.sh --target aarch64   # Cross-compile for aarch64
 ```
 
-Output: `build/coding-agents-kit-0.1.0-linux-<arch>.tar.gz`
+Output: `build/coding-agents-kit-<version>-linux-<arch>.tar.gz`
 
 The package is self-contained: Falco binary, interceptor, plugin, ctl tool, configs, rules, systemd service template, and installer scripts.
 
 ## Installation
 
 ```bash
-tar xzf coding-agents-kit-0.1.0-linux-x86_64.tar.gz
-cd coding-agents-kit-0.1.0-linux-x86_64
+tar xzf coding-agents-kit-<version>-linux-x86_64.tar.gz
+cd coding-agents-kit-<version>-linux-x86_64
 bash install.sh
 ```
 
