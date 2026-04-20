@@ -276,6 +276,18 @@ make macos-universal    # Universal binary (requires Rosetta + x86_64 Homebrew)
 
 Output: `build/coding-agents-kit-<version>-darwin-{arch}.{tar.gz,pkg}`
 
+Install the locally-built artifact with either:
+
+```bash
+open build/coding-agents-kit-0.1.0-darwin-<arch>.pkg           # GUI wizard
+# or, non-interactive:
+installer -pkg build/coding-agents-kit-0.1.0-darwin-<arch>.pkg \
+          -target CurrentUserHomeDirectory
+# or, from the tarball:
+tar xzf build/coding-agents-kit-0.1.0-darwin-<arch>.tar.gz -C /tmp
+bash /tmp/coding-agents-kit-0.1.0-darwin-<arch>/install.sh
+```
+
 > Falco does not ship pre-built macOS binaries. The first build compiles Falco from source (~5 min). Subsequent builds use the cached binary.
 
 See [`installers/macos/`](installers/macos/) for details.
@@ -316,9 +328,9 @@ make falco-macos          # Falco binary (macOS only)
 
 ```
 ┌──────────────┐      ┌──────────────┐      ┌────────────────────────────┐
-│ Coding Agent │────▶│ Interceptor  │────▶│     Falco (nodriver)       │
+│ Coding Agent │─────▶│ Interceptor  │─────▶│     Falco (nodriver)       │
 │              │      │   (hook)     │      │  ┌───────────────────────┐ │
-│              │◀────│              │◀────│  │  Plugin (src + extract│ │
+│              │◀─────│              │◀─────│  │  Plugin (src + extract│ │
 │              │      │              │      │  │  + embedded broker)   │ │
 └──────────────┘      └──────────────┘      │  └───────────────────────┘ │
                                             │  Rule Engine + Rules       │
