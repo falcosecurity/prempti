@@ -152,6 +152,12 @@ PLIST_FILE="${PLIST_DIR}/dev.falcosecurity.coding-agents-kit.plist"
 
 if ! $DRY_RUN; then
     mkdir -p "$PLIST_DIR"
+    # If an agent from a previous install is loaded, unload it first.
+    # `launchctl load` fails on an already-loaded plist ("already loaded"),
+    # and we need a clean reload to pick up any plist or launcher changes.
+    if [[ -f "$PLIST_FILE" ]]; then
+        launchctl unload "$PLIST_FILE" 2>/dev/null || true
+    fi
     # Render plist template with actual prefix and HOME.
     sed -e "s|@PREFIX@|${PREFIX}|g" -e "s|@HOME@|${HOME}|g" \
         "$SCRIPT_DIR/launchd/dev.falcosecurity.coding-agents-kit.plist" \
@@ -164,6 +170,7 @@ if ! $DRY_RUN; then
     # Load the service.
     launchctl load "$PLIST_FILE"
 else
+    echo "  [DRY-RUN] launchctl unload $PLIST_FILE (if loaded)"
     echo "  [DRY-RUN] sed → $PLIST_FILE"
     echo "  [DRY-RUN] sed → $PREFIX/bin/coding-agents-kit-launcher.sh"
     echo "  [DRY-RUN] launchctl load $PLIST_FILE"
