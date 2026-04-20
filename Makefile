@@ -69,13 +69,13 @@ linux-aarch64:
 	bash installers/linux/package.sh --target aarch64
 
 ## Build macOS package for the native architecture
-macos: macos-aarch64
+macos: macos-$(subst arm64,aarch64,$(ARCH))
 
 ## Build macOS package for Apple Silicon
 macos-aarch64:
 	bash installers/macos/package.sh --target aarch64
 
-## Build macOS package for Intel (must run on Intel Mac)
+## Build macOS package for Intel (native on Intel, or via Rosetta cross-compile on Apple Silicon)
 macos-x86_64:
 	bash installers/macos/package.sh --target x86_64
 
