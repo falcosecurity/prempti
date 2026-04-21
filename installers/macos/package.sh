@@ -133,18 +133,22 @@ case "$ARCH" in
 esac
 
 # Set up cross-compilation if target != host.
+# The repository is a Cargo workspace, so every crate builds into a shared
+# `<workspace_root>/target/` regardless of which member directory cargo was
+# invoked from. Do not use per-crate `hooks/.../target/` paths here — they
+# only exist as leftovers from pre-workspace builds on developer machines.
 if [[ "$ARCH" != "$HOST_ARCH" ]]; then
     CARGO_TARGET_FLAG="--target $RUST_TARGET"
-    INTERCEPTOR_BIN="hooks/claude-code/target/$RUST_TARGET/release/claude-interceptor"
-    PLUGIN_LIB="plugins/coding-agent-plugin/target/$RUST_TARGET/release/libcoding_agent.dylib"
-    CTL_BIN="tools/coding-agents-kit-ctl/target/$RUST_TARGET/release/coding-agents-kit-ctl"
+    INTERCEPTOR_BIN="target/$RUST_TARGET/release/claude-interceptor"
+    PLUGIN_LIB="target/$RUST_TARGET/release/libcoding_agent.dylib"
+    CTL_BIN="target/$RUST_TARGET/release/coding-agents-kit-ctl"
     # Ensure Rust target is installed.
     rustup target add "$RUST_TARGET" 2>/dev/null || true
 else
     CARGO_TARGET_FLAG=""
-    INTERCEPTOR_BIN="hooks/claude-code/target/release/claude-interceptor"
-    PLUGIN_LIB="plugins/coding-agent-plugin/target/release/libcoding_agent.dylib"
-    CTL_BIN="tools/coding-agents-kit-ctl/target/release/coding-agents-kit-ctl"
+    INTERCEPTOR_BIN="target/release/claude-interceptor"
+    PLUGIN_LIB="target/release/libcoding_agent.dylib"
+    CTL_BIN="target/release/coding-agents-kit-ctl"
 fi
 
 PACKAGE_NAME="coding-agents-kit-${VERSION}-darwin-${ARCH}"
