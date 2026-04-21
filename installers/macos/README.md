@@ -65,8 +65,8 @@ The macOS Installer wizard guides you through the setup.
 ### From tar.gz
 
 ```bash
-tar xzf coding-agents-kit-<version>-darwin-aarch64.tar.gz
-cd coding-agents-kit-<version>-darwin-aarch64
+tar xzf coding-agents-kit-<version>-darwin-<arch>.tar.gz
+cd coding-agents-kit-<version>-darwin-<arch>
 bash install.sh
 ```
 
