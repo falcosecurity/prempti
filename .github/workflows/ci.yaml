@@ -168,6 +168,8 @@ jobs:
         include:
           - arch: aarch64
             runner: macos-latest
+          - arch: x86_64
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
@@ -215,3 +217,9 @@ jobs:
 
       - name: Run e2e tests
         run: make test-e2e
+
+      - name: Build .pkg
+        run: make macos-${{ matrix.arch }}
+
+      - name: Run installed-service smoke test
+        run: bash tests/test_installed_service_macos.sh
