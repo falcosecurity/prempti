@@ -1,35 +1,27 @@
-# Smoke test for the log-rotation logic used by coding-agents-kit-launcher.ps1.
-# Keeps the function definition in sync by asserting it matches the launcher.
+# Smoke test for the log-rotation logic of coding-agents-kit-launcher.ps1.
+# Extracts the real function (and the constants it closes over) out of the
+# launcher via the PowerShell AST, loads them into this session, and runs
+# the behavioral checks against the live code. A body change in the
+# launcher is reflected here without manual resync.
 $ErrorActionPreference = 'Stop'
 
-# Must match the function in installers/windows/coding-agents-kit-launcher.ps1.
-$LogMaxBytes = 10MB
-$LogKeep = 3
-
-function Rotate-LogFile([string]$Path) {
-    if (-not (Test-Path $Path)) { return }
-    try {
-        $size = (Get-Item -LiteralPath $Path).Length
-    } catch {
-        return
-    }
-    if ($size -lt $LogMaxBytes) { return }
-    for ($i = $LogKeep; $i -ge 1; $i--) {
-        $older = "$Path.$i"
-        $newer = if ($i -eq 1) { $Path } else { "$Path.$($i - 1)" }
-        if (Test-Path $older) { Remove-Item -LiteralPath $older -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $newer) {
-            try { Move-Item -LiteralPath $newer -Destination $older -Force -ErrorAction SilentlyContinue } catch {}
-        }
-    }
-}
-
-# Sanity check: the copy above should exactly match the launcher body.
 $launcher = Join-Path $PSScriptRoot '..\installers\windows\coding-agents-kit-launcher.ps1'
-$launcherBody = Get-Content $launcher -Raw
-if ($launcherBody -notmatch [regex]::Escape('function Rotate-LogFile([string]$Path) {')) {
-    throw "Launcher is missing Rotate-LogFile - rotation contract broken"
-}
+$raw = Get-Content $launcher -Raw
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($raw, [ref]$null, [ref]$null)
+
+$fn = $ast.FindAll({
+    $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $args[0].Name -eq 'Rotate-LogFile'
+}, $true) | Select-Object -First 1
+if (-not $fn) { throw "Rotate-LogFile not found in $launcher" }
+
+$assigns = $ast.FindAll({
+    $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $args[0].Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+    ($args[0].Left.VariablePath.UserPath -in @('LogMaxBytes', 'LogKeep'))
+}, $true)
+foreach ($a in $assigns) { Invoke-Expression $a.Extent.Text }
+Invoke-Expression $fn.Extent.Text
 
 $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("rot-test-" + [System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $dir | Out-Null
@@ -47,7 +39,7 @@ try {
     if (Test-Path $log) { throw "Original log should have been moved to .1" }
     if (-not (Test-Path "$log.1")) { throw ".1 should exist after first rotation" }
 
-    # 3. Two more cycles — expect .1, .2, .3 after the third rotation.
+    # 3. Two more cycles - expect .1, .2, .3 after the third rotation.
     for ($n = 0; $n -lt 2; $n++) {
         $fs = [System.IO.File]::OpenWrite($log)
         try { $fs.SetLength(11MB) } finally { $fs.Dispose() }

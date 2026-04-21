@@ -14,6 +14,10 @@ param(
 
 $ErrorActionPreference = 'SilentlyContinue'
 
+# Trim trailing "\" and "." the MSI CA appends as an escape-safety sentinel
+# (see installers/windows/Package.wxs).
+$Prefix = $Prefix.TrimEnd([char[]]@('\', '.'))
+
 # Stop Falco if running
 $falcoProcs = Get-Process -Name falco -ErrorAction SilentlyContinue
 if ($falcoProcs) {

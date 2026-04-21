@@ -15,6 +15,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Trim trailing "\" and "." the MSI CA appends as an escape-safety sentinel
+# (see installers/windows/Package.wxs). Idempotent for invocations that
+# don't include the sentinel.
+$Prefix = $Prefix.TrimEnd([char[]]@('\', '.'))
+
 $BinDir = Join-Path $Prefix 'bin'
 $ConfigDir = Join-Path $Prefix 'config'
 $ShareDir = Join-Path $Prefix 'share'
@@ -130,9 +135,14 @@ try {
 # ---------------------------------------------------------------------------
 
 $launcherScript = Join-Path $BinDir 'coding-agents-kit-launcher.ps1'
+$installedFalco = Join-Path $BinDir 'falco.exe'
 if (Test-Path $launcherScript) {
   try {
-    $runCmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherScript`""
+    # Pass -Prefix so a custom install location picked via WixUI_InstallDir
+    # propagates to every login: without it the launcher would fall back to
+    # %LOCALAPPDATA%\coding-agents-kit regardless of where the MSI put the
+    # files.
+    $runCmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherScript`" -Prefix `"$Prefix`""
     $regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     if (-not (Test-Path $regPath)) {
       New-Item -Path $regPath -Force | Out-Null
@@ -151,23 +161,42 @@ if (Test-Path $launcherScript) {
 # now so the Claude Code hook we just registered has a live broker to talk
 # to - otherwise fail-closed would block every tool call from the moment
 # the MSI finishes until the user's next logout/login.
-# Skip if another launcher is already running (e.g. MSI repair / re-run).
+# Scope the detection by Path: a user running an unrelated Falco build in
+# another directory should not convince us to skip the start.
 
-$falcoRunning = @(Get-Process -Name falco -ErrorAction SilentlyContinue).Count -gt 0
+# Match by Path so unrelated falco.exe instances (other projects, dev
+# builds) don't convince us to skip our own start. Guard .Path access
+# with try/catch: on a process running under a different account it
+# throws Win32Exception instead of returning $null, which would bubble
+# past -ErrorAction SilentlyContinue.
+function Test-InstalledFalcoRunning {
+    param([string]$TargetPath)
+    foreach ($p in Get-Process -Name falco -ErrorAction SilentlyContinue) {
+        try {
+            if ($p.Path -and ($p.Path -eq $TargetPath)) { return $true }
+        } catch {
+            # Access denied: not our process. Keep scanning.
+        }
+    }
+    return $false
+}
+
+$falcoRunning = Test-InstalledFalcoRunning -TargetPath $installedFalco
 if (-not $falcoRunning -and (Test-Path $launcherScript)) {
     try {
         $startArgs = @(
             '-NoProfile',
             '-ExecutionPolicy', 'Bypass',
             '-WindowStyle', 'Hidden',
-            '-File', $launcherScript
+            '-File', $launcherScript,
+            '-Prefix', $Prefix
         )
         Start-Process -FilePath 'powershell.exe' -ArgumentList $startArgs -WindowStyle Hidden | Out-Null
         # Wait up to 5s for Falco to appear before declaring success.
         $started = $false
         for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Milliseconds 250
-            if (Get-Process -Name falco -ErrorAction SilentlyContinue) {
+            if (Test-InstalledFalcoRunning -TargetPath $installedFalco) {
                 $started = $true
                 break
             }
@@ -175,10 +204,10 @@ if (-not $falcoRunning -and (Test-Path $launcherScript)) {
         if ($started) {
             Write-Host "Service started."
         } else {
-            Write-Warning "Service start kicked off but Falco not detected yet - run 'coding-agents-kit-ctl status' to check."
+            Write-Warning "Service start kicked off but Falco not detected yet. Check 'coding-agents-kit-ctl status' and the startup log at $LogDir\falco.err."
         }
     } catch {
-        Write-Warning "Could not start the service: $($_.Exception.Message). Run 'coding-agents-kit-ctl start' manually."
+        Write-Warning "Could not start the service: $($_.Exception.Message). Run 'coding-agents-kit-ctl start' manually and check $LogDir\falco.err."
     }
 } elseif ($falcoRunning) {
     Write-Host "Service already running."

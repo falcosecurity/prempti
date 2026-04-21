@@ -19,16 +19,40 @@
       <ComponentGroupRef Id="RulesUserDir" />
       <ComponentGroupRef Id="ScriptFiles" />
       <ComponentGroupRef Id="RuntimeDirs" />
+      <ComponentGroupRef Id="InstallDirRegistration" />
     </Feature>
 
     <ui:WixUI Id="WixUI_InstallDir" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
 
+    <!-- Persist INSTALLDIR to HKCU at install time and read it back on
+         every subsequent MSI invocation. Without this, MSI defaults
+         INSTALLDIR at uninstall/upgrade time to the compiled-in value,
+         so a user who chose a custom path via WixUI_InstallDir would
+         see uninstall clean the wrong location and leave the real
+         install orphaned. `Secure="yes"` is required so the per-machine
+         property survives the sandbox boundary of deferred custom
+         actions. -->
+    <Property Id="INSTALLDIR" Secure="yes">
+      <RegistrySearch Id="InstallDirSearch"
+                      Root="HKCU"
+                      Key="Software\FalcoAuthors\coding-agents-kit"
+                      Name="InstallDir"
+                      Type="directory" />
+    </Property>
+
     <!-- Run post-install setup at the end of MSI install so double-clicking
-         the MSI is sufficient for a working installation. -->
+         the MSI is sufficient for a working installation. Pass
+         -Prefix "[INSTALLDIR]." so a custom install path picked via
+         WixUI_InstallDir propagates through to config, hook command, Run
+         key and the one-shot service start. The trailing "." sentinel is
+         there because MSI always renders INSTALLDIR with a trailing "\",
+         which would be parsed as an escape of the closing quote by
+         PowerShell's argv parser ("\\" ->  "); the script trims "\" and
+         "." from the end. -->
     <CustomAction Id="SetRunPostInstallCmdLine"
                   Property="RunPostInstall"
-                  Value='"[System64Folder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "[#PostInstallScriptFile]"' />
+                  Value='"[System64Folder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "[#PostInstallScriptFile]" -Prefix "[INSTALLDIR]."' />
 
     <CustomAction Id="RunPostInstall"
                   BinaryRef="$(var.UtilCABinaryRef)"
@@ -40,12 +64,14 @@
     <!-- Run pre-uninstall cleanup at the start of MSI uninstall so Apps &
          Features / msiexec /x both stop the service, remove the Claude Code
          hook and the Run-key entry, and clean up the user PATH BEFORE the
-         script file itself is removed by RemoveFiles. Return="ignore" so
-         a failure does not block the uninstall — the worst case is a stale
-         hook, which is no worse than skipping the CA entirely. -->
+         script file itself is removed by RemoveFiles. -Prefix matches the
+         location chosen at install time so cleanup targets the right files.
+         Return="ignore" so a failure does not block the uninstall — the
+         worst case is a stale hook, which is no worse than skipping the CA
+         entirely. -->
     <CustomAction Id="SetRunUninstallCmdLine"
                   Property="RunUninstall"
-                  Value='"[System64Folder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "[#UninstallScriptFile]"' />
+                  Value='"[System64Folder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "[#UninstallScriptFile]" -Prefix "[INSTALLDIR]."' />
 
     <CustomAction Id="RunUninstall"
                   BinaryRef="$(var.UtilCABinaryRef)"
@@ -154,6 +180,19 @@
       </Component>
       <Component Id="LogDirComp" Guid="F3A4B5C6-D7E8-9012-CDEF-012345678903" Directory="LOGDIR">
         <CreateFolder />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!-- Persisted INSTALLDIR so uninstall / upgrade reads the actual install
+       location chosen by the user. Paired with the Property@INSTALLDIR
+       RegistrySearch above. -->
+  <Fragment>
+    <ComponentGroup Id="InstallDirRegistration" Directory="INSTALLDIR">
+      <Component Id="InstallDirRegistrationComp" Guid="A4B5C6D7-E8F9-0123-4567-89ABCDEF0004">
+        <RegistryKey Root="HKCU" Key="Software\FalcoAuthors\coding-agents-kit">
+          <RegistryValue Type="string" Name="InstallDir" Value="[INSTALLDIR]" KeyPath="yes" />
+        </RegistryKey>
       </Component>
     </ComponentGroup>
   </Fragment>

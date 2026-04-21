@@ -26,7 +26,25 @@ fn default_prefix() -> PathBuf {
     }
     #[cfg(windows)]
     {
-        // MSI installs to %LOCALAPPDATA%\coding-agents-kit (no leading dot)
+        // Prefer deriving the prefix from the ctl's own location: if ctl
+        // lives at `<prefix>\bin\coding-agents-kit-ctl.exe`, `<prefix>` is
+        // the right answer regardless of what INSTALLDIR the MSI used. This
+        // keeps ctl commands (enable/disable/start/stop) aligned with a
+        // custom install path picked via WixUI_InstallDir. Fall back to
+        // %LOCALAPPDATA%\coding-agents-kit when current_exe isn't a `bin`
+        // child (running from a dev target dir, or otherwise detached).
+        if let Ok(exe) = env::current_exe() {
+            if let Some(bin_dir) = exe.parent() {
+                if bin_dir
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+                {
+                    if let Some(prefix) = bin_dir.parent() {
+                        return prefix.to_path_buf();
+                    }
+                }
+            }
+        }
         PathBuf::from(home_dir()).join("coding-agents-kit")
     }
 }
@@ -598,41 +616,21 @@ fn service_stop() {
         return;
     };
 
-    // First attempt graceful shutdown: taskkill without /F sends WM_CLOSE /
-    // CTRL_CLOSE_EVENT to the target process, letting Falco flush its state
-    // and exit cleanly. We target PIDs rather than the image name so unrelated
-    // `falco.exe` instances from other projects are left alone. Redirect
-    // stdout/stderr so the user doesn't see the localized "can't terminate"
-    // taskkill error when we fall through to /F — that path is expected.
+    // Straight `/F`: Falco is launched by the service launcher with
+    // `CreateNoWindow = $true`, which leaves it with no top-level window
+    // and no attached console. `taskkill` without `/F` has no delivery
+    // channel for such a process — neither `WM_CLOSE` nor
+    // `CTRL_CLOSE_EVENT` is reachable — so attempting graceful shutdown
+    // would just block for the grace window and then escalate anyway.
+    // A truly graceful shutdown would require plumbing a shutdown request
+    // through the broker socket, which is a separate change. Scope by PID
+    // so unrelated `falco.exe` instances from other projects are left alone.
     for pid in &pids {
         let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string()])
+            .args(["/F", "/PID", &pid.to_string()])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
-    }
-
-    // Wait up to ~3s for graceful exit; escalate to /F on anything still alive.
-    let mut alive: Vec<u32> = pids.clone();
-    for _ in 0..12 {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        alive = match falco_pids() {
-            Some(p) => p.into_iter().filter(|p| pids.contains(p)).collect(),
-            None => Vec::new(),
-        };
-        if alive.is_empty() {
-            break;
-        }
-    }
-
-    if !alive.is_empty() {
-        for pid in &alive {
-            let _ = Command::new("taskkill")
-                .args(["/F", "/PID", &pid.to_string()])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
     }
 
     println!("Service stopped.");
@@ -776,8 +774,9 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
     }
     #[cfg(target_os = "windows")]
     {
-        // Reuse the graceful stop path so logs flush and the launcher's
-        // finally block can run hook-remove itself if it is still alive.
+        // Reuse service_stop so the launcher's `finally` block gets a chance
+        // to run its own hook-remove before we take the belt-and-braces pass
+        // below.
         if is_falco_running() {
             println!("Stopping service...");
             service_stop();
@@ -786,14 +785,13 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
         let _ = Command::new("reg")
             .args(["delete", RUN_KEY, "/v", RUN_VALUE_NAME, "/f"])
             .status();
-        // Remove hook (belt-and-braces; service_stop's launcher trap also does this).
-        hook_remove();
     }
 
     // 2. Remove the hook (safety net).
-    // The service's ExecStopPost (Linux) or launcher trap (macOS) should have
-    // removed the hook already. But if the service wasn't running or the stop
-    // hooks didn't fire, the hook would stay registered and brick Claude Code.
+    // The service's ExecStopPost (Linux), launcher trap (macOS), or launcher
+    // PowerShell `finally` block (Windows) should have removed the hook
+    // already. But if the service wasn't running or the stop hooks didn't
+    // fire, the hook would stay registered and brick Claude Code.
     println!("Removing Claude Code hook...");
     hook_remove();
 

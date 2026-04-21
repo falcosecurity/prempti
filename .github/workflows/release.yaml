@@ -27,7 +27,7 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch head as of 2026-04
 
       - name: Package
         run: make linux-${{ matrix.arch }}
@@ -48,7 +48,7 @@ jobs:
         arch: [aarch64]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch head as of 2026-04
 
       - name: Install build dependencies
         run: brew install cmake openssl@3
@@ -90,7 +90,7 @@ jobs:
             vcpkg_triplet: arm64-windows-static
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch head as of 2026-04
 
       - name: Install make
         run: choco install make -y
@@ -147,7 +147,7 @@ jobs:
           path: artifacts
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: |
             artifacts/linux-x86_64/*

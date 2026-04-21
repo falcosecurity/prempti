@@ -44,6 +44,14 @@ fn has_live_peer(socket_path: &str) -> std::io::Result<bool> {
 /// any stale socket file and bind a fresh listener. Returns an error that
 /// Plugin::new() propagates to Falco so a second instance cannot clobber
 /// the running one's socket file.
+///
+/// Note: there is a narrow TOCTOU between `has_live_peer()` returning
+/// `false` and `bind()` succeeding below. If a second instance were to come
+/// up in that window we would clear its stale file and rebind, leaving the
+/// race winner. That is the correct outcome for the collision-panic class
+/// of bug this code exists to prevent; do not "fix" it by guarding with a
+/// lock (e.g. `AlreadyExists`), which would turn legitimate stale-file
+/// cleanup into a hard failure and reintroduce the panic risk.
 fn prepare_listener(socket_path: &str) -> anyhow::Result<UnixListener> {
     if has_live_peer(socket_path).unwrap_or(false) {
         anyhow::bail!(
