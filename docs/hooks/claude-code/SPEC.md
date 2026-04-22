@@ -178,14 +178,12 @@ If JSON serialization fails, the interceptor emits a hardcoded deny JSON literal
 
 2. **Stdin format**: The interceptor reads until EOF and parses as JSON. It handles both compact and pretty-printed JSON. If Claude Code changes the delivery mechanism, this would need updating.
 
-3. **MCP server name ambiguity**: The `mcp__<server>__<tool>` convention uses `__` as separator. If server or tool names contain `__`, parsing is ambiguous. This is a Claude Code documentation gap, not an interceptor issue — the broker handles this parsing.
-
 ## Broker Responsibilities
 
 Since the interceptor is a thin passthrough, the following are broker responsibilities:
 
 - **Field extraction**: Parse `tool_name`, `tool_input`, `cwd`, `session_id`, etc. from the event JSON
-- **Derived fields**: Extract `tool.input_command` (Bash), `tool.file_path`/`tool.real_file_path` (Write/Edit/Read), `tool.mcp_server` (MCP tools)
+- **Derived fields**: Extract `tool.input_command` (Bash), `tool.file_path`/`tool.real_file_path` (Write/Edit/Read)
 - **Path resolution**: Resolve file paths to absolute canonical paths (`tool.real_file_path`, `agent.real_cwd`) via `canonicalize` with lexical normalization fallback
 - **Content validation**: Verify required fields are present (e.g., `tool_name`)
 - **Policy evaluation**: Forward events to Falco, collect alerts, resolve verdicts

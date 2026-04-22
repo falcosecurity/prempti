@@ -129,6 +129,8 @@ Implements `ExtractPlugin` with per-event caching via `ExtractContext`.
 | `agent.name` | string | Wire protocol `agent_name` field |
 | `agent.hook_event_name` | string | `event.hook_event_name` |
 | `agent.session_id` | string | `event.session_id` |
+| `agent.permission_mode` | string | `event.permission_mode` — session permission mode reported by the agent |
+| `agent.transcript_path` | string | `event.transcript_path` — empty when the agent reports `null` |
 | `agent.cwd` | string | `event.cwd` (raw) |
 | `agent.real_cwd` | string | `event.cwd` resolved via `canonicalize` + lexical fallback |
 | `tool.use_id` | string | `event.tool_use_id` (raw from Claude Code) |
@@ -137,7 +139,6 @@ Implements `ExtractPlugin` with per-event caching via `ExtractContext`.
 | `tool.input_command` | string | `event.tool_input.command` (Bash only) |
 | `tool.file_path` | string | `event.tool_input.file_path` (raw, Write/Edit/Read only) |
 | `tool.real_file_path` | string | Resolved absolute path (Write/Edit/Read only) |
-| `tool.mcp_server` | string | Extracted from `mcp__<server>__<tool>` pattern |
 
 Event source restriction: `CodingAgentPayload` with `EventSource::SOURCE = Some("coding_agent")` prevents extraction from syscall events.
 

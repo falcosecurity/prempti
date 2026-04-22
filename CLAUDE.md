@@ -94,7 +94,8 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 | `tool.input_command` | string | Shell command (Bash tool calls) |
 | `tool.file_path` | string | Target file path, raw from `tool_input.file_path` (Write/Edit/Read only) |
 | `tool.real_file_path` | string | Target file path, resolved to absolute canonical path. Relative paths resolved against `agent.cwd`. (Write/Edit/Read only) |
-| `tool.mcp_server` | string | MCP server name (MCP tool calls) |
+| `agent.permission_mode` | string | Session permission mode reported by the agent (e.g., `default`, `acceptEdits`, `plan`, `bypassPermissions`; Codex also emits `dontAsk`) |
+| `agent.transcript_path` | string | Session transcript file path. Empty when the agent reports `null`. |
 
 This schema is agent-agnostic. The `agent.name` field distinguishes which coding agent generated the event.
 

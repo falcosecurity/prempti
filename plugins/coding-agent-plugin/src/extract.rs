@@ -62,6 +62,24 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
+    fn extract_permission_mode(
+        &mut self,
+        mut req: ExtractRequest<Self>,
+    ) -> Result<CString, Error> {
+        let payload = self.get_payload(&mut req)?;
+        let val = req.context.permission_mode(payload).unwrap_or("");
+        Ok(CString::new(val)?)
+    }
+
+    fn extract_transcript_path(
+        &mut self,
+        mut req: ExtractRequest<Self>,
+    ) -> Result<CString, Error> {
+        let payload = self.get_payload(&mut req)?;
+        let val = req.context.transcript_path(payload).unwrap_or("");
+        Ok(CString::new(val)?)
+    }
+
     fn extract_cwd(
         &mut self,
         mut req: ExtractRequest<Self>,
@@ -125,14 +143,6 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
-    fn extract_mcp_server(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
-        let payload = self.get_payload(&mut req)?;
-        let val = req.context.mcp_server(payload).unwrap_or("");
-        Ok(CString::new(val)?)
-    }
 }
 
 impl ExtractPlugin for CodingAgentPlugin {
@@ -156,6 +166,12 @@ impl ExtractPlugin for CodingAgentPlugin {
         field("agent.session_id", &Self::extract_session_id)
             .with_display("Session ID")
             .with_description("Coding agent session identifier"),
+        field("agent.permission_mode", &Self::extract_permission_mode)
+            .with_display("Permission Mode")
+            .with_description("Session permission mode reported by the coding agent (e.g., default, acceptEdits, bypassPermissions)"),
+        field("agent.transcript_path", &Self::extract_transcript_path)
+            .with_display("Transcript Path")
+            .with_description("Path to the session transcript file (empty when the agent reports null)"),
         field("agent.cwd", &Self::extract_cwd)
             .with_display("Working Directory")
             .with_description("Working directory, raw from Claude Code JSON"),
@@ -177,8 +193,5 @@ impl ExtractPlugin for CodingAgentPlugin {
         field("tool.real_file_path", &Self::extract_real_file_path)
             .with_display("Resolved File Path")
             .with_description("Target file path, resolved to absolute canonical path (Write/Edit/Read only)"),
-        field("tool.mcp_server", &Self::extract_mcp_server)
-            .with_display("MCP Server")
-            .with_description("MCP server name (MCP tool calls only)"),
     ];
 }

@@ -53,6 +53,8 @@ Rules use the standard [Falco rule language](https://falco.org/docs/rules/). Ava
 | `correlation.id` | Broker-assigned unique ID (used for verdict correlation) |
 | `agent.name` | Coding agent identifier (e.g., `claude_code`) |
 | `agent.session_id` | Session identifier |
+| `agent.permission_mode` | Session permission mode (e.g. `default`, `acceptEdits`, `bypassPermissions`) |
+| `agent.transcript_path` | Session transcript file path (empty when the agent reports `null`) |
 | `agent.cwd` | Working directory (raw) |
 | `agent.real_cwd` | Working directory (resolved, absolute) |
 | `tool.use_id` | Unique identifier for this tool call |
@@ -61,7 +63,6 @@ Rules use the standard [Falco rule language](https://falco.org/docs/rules/). Ava
 | `tool.input_command` | Shell command (Bash only) |
 | `tool.file_path` | Target file path (raw, Write/Edit/Read only) |
 | `tool.real_file_path` | Target file path (resolved, absolute, Write/Edit/Read only) |
-| `tool.mcp_server` | MCP server name (MCP tools only) |
 
 All rules must:
 - Set `source: coding_agent`

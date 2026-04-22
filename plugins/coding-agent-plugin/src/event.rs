@@ -65,6 +65,8 @@ struct ParsedFields {
     tool_use_id: String,
     hook_event_name: String,
     session_id: String,
+    permission_mode: String,
+    transcript_path: String,
     // Raw paths (as reported by Claude Code)
     cwd: String,
     file_path: String,
@@ -75,7 +77,6 @@ struct ParsedFields {
     tool_name: String,
     tool_input: serde_json::Value,
     tool_input_command: String,
-    mcp_server: String,
 }
 
 /// The event payload stored in Falco events. Contains the correlation ID, agent name,
@@ -136,6 +137,16 @@ impl ParsedEvent {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let permission_mode = event
+            .get("permission_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let transcript_path = event
+            .get("transcript_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let tool_name = event
             .get("tool_name")
             .and_then(|v| v.as_str())
@@ -159,8 +170,6 @@ impl ParsedEvent {
         let real_file_path = resolve_file_path(&file_path, &real_cwd);
 
         let tool_input_command = extract_command(&tool_name, &tool_input);
-        let mcp_server = extract_mcp_server(&tool_name);
-
 
         Some(ParsedFields {
             agent_name: agent_name.to_string(),
@@ -168,6 +177,8 @@ impl ParsedEvent {
             tool_use_id,
             hook_event_name,
             session_id,
+            permission_mode,
+            transcript_path,
             cwd,
             file_path,
             real_cwd,
@@ -175,7 +186,6 @@ impl ParsedEvent {
             tool_name,
             tool_input,
             tool_input_command,
-            mcp_server,
         })
     }
 
@@ -199,6 +209,16 @@ impl ParsedEvent {
 
     pub fn session_id(&mut self, payload: &[u8]) -> Option<&str> {
         self.ensure_parsed(payload).map(|f| f.session_id.as_str())
+    }
+
+    pub fn permission_mode(&mut self, payload: &[u8]) -> Option<&str> {
+        self.ensure_parsed(payload)
+            .map(|f| f.permission_mode.as_str())
+    }
+
+    pub fn transcript_path(&mut self, payload: &[u8]) -> Option<&str> {
+        self.ensure_parsed(payload)
+            .map(|f| f.transcript_path.as_str())
     }
 
     pub fn cwd(&mut self, payload: &[u8]) -> Option<&str> {
@@ -232,9 +252,6 @@ impl ParsedEvent {
             .map(|f| f.real_file_path.as_str())
     }
 
-    pub fn mcp_server(&mut self, payload: &[u8]) -> Option<&str> {
-        self.ensure_parsed(payload).map(|f| f.mcp_server.as_str())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,17 +354,6 @@ fn resolve_file_path(file_path: &str, resolved_cwd: &str) -> String {
     normalize_separators(normalize_path(&abs).to_string_lossy().into_owned())
 }
 
-fn extract_mcp_server(tool_name: &str) -> String {
-    let rest = match tool_name.strip_prefix("mcp__") {
-        Some(r) => r,
-        None => return String::new(),
-    };
-    match rest.find("__") {
-        Some(pos) if pos > 0 => rest[..pos].to_string(),
-        _ => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +424,57 @@ mod tests {
         // After popping share and attempting to pop past UNC root,
         // the root component is preserved.
         assert!(result.to_string_lossy().starts_with(r"\\server"));
+    }
+
+    fn payload_with(event_json: &str) -> Vec<u8> {
+        format!("1\nclaude_code\n{}", event_json).into_bytes()
+    }
+
+    #[test]
+    fn parses_permission_mode_when_present() {
+        let p = payload_with(
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","permission_mode":"bypassPermissions","session_id":"s"}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.permission_mode(&p), Some("bypassPermissions"));
+    }
+
+    #[test]
+    fn permission_mode_empty_when_missing() {
+        let p = payload_with(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.permission_mode(&p), Some(""));
+    }
+
+    #[test]
+    fn permission_mode_empty_when_wrong_type() {
+        // Non-string value (e.g., a number) must degrade to empty, not panic.
+        let p = payload_with(r#"{"permission_mode":42}"#);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.permission_mode(&p), Some(""));
+    }
+
+    #[test]
+    fn parses_transcript_path_when_present() {
+        let p = payload_with(
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","transcript_path":"/tmp/t.jsonl"}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.transcript_path(&p), Some("/tmp/t.jsonl"));
+    }
+
+    #[test]
+    fn transcript_path_empty_when_null() {
+        // Codex may emit null for transcript_path.
+        let p = payload_with(r#"{"transcript_path":null}"#);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.transcript_path(&p), Some(""));
+    }
+
+    #[test]
+    fn transcript_path_empty_when_missing() {
+        let p = payload_with(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.transcript_path(&p), Some(""));
     }
 }

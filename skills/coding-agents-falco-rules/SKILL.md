@@ -34,7 +34,8 @@ Every tool call event exposes these fields for conditions and output:
 | `tool.input_command` | string | Shell command (Bash tool only, empty otherwise) |
 | `tool.file_path` | string | Target file path, raw (Write/Edit/Read only) |
 | `tool.real_file_path` | string | Target file path resolved to absolute canonical path (Write/Edit/Read only) |
-| `tool.mcp_server` | string | MCP server name (MCP tool calls only) |
+| `agent.permission_mode` | string | Session permission mode: `default`, `acceptEdits`, `plan`, `bypassPermissions` (Codex also emits `dontAsk`) |
+| `agent.transcript_path` | string | Session transcript file path (empty when the agent reports `null`) |
 
 Path fields come in raw/real pairs. Use `real_*` for policy matching (resolved, absolute). Use raw fields for display.
 
@@ -101,7 +102,7 @@ output: >
 | `pmatch` | `tool.real_file_path pmatch (sensitive_paths)` — prefix match against a list |
 | `glob` | `tool.real_file_path glob "/home/*/secrets/*"` — wildcard pattern matching |
 | `regex` | `tool.input_command regex "curl.*\|.*sh"` — RE2 regular expression |
-| `exists` | `tool.mcp_server exists` — field has a value (cleaner than `!= ""`) |
+| `exists` | `tool.file_path exists` — field has a value (cleaner than `!= ""`) |
 | `and`, `or`, `not` | Boolean combinators |
 
 ### Transformers
@@ -316,25 +317,6 @@ Flag to the user that the rule was not machine-validated.
   priority: WARNING
   source: coding_agent
   tags: [coding_agent_ask]
-```
-
-### Deny: block MCP tool calls to untrusted servers
-
-```yaml
-- list: trusted_mcp_servers
-  items: [ide]
-
-- rule: Deny untrusted MCP servers
-  desc: >
-    Blocks MCP tool calls to servers not in the trusted list.
-  condition: >
-    tool.mcp_server != ""
-    and not tool.mcp_server in (trusted_mcp_servers)
-  output: >
-    Falco blocked an MCP call to untrusted server %tool.mcp_server
-  priority: CRITICAL
-  source: coding_agent
-  tags: [coding_agent_deny]
 ```
 
 ### Deny: prevent writing outside a project boundary

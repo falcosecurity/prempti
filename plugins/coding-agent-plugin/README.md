@@ -30,6 +30,8 @@ The plugin runs inside Falco and manages three background responsibilities:
 | `agent.name` | string | Coding agent identifier |
 | `agent.hook_event_name` | string | Hook lifecycle point |
 | `agent.session_id` | string | Session identifier |
+| `agent.permission_mode` | string | Session permission mode (e.g. `default`, `acceptEdits`, `bypassPermissions`) |
+| `agent.transcript_path` | string | Session transcript file path (empty when the agent reports `null`) |
 | `agent.cwd` | string | Working directory (raw) |
 | `agent.real_cwd` | string | Working directory (resolved) |
 | `tool.use_id` | string | Tool call ID from Claude Code (raw) |
@@ -38,7 +40,6 @@ The plugin runs inside Falco and manages three background responsibilities:
 | `tool.input_command` | string | Shell command (Bash only) |
 | `tool.file_path` | string | File path (raw, Write/Edit/Read) |
 | `tool.real_file_path` | string | File path (resolved, Write/Edit/Read) |
-| `tool.mcp_server` | string | MCP server name |
 
 ## Configuration
 
