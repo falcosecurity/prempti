@@ -34,7 +34,6 @@ bash install.sh
 ### Options
 
 ```bash
-bash install.sh --prefix=/custom/path    # Install to a custom directory
 bash install.sh --dry-run                # Show what would be done
 ```
 

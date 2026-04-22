@@ -204,7 +204,7 @@ Config is split into two files:
 - **`falco.yaml`**: base settings (engine, output, webserver, `config_files` pointing to the plugin fragment)
 - **`falco.coding_agents_plugin.yaml`**: plugin definition, `init_config`, `load_plugins`, `rules_files`, `rule_matching: all`, `http_output`
 
-All paths use `${HOME}` expansion (Falco 0.43 supports `${VAR}` syntax in all YAML scalar values). This makes the config portable without hardcoded paths.
+All paths on Linux/macOS use `${HOME}` expansion (Falco 0.43 supports `${VAR}` syntax in all YAML scalar values), so the same config works across users as long as the install lives at `$HOME/.coding-agents-kit`. Linux and macOS installers only support this default path; the Windows MSI regenerates both config files at install time via `postinstall.ps1`, which is how its `WixUI_InstallDir`-selected `INSTALLDIR` actually flows through to Falco.
 
 ### macOS: Falco build from source
 

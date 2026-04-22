@@ -6,7 +6,7 @@
 # Copies binaries, configs, and rules to the install prefix, sets up a
 # systemd user service, and registers the Claude Code hook.
 #
-# Usage: bash install.sh [--prefix=PATH] [--dry-run] [--help]
+# Usage: bash install.sh [--dry-run] [--help]
 #
 set -euo pipefail
 
@@ -18,14 +18,11 @@ HAS_DIALOG=false
 # Parse arguments.
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --prefix=*) PREFIX="${1#*=}"; shift ;;
-        --prefix) PREFIX="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help)
-            echo "Usage: $0 [--prefix=PATH] [--dry-run]"
+            echo "Usage: $0 [--dry-run]"
             echo ""
             echo "Options:"
-            echo "  --prefix=PATH   Install directory (default: ~/.coding-agents-kit)"
             echo "  --dry-run       Print what would be done without making changes"
             echo ""
             exit 0
@@ -77,11 +74,6 @@ fi
 # ---------------------------------------------------------------------------
 
 if $HAS_DIALOG && ! $DRY_RUN && [[ -t 0 ]]; then
-    # Confirm install prefix.
-    DIALOG_PREFIX=$(dialog --stdout --inputbox \
-        "Install coding-agents-kit to:" 8 60 "$PREFIX") || true
-    [[ -n "$DIALOG_PREFIX" ]] && PREFIX="$DIALOG_PREFIX"
-
     # Warn about existing installation.
     if [[ -d "$PREFIX" ]]; then
         dialog --stdout --yesno \
@@ -163,23 +155,18 @@ fi
 # Claude Code hook registration
 # ---------------------------------------------------------------------------
 
-CTL_PREFIX_FLAG=""
-if [[ "$PREFIX" != "${HOME}/.coding-agents-kit" ]]; then
-    CTL_PREFIX_FLAG="--prefix=${PREFIX}"
-fi
-
 if $SKIP_SYSTEMD; then
     warn "Skipping hook registration (systemd service not installed)."
     warn "The hook requires the service to be running — registering it"
     warn "without the service would block ALL Claude Code tool calls."
     warn "Start the service manually, then run:"
-    warn "  ${PREFIX}/bin/coding-agents-kit-ctl ${CTL_PREFIX_FLAG} hook add"
+    warn "  ${PREFIX}/bin/coding-agents-kit-ctl hook add"
 else
     info "Registering Claude Code hook..."
     if $DRY_RUN; then
-        echo "  [DRY-RUN] ${PREFIX}/bin/coding-agents-kit-ctl ${CTL_PREFIX_FLAG} hook add"
+        echo "  [DRY-RUN] ${PREFIX}/bin/coding-agents-kit-ctl hook add"
     else
-        run "$PREFIX/bin/coding-agents-kit-ctl" $CTL_PREFIX_FLAG hook add
+        run "$PREFIX/bin/coding-agents-kit-ctl" hook add
     fi
 fi
 

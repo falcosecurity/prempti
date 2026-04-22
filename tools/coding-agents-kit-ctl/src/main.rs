@@ -1117,7 +1117,7 @@ mod logs_tests {
 fn print_usage() {
     eprintln!("coding-agents-kit-ctl — manage the coding-agents-kit service");
     eprintln!();
-    eprintln!("Usage: coding-agents-kit-ctl [--prefix=PATH] <command>");
+    eprintln!("Usage: coding-agents-kit-ctl <command>");
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  hook add         Register the interceptor hook in Claude Code");
@@ -1145,14 +1145,12 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let mut prefix = default_prefix();
+    let prefix = default_prefix();
     let mut cmd_args: Vec<&str> = Vec::new();
 
     // Parse global flags.
     for arg in &args[1..] {
-        if let Some(p) = arg.strip_prefix("--prefix=") {
-            prefix = PathBuf::from(p);
-        } else if arg == "--help" || arg == "-h" {
+        if arg == "--help" || arg == "-h" {
             print_usage();
             process::exit(0);
         } else {

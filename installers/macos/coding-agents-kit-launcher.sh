@@ -9,11 +9,11 @@
 PREFIX="@PREFIX@"
 
 # Register the hook before starting Falco.
-"$PREFIX/bin/coding-agents-kit-ctl" --prefix="$PREFIX" hook add 2>/dev/null
+"$PREFIX/bin/coding-agents-kit-ctl" hook add 2>/dev/null
 
 # Remove the hook on exit (SIGTERM from launchd, SIGINT, or normal exit).
 cleanup() {
-    "$PREFIX/bin/coding-agents-kit-ctl" --prefix="$PREFIX" hook remove 2>/dev/null
+    "$PREFIX/bin/coding-agents-kit-ctl" hook remove 2>/dev/null
 }
 trap cleanup EXIT TERM INT
 
