@@ -9,18 +9,19 @@ INSTALL_LOCATION="$2"
 PREFIX="${INSTALL_LOCATION}/.coding-agents-kit"
 USER_HOME="${INSTALL_LOCATION}"
 PLIST_FILE="${USER_HOME}/Library/LaunchAgents/dev.falcosecurity.coding-agents-kit.plist"
-OWNER=$(stat -f '%Su' "$USER_HOME" 2>/dev/null)
+OWNER=$(stat -f '%Su' "$USER_HOME" 2>/dev/null || echo "")
+OWNER_UID=$(id -u "$OWNER" 2>/dev/null || echo "")
 
 # Stop existing service if running. See postinstall for a description of the
-# root-vs-user invocation cases — `su` only works as root, so we only drop
-# privileges when we're actually root. Otherwise run launchctl directly in
-# the current session so the existing agent is genuinely unloaded before the
-# new binaries overwrite it.
+# root-vs-user invocation cases. From root we cross into the user's launchd
+# session via `launchctl asuser` so the unload actually targets the running
+# `gui/$UID` agent, not the root-context `system` domain. Errors are no
+# longer silenced so Installer.app surfaces them in "Show Details".
 if [[ -f "$PLIST_FILE" ]]; then
-    if [[ "$(id -u)" -eq 0 && -n "$OWNER" && "$OWNER" != "root" ]]; then
-        su "$OWNER" -c "launchctl unload '$PLIST_FILE'" 2>/dev/null || true
+    if [[ "$(id -u)" -eq 0 && -n "$OWNER_UID" && "$OWNER" != "root" ]]; then
+        launchctl asuser "$OWNER_UID" /bin/launchctl unload "$PLIST_FILE" || true
     else
-        launchctl unload "$PLIST_FILE" 2>/dev/null || true
+        launchctl unload "$PLIST_FILE" || true
     fi
 fi
 

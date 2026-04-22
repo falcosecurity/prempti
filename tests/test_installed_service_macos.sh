@@ -8,6 +8,19 @@
 # code path), exercises the launchd-managed service end to end, and verifies
 # the documented `coding-agents-kit-ctl` lifecycle leaves a clean system.
 #
+# Only the non-elevated install path is exercised here. Our pkg declares
+# `enable_currentUserHome="true"` / `enable_localSystem="false"`, so:
+#
+#   - GUI Installer.app runs the pre/postinstall scripts as the installing
+#     user, not root. No admin-authentication step triggers.
+#   - `sudo installer -pkg …` is rejected by macOS with "The package is
+#     attempting to install content to the system volume."
+#
+# That means the `id -u == 0` branch in our scripts is unreachable via any
+# documented install flow for this pkg. It's defensive code should the pkg
+# configuration ever grow a system-scoped component; we rely on code review
+# rather than CI for that branch.
+#
 # Usage:
 #   bash tests/test_installed_service_macos.sh [PATH_TO_PKG]
 #
@@ -90,7 +103,10 @@ echo "  Slate clean: $PREFIX, $PLIST"
 
 echo
 echo "=== Install ==="
-installer -pkg "$PKG" -target CurrentUserHomeDirectory >/dev/null
+if ! installer -pkg "$PKG" -target CurrentUserHomeDirectory; then
+    echo "FATAL: \`installer -pkg\` failed (see installer output above)" >&2
+    exit 1
+fi
 echo "  Installed: $(basename "$PKG")"
 
 if ! wait_for_socket 15; then
@@ -115,6 +131,7 @@ assert "rules: default ruleset"            "$( [[ -f "$PREFIX/rules/default/codi
 assert "rules: seen.yaml"                  "$( [[ -f "$PREFIX/rules/seen.yaml" ]] && echo 1 || echo 0 )"
 assert "launchd plist installed"           "$( [[ -f "$PLIST" ]] && echo 1 || echo 0 )"
 assert "launchd agent registered"          "$( launchctl list "$LABEL" >/dev/null 2>&1 && echo 1 || echo 0 )"
+assert "agent loaded in gui/\$UID"         "$( launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && echo 1 || echo 0 )"
 assert "broker socket up"                  "$( [[ -S "$SOCK" ]] && echo 1 || echo 0 )"
 
 # ---------------------------------------------------------------------------
@@ -151,13 +168,14 @@ assert "ctl mode reports enforcement"      "$( [[ "$OUT" == "enforcement" ]] && 
 "$CTL" health >/dev/null 2>&1
 assert "ctl health exits 0"                "$( bool $? )"
 
-# Regression: disable → enable used to fail with "Load failed: 5: I/O error".
+# Regression: disable → start used to fail with "Load failed: 5: I/O error"
+# before `start`/`enable` learned to pass `-w` to launchctl load.
 "$CTL" disable >/dev/null 2>&1
 sleep 1
-"$CTL" enable  >/dev/null 2>&1
-assert "ctl disable→enable round-trip"     "$( bool $? )"
+"$CTL" start   >/dev/null 2>&1
+assert "ctl disable→start round-trip"      "$( bool $? )"
 wait_for_socket 10
-assert "broker socket back after enable"   "$( [[ -S "$SOCK" ]] && echo 1 || echo 0 )"
+assert "broker socket back after start"    "$( [[ -S "$SOCK" ]] && echo 1 || echo 0 )"
 
 # ---------------------------------------------------------------------------
 # Uninstall

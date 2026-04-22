@@ -47,24 +47,36 @@ fi
 # ---------------------------------------------------------------------------
 #
 # Postinstall runs either:
-#   - as root, when the user invokes `installer` via sudo or authenticates in
-#     the GUI Installer for a system-scoped component; OR
+#   - as root, when the user invokes `sudo installer -pkg …` or authenticates
+#     in the GUI Installer for a system-scoped component; OR
 #   - as the installing user, when the pkg is user-domain (our case, via
 #     `enable_currentUserHome="true"`) and the GUI Installer.app or
 #     `installer -target CurrentUserHomeDirectory` runs the scripts without
 #     elevation.
 #
-# Only drop privileges via `su` when we are actually root; otherwise run
-# `launchctl` directly so the agent is loaded into the current user's session.
-# Running `su $OWNER` as a non-root user fails (password prompt) and was
-# silently swallowed, leaving the agent unloaded until the next login.
+# In the elevated case we can't just call `launchctl load` from root — the
+# agent would land in the `system`/`background` domain, not the user's
+# `gui/$UID` session where the GUI clients expect it. `launchctl asuser $UID`
+# explicitly crosses into the user's launchd session and is the
+# Apple-documented way to load a LaunchAgent from a root context.
+#
+# Errors are NOT redirected to /dev/null so Installer.app surfaces them in
+# "Show Details"; `|| true` keeps the overall install from failing if the
+# agent can't load for an unrelated reason (the user can retry with ctl).
 
 OWNER=$(stat -f '%Su' "$USER_HOME")
+OWNER_UID=$(id -u "$OWNER" 2>/dev/null || echo "")
 
-if [[ "$(id -u)" -eq 0 && -n "$OWNER" && "$OWNER" != "root" ]]; then
-    su "$OWNER" -c "launchctl load '$PLIST_FILE'" 2>/dev/null || true
+if [[ "$(id -u)" -eq 0 && -n "$OWNER_UID" && "$OWNER" != "root" ]]; then
+    # When installer runs as root, PackageKit extracts the payload with root
+    # ownership even for user-domain targets. Reassign the install tree and
+    # rendered plist to the installing user so they can manage the service
+    # and uninstall without sudo.
+    chown -R "$OWNER" "$PREFIX" || true
+    chown "$OWNER" "$PLIST_FILE" || true
+    launchctl asuser "$OWNER_UID" /bin/launchctl load "$PLIST_FILE" || true
 else
-    launchctl load "$PLIST_FILE" 2>/dev/null || true
+    launchctl load "$PLIST_FILE" || true
 fi
 
 exit 0

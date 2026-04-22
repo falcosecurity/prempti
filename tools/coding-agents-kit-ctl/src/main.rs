@@ -420,8 +420,11 @@ fn service_start() {
         println!("Service already running.");
         return;
     }
+    // `-w` clears any persistent "disabled" override left behind by a prior
+    // `disable` (which uses `launchctl unload -w`). Both `start` and `enable`
+    // mean "want the agent running now" and must handle the disabled state.
     let ok = Command::new("launchctl")
-        .args(["load", &plist.to_string_lossy()])
+        .args(["load", "-w", &plist.to_string_lossy()])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);

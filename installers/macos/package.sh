@@ -104,7 +104,8 @@ if [[ "$ARCH" == "universal" ]]; then
     mkdir -p "$PKG_RESOURCES"
     cp "$SCRIPT_DIR/pkg-resources/welcome.html" "$PKG_RESOURCES/"
     cp "$SCRIPT_DIR/pkg-resources/conclusion.html" "$PKG_RESOURCES/"
-    sed "s/@VERSION@/$VERSION/g" "$SCRIPT_DIR/distribution.xml" > "$PKG_DIR/distribution.xml"
+    sed -e "s/@VERSION@/$VERSION/g" -e "s/@HOST_ARCHS@/arm64,x86_64/g" \
+        "$SCRIPT_DIR/distribution.xml" > "$PKG_DIR/distribution.xml"
     productbuild --distribution "$PKG_DIR/distribution.xml" --package-path "$PKG_DIR" \
         --resources "$PKG_RESOURCES" "$PRODUCT_PKG" > /dev/null
     rm -rf "$PKG_DIR"
@@ -256,8 +257,18 @@ cp "$SCRIPT_DIR/pkg-resources/welcome.html" "$PKG_RESOURCES/"
 cp "$SCRIPT_DIR/pkg-resources/conclusion.html" "$PKG_RESOURCES/"
 
 # Distribution XML (enables user-home-directory installation).
-sed "s/@VERSION@/$VERSION/g" "$SCRIPT_DIR/distribution.xml" \
-    > "$PKG_DIR/distribution.xml"
+# `hostArchitectures` is narrowed to the pkg's actual arch so that
+# double-clicking a single-arch pkg on the wrong host fails fast in the
+# Installer wizard ("The installer cannot install this software on this
+# computer") rather than succeeding and leaving a Falco binary that Mach-O
+# refuses to exec ("Bad CPU type in executable") at first launch.
+case "$ARCH" in
+    aarch64) HOST_ARCHS="arm64" ;;
+    x86_64)  HOST_ARCHS="x86_64" ;;
+    *)       HOST_ARCHS="arm64,x86_64" ;;
+esac
+sed -e "s/@VERSION@/$VERSION/g" -e "s/@HOST_ARCHS@/$HOST_ARCHS/g" \
+    "$SCRIPT_DIR/distribution.xml" > "$PKG_DIR/distribution.xml"
 
 # Build product archive (the final .pkg with installer wizard).
 productbuild --distribution "$PKG_DIR/distribution.xml" \

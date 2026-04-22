@@ -4,7 +4,7 @@
     <welcome file="welcome.html"/>
     <conclusion file="conclusion.html"/>
     <domains enable_currentUserHome="true" enable_localSystem="false" enable_anywhere="false"/>
-    <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <options customize="never" require-scripts="false" hostArchitectures="@HOST_ARCHS@"/>
     <pkg-ref id="dev.falcosecurity.coding-agents-kit"/>
     <choices-outline>
         <line choice="default">
