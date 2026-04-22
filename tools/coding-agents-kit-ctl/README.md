@@ -40,6 +40,18 @@ coding-agents-kit-ctl disable   # Disable auto-start
 coding-agents-kit-ctl status    # Show service status
 ```
 
+### Viewing Logs
+
+```bash
+coding-agents-kit-ctl logs                 # Print Falco stdout log, exit
+coding-agents-kit-ctl logs --tail=100      # Print last 100 lines, exit
+coding-agents-kit-ctl logs -f              # Print full log, then stream new output
+coding-agents-kit-ctl logs -f --tail=100   # Print last 100 lines, then stream
+coding-agents-kit-ctl logs --err [flags]   # Same, but against the stderr log
+```
+
+`logs` defaults to a snapshot-and-exit (like `kubectl logs` / `docker logs`). Pass `-f` / `--follow` to stream. `--tail=N` limits the initial output. The `--err` flag targets `falco.err` instead of `falco.log`.
+
 ## Options
 
 ```bash

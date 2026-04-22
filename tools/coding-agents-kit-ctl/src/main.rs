@@ -968,29 +968,145 @@ fn health(prefix: &PathBuf) {
 // Logs
 // ---------------------------------------------------------------------------
 
-fn logs(prefix: &PathBuf, stderr: bool) {
-    let file = if stderr { "falco.err" } else { "falco.log" };
+struct LogsOpts {
+    stderr: bool,
+    follow: bool,
+    tail: Option<u64>,
+}
+
+fn parse_logs_args(args: &[&str]) -> Result<LogsOpts, String> {
+    let mut opts = LogsOpts { stderr: false, follow: false, tail: None };
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i];
+        match a {
+            "--err" => opts.stderr = true,
+            "-f" | "--follow" => opts.follow = true,
+            "--tail" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--tail requires a value".to_string())?;
+                opts.tail = Some(
+                    v.parse()
+                        .map_err(|_| format!("invalid --tail value: {}", v))?,
+                );
+            }
+            _ if a.starts_with("--tail=") => {
+                let v = &a["--tail=".len()..];
+                opts.tail = Some(
+                    v.parse()
+                        .map_err(|_| format!("invalid --tail value: {}", v))?,
+                );
+            }
+            _ => return Err(format!("unknown logs flag: {}", a)),
+        }
+        i += 1;
+    }
+    Ok(opts)
+}
+
+fn logs(prefix: &PathBuf, opts: &LogsOpts) {
+    let file = if opts.stderr { "falco.err" } else { "falco.log" };
     let path = prefix.join("log").join(file);
     if !path.exists() {
         eprintln!("Log file not found: {}", path.display());
         eprintln!("Is the service running?");
         process::exit(1);
     }
+
     #[cfg(unix)]
-    let status = Command::new("tail")
-        .args(["-f", &path.to_string_lossy()])
-        .status();
+    let status = {
+        let tail_arg = match opts.tail {
+            Some(n) => n.to_string(),
+            // Snapshot mode without --tail: print the full file. `tail -n +1`
+            // means "starting at line 1", i.e. everything.
+            None => "+1".to_string(),
+        };
+        let mut cmd = Command::new("tail");
+        cmd.args(["-n", &tail_arg]);
+        if opts.follow {
+            cmd.arg("-f");
+        }
+        cmd.arg(&path).status()
+    };
+
     #[cfg(windows)]
-    let status = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!("Get-Content -Path '{}' -Wait -Tail 50", path.display()),
-        ])
-        .status();
+    let status = {
+        let mut ps_cmd = format!("Get-Content -Path '{}'", path.display());
+        if let Some(n) = opts.tail {
+            ps_cmd.push_str(&format!(" -Tail {}", n));
+        }
+        if opts.follow {
+            ps_cmd.push_str(" -Wait");
+        }
+        Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps_cmd])
+            .status()
+    };
+
     if let Err(e) = status {
         eprintln!("Failed to tail log: {e}");
         process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod logs_tests {
+    use super::*;
+
+    #[test]
+    fn defaults() {
+        let opts = parse_logs_args(&[]).unwrap();
+        assert!(!opts.stderr);
+        assert!(!opts.follow);
+        assert!(opts.tail.is_none());
+    }
+
+    #[test]
+    fn err_flag() {
+        let opts = parse_logs_args(&["--err"]).unwrap();
+        assert!(opts.stderr);
+    }
+
+    #[test]
+    fn follow_short_and_long() {
+        assert!(parse_logs_args(&["-f"]).unwrap().follow);
+        assert!(parse_logs_args(&["--follow"]).unwrap().follow);
+    }
+
+    #[test]
+    fn tail_equals_form() {
+        assert_eq!(parse_logs_args(&["--tail=50"]).unwrap().tail, Some(50));
+    }
+
+    #[test]
+    fn tail_space_form() {
+        assert_eq!(parse_logs_args(&["--tail", "100"]).unwrap().tail, Some(100));
+    }
+
+    #[test]
+    fn combined_flags_any_order() {
+        let opts = parse_logs_args(&["-f", "--tail=20", "--err"]).unwrap();
+        assert!(opts.follow);
+        assert!(opts.stderr);
+        assert_eq!(opts.tail, Some(20));
+    }
+
+    #[test]
+    fn tail_missing_value() {
+        assert!(parse_logs_args(&["--tail"]).is_err());
+    }
+
+    #[test]
+    fn tail_invalid_value() {
+        assert!(parse_logs_args(&["--tail=abc"]).is_err());
+        assert!(parse_logs_args(&["--tail", "-1"]).is_err());
+    }
+
+    #[test]
+    fn unknown_flag() {
+        assert!(parse_logs_args(&["--bogus"]).is_err());
     }
 }
 
@@ -1018,8 +1134,10 @@ fn print_usage() {
     eprintln!("  disable          Disable service auto-start");
     eprintln!("  status           Show service status");
     eprintln!("  health           Check pipeline health (send synthetic event)");
-    eprintln!("  logs             Follow Falco stdout logs (tail -f)");
-    eprintln!("  logs --err       Follow Falco stderr logs");
+    eprintln!("  logs [flags]     Print Falco stdout logs (snapshot by default)");
+    eprintln!("                     -f, --follow    stream new output");
+    eprintln!("                     --tail=N        print last N lines");
+    eprintln!("                     --err           target stderr log instead");
     eprintln!();
     eprintln!("  uninstall        Remove coding-agents-kit completely");
     eprintln!("  uninstall --keep-user-rules  Uninstall but preserve custom rules");
@@ -1059,8 +1177,15 @@ fn main() {
         ["disable"] => service_disable(),
         ["status"] => service_status(),
         ["health"] => health(&prefix),
-        ["logs"] => logs(&prefix, false),
-        ["logs", "--err"] => logs(&prefix, true),
+        ["logs", rest @ ..] => match parse_logs_args(rest) {
+            Ok(opts) => logs(&prefix, &opts),
+            Err(e) => {
+                eprintln!("{e}");
+                eprintln!();
+                print_usage();
+                process::exit(2);
+            }
+        },
         ["uninstall"] => uninstall(&prefix, false),
         ["uninstall", "--keep-user-rules"] => uninstall(&prefix, true),
         _ => {
