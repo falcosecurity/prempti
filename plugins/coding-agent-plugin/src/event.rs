@@ -477,4 +477,215 @@ mod tests {
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.transcript_path(&p), Some(""));
     }
+
+    // ------------------------------------------------------------------
+    // extract_command / extract_raw_file_path
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn tool_input_command_populated_for_bash() {
+        let p = payload_with(
+            r#"{"tool_name":"Bash","tool_input":{"command":"ls -la"}}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.tool_input_command(&p), Some("ls -la"));
+    }
+
+    #[test]
+    fn tool_input_command_empty_for_non_bash() {
+        let p = payload_with(
+            r#"{"tool_name":"Write","tool_input":{"command":"echo hi"}}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.tool_input_command(&p), Some(""));
+    }
+
+    #[test]
+    fn tool_input_command_empty_when_command_missing() {
+        let p = payload_with(r#"{"tool_name":"Bash","tool_input":{}}"#);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.tool_input_command(&p), Some(""));
+    }
+
+    #[test]
+    fn file_path_populated_for_write_edit_read() {
+        for tool in ["Write", "Edit", "Read"] {
+            let json = format!(
+                r#"{{"tool_name":"{}","tool_input":{{"file_path":"/tmp/f"}}}}"#,
+                tool
+            );
+            let p = payload_with(&json);
+            let mut pe = ParsedEvent::default();
+            assert_eq!(pe.file_path(&p), Some("/tmp/f"), "tool={}", tool);
+        }
+    }
+
+    #[test]
+    fn file_path_empty_for_other_tools() {
+        for tool in ["Bash", "Glob", "Grep", "Agent"] {
+            let json = format!(
+                r#"{{"tool_name":"{}","tool_input":{{"file_path":"/tmp/f"}}}}"#,
+                tool
+            );
+            let p = payload_with(&json);
+            let mut pe = ParsedEvent::default();
+            assert_eq!(pe.file_path(&p), Some(""), "tool={}", tool);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // resolve_path / resolve_file_path
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn resolve_path_canonicalizes_existing() {
+        // /tmp exists on every Unix. On macOS it's a symlink to /private/tmp —
+        // just assert the result is absolute and non-empty.
+        let resolved = resolve_path("/tmp");
+        assert!(!resolved.is_empty());
+        #[cfg(unix)]
+        assert!(resolved.starts_with('/'));
+    }
+
+    #[test]
+    fn resolve_path_lexical_fallback_for_nonexistent() {
+        let resolved =
+            resolve_path("/definitely/does/not/exist/foo/../bar");
+        // Lexical normalization: foo/.. pops, leaving /.../exist/bar.
+        assert_eq!(resolved, "/definitely/does/not/exist/bar");
+    }
+
+    #[test]
+    fn resolve_path_empty_returns_empty() {
+        assert_eq!(resolve_path(""), "");
+    }
+
+    #[test]
+    fn resolve_file_path_joins_relative_to_cwd() {
+        // Use a non-existent cwd so we exercise the lexical path.
+        let resolved =
+            resolve_file_path("foo/bar", "/nonexistent-cwd-1234");
+        assert_eq!(resolved, "/nonexistent-cwd-1234/foo/bar");
+    }
+
+    #[test]
+    fn resolve_file_path_preserves_absolute() {
+        let resolved = resolve_file_path("/abs/path", "/some/cwd");
+        assert_eq!(resolved, "/abs/path");
+    }
+
+    #[test]
+    fn resolve_file_path_empty_returns_empty() {
+        assert_eq!(resolve_file_path("", "/cwd"), "");
+    }
+
+    #[test]
+    fn resolve_file_path_lexical_collapses_dotdot() {
+        let resolved =
+            resolve_file_path("../sibling/file", "/nonexistent/a/b");
+        assert_eq!(resolved, "/nonexistent/a/sibling/file");
+    }
+
+    // ------------------------------------------------------------------
+    // ParsedEvent end-to-end: every accessor
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parsed_event_all_fields_populated() {
+        let p = payload_with(
+            r#"{
+                "hook_event_name":"PreToolUse",
+                "session_id":"sess-1",
+                "permission_mode":"default",
+                "transcript_path":"/tmp/t.jsonl",
+                "cwd":"/nonexistent-cwd-999",
+                "tool_use_id":"call-1",
+                "tool_name":"Write",
+                "tool_input":{"file_path":"out.txt","content":"hi"}
+            }"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_name(&p), Some("claude_code"));
+        assert_eq!(pe.correlation_id(&p), Some(1));
+        assert_eq!(pe.tool_use_id(&p), Some("call-1"));
+        assert_eq!(pe.hook_event_name(&p), Some("PreToolUse"));
+        assert_eq!(pe.session_id(&p), Some("sess-1"));
+        assert_eq!(pe.permission_mode(&p), Some("default"));
+        assert_eq!(pe.transcript_path(&p), Some("/tmp/t.jsonl"));
+        assert_eq!(pe.cwd(&p), Some("/nonexistent-cwd-999"));
+        assert_eq!(pe.real_cwd(&p), Some("/nonexistent-cwd-999"));
+        assert_eq!(pe.tool_name(&p), Some("Write"));
+        assert_eq!(pe.file_path(&p), Some("out.txt"));
+        assert_eq!(
+            pe.real_file_path(&p),
+            Some("/nonexistent-cwd-999/out.txt")
+        );
+        assert_eq!(pe.tool_input_command(&p), Some(""));
+
+        // tool_input round-trips as JSON string.
+        let input = pe.tool_input(&p).expect("tool_input");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&input).expect("parse tool_input JSON");
+        assert_eq!(parsed["file_path"], "out.txt");
+        assert_eq!(parsed["content"], "hi");
+    }
+
+    #[test]
+    fn parsed_event_fields_default_to_empty_when_missing() {
+        let p = payload_with(r#"{}"#);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.tool_use_id(&p), Some(""));
+        assert_eq!(pe.hook_event_name(&p), Some(""));
+        assert_eq!(pe.session_id(&p), Some(""));
+        assert_eq!(pe.permission_mode(&p), Some(""));
+        assert_eq!(pe.transcript_path(&p), Some(""));
+        assert_eq!(pe.cwd(&p), Some(""));
+        assert_eq!(pe.real_cwd(&p), Some(""));
+        assert_eq!(pe.tool_name(&p), Some(""));
+        assert_eq!(pe.file_path(&p), Some(""));
+        assert_eq!(pe.real_file_path(&p), Some(""));
+        assert_eq!(pe.tool_input_command(&p), Some(""));
+        // tool_input with no field serializes to the default empty object.
+        assert_eq!(pe.tool_input(&p), Some("{}".to_string()));
+    }
+
+    #[test]
+    fn parsed_event_caches_after_first_access() {
+        // Second access of a field must not re-parse (and must not silently
+        // diverge from the first call).
+        let p = payload_with(
+            r#"{"session_id":"abc","tool_name":"Bash","tool_input":{"command":"x"}}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.session_id(&p), Some("abc"));
+        assert_eq!(pe.tool_input_command(&p), Some("x"));
+        assert_eq!(pe.session_id(&p), Some("abc"));
+    }
+
+    #[test]
+    fn parsed_event_tool_input_preserves_nested_json() {
+        let p = payload_with(
+            r#"{"tool_name":"Edit","tool_input":{"file_path":"/a","edits":[{"old":"x","new":"y"}]}}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        let s = pe.tool_input(&p).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["edits"][0]["old"], "x");
+        assert_eq!(v["edits"][0]["new"], "y");
+    }
+
+    #[test]
+    fn parsed_event_malformed_payload_returns_none() {
+        // Payload with only one newline (missing agent_name section).
+        let bad = b"1\njust-one-line".to_vec();
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_name(&bad), None);
+    }
+
+    #[test]
+    fn parsed_event_invalid_event_json_returns_none() {
+        let bad = b"1\nclaude_code\n{this is not json".to_vec();
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_name(&bad), None);
+    }
 }

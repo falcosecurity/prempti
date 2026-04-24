@@ -170,10 +170,9 @@ impl Broker {
         }
     }
 
-    /// Remove stale pending requests older than the TTL.
+    /// Remove pending requests older than `ttl`.
     /// Returns the number of reaped entries.
-    pub fn reap_stale(&self) -> usize {
-        let ttl = std::time::Duration::from_secs(PENDING_TTL_SECS);
+    pub fn reap_stale(&self, ttl: std::time::Duration) -> usize {
         let now = Instant::now();
         let mut reaped = 0;
 
@@ -215,12 +214,13 @@ impl Broker {
     /// Start a background thread that periodically reaps stale pending requests.
     pub fn start_reaper(broker: Arc<Broker>) -> std::thread::JoinHandle<()> {
         let interval = std::time::Duration::from_secs(REAPER_INTERVAL_SECS);
+        let ttl = std::time::Duration::from_secs(PENDING_TTL_SECS);
         std::thread::Builder::new()
             .name("cak-reaper".to_string())
             .spawn(move || {
                 while !broker.is_shutdown() {
                     std::thread::sleep(interval);
-                    let reaped = broker.reap_stale();
+                    let reaped = broker.reap_stale(ttl);
                     if reaped > 0 {
                         log::info!("reaper: removed {} stale pending request(s)", reaped);
                     }
@@ -228,5 +228,190 @@ impl Broker {
                 log::info!("reaper thread exiting");
             })
             .expect("failed to spawn reaper thread")
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    fn read_response_json(peer: &UnixStream) -> serde_json::Value {
+        let mut reader = BufReader::new(peer);
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("read_line on peer stream");
+        serde_json::from_str(line.trim()).expect("parse response JSON")
+    }
+
+    fn expect_no_response(peer: &UnixStream) {
+        peer.set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let mut buf = [0u8; 1];
+        let err = (&mut &*peer)
+            .read(&mut buf)
+            .expect_err("peer should not have received data");
+        assert!(matches!(
+            err.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        peer.set_read_timeout(None).unwrap();
+    }
+
+    fn register_with(broker: &Broker, id: u64, wire_id: &str) -> UnixStream {
+        let (broker_side, peer) = UnixStream::pair().expect("UnixStream::pair");
+        broker.register(id, wire_id.to_string(), broker_side);
+        peer
+    }
+
+    #[test]
+    fn seen_with_no_verdict_resolves_as_allow() {
+        let broker = Broker::new();
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "allow");
+        assert_eq!(resp["id"], "wire-1");
+        assert_eq!(broker.pending_count(), 0);
+    }
+
+    #[test]
+    fn deny_resolves_immediately_and_clears_pending() {
+        let broker = Broker::new();
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_deny(1, "blocked".to_string());
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "deny");
+        assert_eq!(resp["reason"], "blocked");
+        assert_eq!(broker.pending_count(), 0);
+        // Subsequent seen is a no-op (entry already removed).
+        broker.apply_seen(1);
+    }
+
+    #[test]
+    fn ask_defers_until_seen() {
+        let broker = Broker::new();
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_ask(1, "needs confirm".to_string());
+        expect_no_response(&peer);
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "ask");
+        assert_eq!(resp["reason"], "needs confirm");
+        assert_eq!(broker.pending_count(), 0);
+    }
+
+    #[test]
+    fn deny_beats_ask_when_ask_arrives_first() {
+        let broker = Broker::new();
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_ask(1, "confirm".to_string());
+        broker.apply_deny(1, "blocked".to_string());
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "deny");
+        assert_eq!(resp["reason"], "blocked");
+        // Seen after deny is a no-op.
+        broker.apply_seen(1);
+    }
+
+    #[test]
+    fn deny_beats_ask_when_ask_arrives_after() {
+        // apply_ask after deny should be a no-op (entry already removed by resolve).
+        let broker = Broker::new();
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_deny(1, "blocked".to_string());
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "deny");
+        // The ask after deny hits an empty pending map → no panic, no double-write.
+        broker.apply_ask(1, "confirm".to_string());
+        broker.apply_seen(1);
+    }
+
+    #[test]
+    fn monitor_mode_suppresses_deny() {
+        let broker = Broker::new();
+        broker.set_monitor_mode(true);
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_deny(1, "would-block".to_string());
+        expect_no_response(&peer);
+        // Seen then drives the allow verdict.
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "allow");
+    }
+
+    #[test]
+    fn monitor_mode_suppresses_ask() {
+        let broker = Broker::new();
+        broker.set_monitor_mode(true);
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_ask(1, "would-ask".to_string());
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "allow");
+    }
+
+    #[test]
+    fn unknown_correlation_id_is_noop() {
+        let broker = Broker::new();
+        // None of these should panic.
+        broker.apply_deny(42, "r".to_string());
+        broker.apply_ask(42, "r".to_string());
+        broker.apply_seen(42);
+        assert_eq!(broker.pending_count(), 0);
+    }
+
+    #[test]
+    fn correlation_ids_are_monotonic_and_positive() {
+        let broker = Broker::new();
+        let a = broker.next_correlation_id();
+        let b = broker.next_correlation_id();
+        let c = broker.next_correlation_id();
+        assert!(a > 0 && b > a && c > b);
+    }
+
+    #[test]
+    fn concurrent_requests_resolved_independently() {
+        let broker = Broker::new();
+        let peer1 = register_with(&broker, 1, "wire-1");
+        let peer2 = register_with(&broker, 2, "wire-2");
+        // Mix: peer1 gets deny, peer2 gets allow.
+        broker.apply_deny(1, "one".to_string());
+        broker.apply_seen(2);
+        let r1 = read_response_json(&peer1);
+        let r2 = read_response_json(&peer2);
+        assert_eq!(r1["id"], "wire-1");
+        assert_eq!(r1["decision"], "deny");
+        assert_eq!(r2["id"], "wire-2");
+        assert_eq!(r2["decision"], "allow");
+    }
+
+    #[test]
+    fn reap_stale_removes_and_denies() {
+        let broker = Broker::new();
+        let peer = register_with(&broker, 1, "wire-1");
+        assert_eq!(broker.pending_count(), 1);
+        std::thread::sleep(Duration::from_millis(20));
+        let n = broker.reap_stale(Duration::from_millis(10));
+        assert_eq!(n, 1);
+        assert_eq!(broker.pending_count(), 0);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "deny");
+        assert!(resp["reason"]
+            .as_str()
+            .unwrap()
+            .contains("expired"));
+    }
+
+    #[test]
+    fn reap_stale_preserves_fresh_entries() {
+        let broker = Broker::new();
+        let _peer = register_with(&broker, 1, "wire-1");
+        let n = broker.reap_stale(Duration::from_secs(60));
+        assert_eq!(n, 0);
+        assert_eq!(broker.pending_count(), 1);
     }
 }

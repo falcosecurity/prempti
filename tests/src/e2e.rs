@@ -1,8 +1,12 @@
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::interceptor;
+
+static NEXT_HARNESS_ID: AtomicU64 = AtomicU64::new(1);
 
 /// E2E test harness managing a Falco process with the coding-agent plugin.
 pub struct E2eHarness {
@@ -43,9 +47,7 @@ pub fn find_falco() -> Option<PathBuf> {
         } else {
             "x86_64"
         };
-        vec![root.join(format!(
-            "build/falco-0.43.0-{arch}/usr/bin/falco"
-        ))]
+        vec![root.join(format!("build/falco-0.43.0-{arch}/usr/bin/falco"))]
     };
     for c in candidates {
         if c.exists() {
@@ -70,7 +72,8 @@ pub fn find_plugin_lib() -> Option<PathBuf> {
     // fall back to the legacy per-crate target/ for older checkouts.
     let candidates = [
         root.join("target/release").join(&name),
-        root.join("plugins/coding-agent-plugin/target/release").join(&name),
+        root.join("plugins/coding-agent-plugin/target/release")
+            .join(&name),
     ];
     candidates.into_iter().find(|p| p.exists())
 }
@@ -103,15 +106,21 @@ impl E2eHarness {
         }
 
         let pid = std::process::id();
+        let harness_id = NEXT_HARNESS_ID.fetch_add(1, Ordering::Relaxed);
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let e2e_dir = root.join(format!("build/e2e-{pid}"));
+        let e2e_dir = root.join(format!("build/e2e-{pid}-{harness_id}"));
         let _ = std::fs::create_dir_all(&e2e_dir);
 
         let rules_dir = e2e_dir.join("rules");
         let _ = std::fs::create_dir_all(&rules_dir);
 
         let socket_path = e2e_dir.join("broker.sock");
-        let http_port = 19000 + (pid % 1000) as u16;
+        let reserved_http_port = reserve_http_port();
+        let http_port = reserved_http_port
+            .as_ref()
+            .and_then(|listener| listener.local_addr().ok())
+            .map(|addr| addr.port())
+            .unwrap_or(19000 + ((pid as u64 + harness_id) % 1000) as u16);
 
         // Write rules.
         write_rules(&rules_dir);
@@ -139,6 +148,9 @@ impl E2eHarness {
             .stderr(Stdio::piped())
             .current_dir(falco_dir);
 
+        // Release the reserved port immediately before Falco/plugin startup.
+        drop(reserved_http_port);
+
         let mut child = cmd
             .spawn()
             .unwrap_or_else(|e| panic!("failed to spawn falco at {}: {e}", falco_bin.display()));
@@ -159,14 +171,20 @@ impl E2eHarness {
                     let _ = stderr.read_to_string(&mut buf);
                     eprintln!("Falco stderr: {buf}");
                 }
+                let _ = std::fs::remove_dir_all(&e2e_dir);
                 return None;
             }
             std::thread::sleep(Duration::from_millis(200));
         }
 
         if !ready {
-            eprintln!("ERROR: Falco broker socket not found after 8s: {}", socket_path.display());
+            eprintln!(
+                "ERROR: Falco broker socket not found after 8s: {}",
+                socket_path.display()
+            );
             let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&e2e_dir);
             return None;
         }
 
@@ -187,12 +205,7 @@ impl E2eHarness {
     }
 
     /// Build a hook JSON input string.
-    pub fn make_input(
-        tool_name: &str,
-        tool_input: &str,
-        cwd: &str,
-        tool_use_id: &str,
-    ) -> String {
+    pub fn make_input(tool_name: &str, tool_input: &str, cwd: &str, tool_use_id: &str) -> String {
         format!(
             r#"{{"hook_event_name":"PreToolUse","tool_name":"{}","tool_input":{},"session_id":"e2e-test","cwd":"{}","tool_use_id":"{}"}}"#,
             tool_name, tool_input, cwd, tool_use_id
@@ -208,6 +221,10 @@ impl Drop for E2eHarness {
         std::thread::sleep(Duration::from_millis(200));
         let _ = std::fs::remove_dir_all(&self.e2e_dir);
     }
+}
+
+fn reserve_http_port() -> Option<TcpListener> {
+    TcpListener::bind(("127.0.0.1", 0)).ok()
 }
 
 fn to_forward_slashes(p: &Path) -> String {
@@ -249,6 +266,7 @@ json_include_output_fields_property: true
 json_include_tags_property: true
 rule_matching: all
 priority: debug
+watch_config_files: true
 http_output:
   enabled: true
   url: http://127.0.0.1:{http_port}

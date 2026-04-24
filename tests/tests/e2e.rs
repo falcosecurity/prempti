@@ -1,27 +1,14 @@
-use std::sync::OnceLock;
-
 use cak_tests::e2e::E2eHarness;
 use cak_tests::interceptor::{assert_decision, assert_reason_contains};
 
-static HARNESS: OnceLock<Option<E2eHarness>> = OnceLock::new();
-
-fn harness() -> &'static E2eHarness {
-    let opt = HARNESS.get_or_init(|| E2eHarness::start("guardrails"));
-    opt.as_ref().expect("falco + plugin required for e2e tests (set FALCO env var)")
-}
-
-/// Returns true if Falco is available. Tests call this to skip gracefully.
-fn falco_available() -> bool {
-    HARNESS
-        .get_or_init(|| E2eHarness::start("guardrails"))
-        .is_some()
-}
-
 macro_rules! require_falco {
     () => {
-        if !falco_available() {
-            eprintln!("SKIP: falco or plugin not available");
-            return;
+        match E2eHarness::start("guardrails") {
+            Some(harness) => harness,
+            None => {
+                eprintln!("SKIP: falco or plugin not available");
+                return;
+            }
         }
     };
 }
@@ -38,8 +25,7 @@ fn cwd() -> &'static str {
 
 #[test]
 fn deny_rm_rf() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input("Bash", r#"{"command":"rm -rf /"}"#, cwd(), "e2e-rm1");
     let r = h.run_hook(&input);
     assert_decision(&r, "deny");
@@ -48,8 +34,7 @@ fn deny_rm_rf() {
 
 #[test]
 fn deny_rm_rf_variant() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input(
         "Bash",
         r#"{"command":"sudo rm -rf /home"}"#,
@@ -62,8 +47,7 @@ fn deny_rm_rf_variant() {
 
 #[test]
 fn allow_safe_command() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input("Bash", r#"{"command":"ls -la"}"#, cwd(), "e2e-ls");
     let r = h.run_hook(&input);
     assert_decision(&r, "allow");
@@ -71,8 +55,7 @@ fn allow_safe_command() {
 
 #[test]
 fn allow_echo_command() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input("Bash", r#"{"command":"echo hello"}"#, cwd(), "e2e-echo");
     let r = h.run_hook(&input);
     assert_decision(&r, "allow");
@@ -82,8 +65,7 @@ fn allow_echo_command() {
 
 #[test]
 fn deny_write_to_sensitive() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Windows/system32/drivers/etc/hosts"
     } else {
@@ -104,8 +86,7 @@ fn deny_write_to_sensitive() {
 
 #[test]
 fn ask_write_outside_cwd() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/other/file.txt"
     } else {
@@ -126,8 +107,7 @@ fn ask_write_outside_cwd() {
 
 #[test]
 fn allow_write_inside_cwd() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/test/project/file.txt"
     } else {
@@ -147,8 +127,7 @@ fn allow_write_inside_cwd() {
 
 #[test]
 fn allow_read_tool() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/test/project/readme.txt"
     } else {
@@ -166,8 +145,7 @@ fn allow_read_tool() {
 
 #[test]
 fn deny_read_sensitive_path() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Windows/System32/config/SAM"
     } else {
@@ -185,8 +163,7 @@ fn deny_read_sensitive_path() {
 
 #[test]
 fn deny_read_ssh_key() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/test/.ssh/id_rsa"
     } else {
@@ -204,8 +181,7 @@ fn deny_read_ssh_key() {
 
 #[test]
 fn allow_read_safe_file() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/test/project/data.txt"
     } else {
@@ -225,8 +201,7 @@ fn allow_read_safe_file() {
 
 #[test]
 fn deny_has_append_output() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input(
         "Bash",
         r#"{"command":"rm -rf /tmp/nuke"}"#,
@@ -242,8 +217,7 @@ fn deny_has_append_output() {
 
 #[test]
 fn deny_wins_over_ask() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     // Write to sensitive path from different cwd → both deny and ask rules match.
     // Deny should win.
     let path = if cfg!(windows) {
@@ -265,8 +239,7 @@ fn deny_wins_over_ask() {
 
 #[test]
 fn deny_edit_sensitive() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Windows/win.ini"
     } else {
@@ -274,7 +247,10 @@ fn deny_edit_sensitive() {
     };
     let input = E2eHarness::make_input(
         "Edit",
-        &format!(r#"{{"file_path":"{}","old_string":"a","new_string":"b"}}"#, path),
+        &format!(
+            r#"{{"file_path":"{}","old_string":"a","new_string":"b"}}"#,
+            path
+        ),
         cwd(),
         "e2e-edsen",
     );
@@ -284,8 +260,7 @@ fn deny_edit_sensitive() {
 
 #[test]
 fn ask_edit_outside_cwd() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/other/file.txt"
     } else {
@@ -293,7 +268,10 @@ fn ask_edit_outside_cwd() {
     };
     let input = E2eHarness::make_input(
         "Edit",
-        &format!(r#"{{"file_path":"{}","old_string":"a","new_string":"b"}}"#, path),
+        &format!(
+            r#"{{"file_path":"{}","old_string":"a","new_string":"b"}}"#,
+            path
+        ),
         cwd(),
         "e2e-edout",
     );
@@ -303,8 +281,7 @@ fn ask_edit_outside_cwd() {
 
 #[test]
 fn allow_edit_inside_cwd() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/test/project/file.txt"
     } else {
@@ -312,7 +289,10 @@ fn allow_edit_inside_cwd() {
     };
     let input = E2eHarness::make_input(
         "Edit",
-        &format!(r#"{{"file_path":"{}","old_string":"a","new_string":"b"}}"#, path),
+        &format!(
+            r#"{{"file_path":"{}","old_string":"a","new_string":"b"}}"#,
+            path
+        ),
         cwd(),
         "e2e-edin",
     );
@@ -324,8 +304,7 @@ fn allow_edit_inside_cwd() {
 
 #[test]
 fn deny_write_ssh() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/test/.ssh/authorized_keys"
     } else {
@@ -344,8 +323,7 @@ fn deny_write_ssh() {
 #[cfg(not(windows))]
 #[test]
 fn deny_read_aws_credentials() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input(
         "Read",
         r#"{"file_path":"/home/user/.aws/credentials"}"#,
@@ -360,8 +338,7 @@ fn deny_read_aws_credentials() {
 
 #[test]
 fn allow_rm_without_rf() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input("Bash", r#"{"command":"rm file.txt"}"#, cwd(), "e2e-rm3");
     let r = h.run_hook(&input);
     assert_decision(&r, "allow");
@@ -369,8 +346,7 @@ fn allow_rm_without_rf() {
 
 #[test]
 fn deny_rm_rf_in_chain() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input(
         "Bash",
         r#"{"command":"echo yes && rm -rf /tmp/target"}"#,
@@ -385,8 +361,7 @@ fn deny_rm_rf_in_chain() {
 
 #[test]
 fn allow_agent_tool() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input("Agent", r#"{"prompt":"help me"}"#, cwd(), "e2e-agent");
     let r = h.run_hook(&input);
     assert_decision(&r, "allow");
@@ -394,20 +369,16 @@ fn allow_agent_tool() {
 
 #[test]
 fn allow_glob_tool() {
-    require_falco!();
-    let h = harness();
-    let input =
-        E2eHarness::make_input("Glob", r#"{"pattern":"**/*.rs"}"#, cwd(), "e2e-glob");
+    let h = require_falco!();
+    let input = E2eHarness::make_input("Glob", r#"{"pattern":"**/*.rs"}"#, cwd(), "e2e-glob");
     let r = h.run_hook(&input);
     assert_decision(&r, "allow");
 }
 
 #[test]
 fn allow_websearch_tool() {
-    require_falco!();
-    let h = harness();
-    let input =
-        E2eHarness::make_input("WebSearch", r#"{"query":"rust test"}"#, cwd(), "e2e-web");
+    let h = require_falco!();
+    let input = E2eHarness::make_input("WebSearch", r#"{"query":"rust test"}"#, cwd(), "e2e-web");
     let r = h.run_hook(&input);
     assert_decision(&r, "allow");
 }
@@ -417,8 +388,7 @@ fn allow_websearch_tool() {
 #[test]
 #[cfg(not(windows))]
 fn deny_path_traversal_to_sensitive() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input(
         "Write",
         r#"{"file_path":"/tmp/myproject/../../etc/passwd","content":"x"}"#,
@@ -431,8 +401,7 @@ fn deny_path_traversal_to_sensitive() {
 
 #[test]
 fn allow_relative_path_inside_cwd() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input(
         "Write",
         r#"{"file_path":"src/main.rs","content":"x"}"#,
@@ -447,8 +416,7 @@ fn allow_relative_path_inside_cwd() {
 
 #[test]
 fn monitor_rule_does_not_block() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/other/data.txt"
     } else {
@@ -468,8 +436,7 @@ fn monitor_rule_does_not_block() {
 
 #[test]
 fn allow_mcp_with_server_name() {
-    require_falco!();
-    let h = harness();
+    let h = require_falco!();
     let input = E2eHarness::make_input(
         "mcp__ide__getDiagnostics",
         r#"{"uri":"file:///tmp/test.rs"}"#,
