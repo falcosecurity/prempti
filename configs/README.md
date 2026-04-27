@@ -12,7 +12,7 @@ Key settings:
 - `engine.kind: nodriver` — no kernel driver
 - `rule_matching: all` — multiple rules fire per event (required for verdict resolution)
 - `json_output: true` — required for HTTP alert parsing
-- `watch_config_files: true` — detects config changes and restarts Falco
+- `watch_config_files: false` — disabled deliberately (the upstream feature is Linux-only). Config edits take effect at the next service restart; `coding-agents-kit-ctl mode` and other config-changing commands handle the restart explicitly.
 - All non-essential outputs and services disabled
 
 ### `falco.coding_agents_plugin.yaml`

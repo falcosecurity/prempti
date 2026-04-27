@@ -41,8 +41,11 @@ program_output:
 webserver:
   enabled: false
 
-# Watch config files for changes. When a change is detected, Falco performs
-# a full restart (destroy + re-init, NOT a hot-reload). This means background
-# threads are destroyed and the broker socket is briefly unavailable (~2-3s).
-# Enables mode switching via coding-agents-kit-ctl without manual service restart.
-watch_config_files: true
+# Disabled deliberately. Falco's watch_config_files feature is Linux-only
+# (the implementation in restart_handler.cpp is hard-wired to inotify with
+# no kqueue/FSEvents/ReadDirectoryChangesW fallback), so relying on it would
+# split behavior across platforms. Instead, all config changes go through
+# coding-agents-kit-ctl, which performs an explicit stop -> rewrite -> start
+# cycle on every platform. Edits made directly to this file or any included
+# config file will only take effect on the next service restart.
+watch_config_files: false

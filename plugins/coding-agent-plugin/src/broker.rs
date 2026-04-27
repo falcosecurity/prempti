@@ -23,12 +23,27 @@ const PENDING_TTL_SECS: u64 = 30;
 /// How often the reaper thread scans for stale entries.
 const REAPER_INTERVAL_SECS: u64 = 10;
 
+/// How often the reaper thread wakes to check the shutdown flag. Keeping this
+/// much smaller than `REAPER_INTERVAL_SECS` ensures `Drop` (which joins the
+/// reaper) returns quickly on `ctl stop` — otherwise the whole plugin
+/// teardown would stall up to `REAPER_INTERVAL_SECS`. 100ms is a good balance:
+/// negligible CPU overhead, sub-second shutdown latency.
+const REAPER_SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Process-wide monotonic counter for correlation IDs.
+///
+/// In the current design, `Plugin::new()` runs exactly once per Falco process
+/// (config-driven hot-reload is disabled — see `configs/falco.yaml`), so a
+/// per-`Broker` counter would also be sufficient. The counter is process-wide
+/// as a defensive measure: if a future change ever introduces a path where a
+/// `Broker` is recreated mid-process, alerts already queued for the previous
+/// `Broker` won't collide with newly-issued IDs from the next one.
+static NEXT_CORRELATION_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Tracks pending requests from interceptors, waiting for verdict resolution.
 pub struct Broker {
     /// Maps correlation ID → pending request.
     pending: DashMap<u64, PendingRequest>,
-    /// Monotonic counter for generating correlation IDs.
-    next_id: AtomicU64,
     /// When true, all verdicts resolve as allow (monitor mode).
     monitor_mode: AtomicBool,
     /// Shutdown signal for background threads.
@@ -51,7 +66,6 @@ impl Broker {
     pub fn new() -> Self {
         Broker {
             pending: DashMap::new(),
-            next_id: AtomicU64::new(1),
             monitor_mode: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
         }
@@ -68,8 +82,12 @@ impl Broker {
     }
 
     /// Generate a unique correlation ID for an event.
+    ///
+    /// Uses a process-wide counter (see `NEXT_CORRELATION_ID`) so IDs remain
+    /// unique even if a `Broker` is ever reconstructed within the same Falco
+    /// process.
     pub fn next_correlation_id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
+        NEXT_CORRELATION_ID.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Set the operational mode. In monitor mode, all verdicts resolve as allow.
@@ -212,17 +230,25 @@ impl Broker {
     }
 
     /// Start a background thread that periodically reaps stale pending requests.
+    ///
+    /// The thread polls the shutdown flag every `REAPER_SHUTDOWN_POLL` so it
+    /// can exit quickly on `Drop`, and performs a reap pass whenever
+    /// `REAPER_INTERVAL_SECS` has elapsed since the last one.
     pub fn start_reaper(broker: Arc<Broker>) -> std::thread::JoinHandle<()> {
-        let interval = std::time::Duration::from_secs(REAPER_INTERVAL_SECS);
+        let reap_interval = std::time::Duration::from_secs(REAPER_INTERVAL_SECS);
         let ttl = std::time::Duration::from_secs(PENDING_TTL_SECS);
         std::thread::Builder::new()
             .name("cak-reaper".to_string())
             .spawn(move || {
+                let mut last_reap = Instant::now();
                 while !broker.is_shutdown() {
-                    std::thread::sleep(interval);
-                    let reaped = broker.reap_stale(ttl);
-                    if reaped > 0 {
-                        log::info!("reaper: removed {} stale pending request(s)", reaped);
+                    std::thread::sleep(REAPER_SHUTDOWN_POLL);
+                    if last_reap.elapsed() >= reap_interval {
+                        let reaped = broker.reap_stale(ttl);
+                        if reaped > 0 {
+                            log::info!("reaper: removed {} stale pending request(s)", reaped);
+                        }
+                        last_reap = Instant::now();
                     }
                 }
                 log::info!("reaper thread exiting");

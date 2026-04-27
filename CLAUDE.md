@@ -161,6 +161,8 @@ Two plugin modes, switchable without reinstallation via `coding-agents-kit-ctl m
 - **Guardrails** (default) — verdicts enforced (deny/ask/allow).
 - **Monitor** — rules evaluated and logged, but all verdicts resolve to allow.
 
+Mode changes are applied via an explicit service restart driven by `ctl mode`: it rewrites the plugin config fragment, stops the service, re-registers the interceptor hook (so the brief restart window stays fail-closed rather than passing tool calls through unchecked), and starts the service again. Behavior is identical on Linux, macOS, and Windows. The same flow applies to any other config edit: edits made directly to `falco.yaml` or any included config / rule file take effect on the next `ctl start` (or `ctl mode`) — Falco's own `watch_config_files` is disabled deliberately because it is Linux-only upstream.
+
 Additionally, the interceptor hook can be unregistered via `coding-agents-kit-ctl hook remove`, which passes all tool calls through unmonitored (neither mode is active because the hook isn't firing). This is effectively a "passthrough" state used when the service is intentionally stopped.
 
 ### Fail-safety
@@ -168,7 +170,7 @@ Additionally, the interceptor hook can be unregistered via `coding-agents-kit-ct
 - **Fail-closed**: if the plugin/Falco is unreachable, tool calls are denied.
 - No timeout-based fail-safety (see batch-completion design above).
 
-**Important**: When the hook is registered and the service is stopped or restarting (e.g., during config hot-reload), ALL Claude Code tool calls are blocked. This is by design — fail-closed means no policy gap. Use `coding-agents-kit-ctl hook remove` to unblock Claude Code when the service is intentionally down. On Linux, the systemd service automatically adds the hook on start and removes it on stop via `ExecStartPost`/`ExecStopPost`. On macOS, the launcher wrapper script (`coding-agents-kit-launcher.sh`) handles this via `trap`.
+**Important**: When the hook is registered and the service is stopped or restarting (e.g., during a `ctl mode` restart cycle), ALL Claude Code tool calls are blocked. This is by design — fail-closed means no policy gap. Use `coding-agents-kit-ctl hook remove` to unblock Claude Code when the service is intentionally down. On Linux, the systemd service automatically adds the hook on start and removes it on stop via `ExecStartPost`/`ExecStopPost`. On macOS, the launcher wrapper script (`coding-agents-kit-launcher.sh`) handles this via `trap`. `ctl mode` re-registers the hook between stop and start so the restart window itself remains fail-closed.
 
 ### Installation directory structure
 

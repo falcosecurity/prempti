@@ -10,7 +10,7 @@
 
 The Claude Code interceptor is a stateless CLI binary invoked by Claude Code's `PreToolUse` hook on every tool call. It reads the hook JSON from stdin, wraps it in a wire-protocol envelope, sends it to the plugin broker via Unix domain socket, receives a verdict (allow/deny/ask), and writes the hook response to stdout.
 
-The interceptor is a **thin passthrough** — it does not interpret tool call content, extract fields, or evaluate policies. All semantic processing (field extraction, path resolution, MCP server parsing, policy evaluation) happens in the plugin broker. This design keeps the interceptor simple, agent-agnostic, and easy to maintain.
+The interceptor is a **thin passthrough** — it does not interpret tool call content, extract fields, or evaluate policies. All semantic processing (field extraction, path resolution, policy evaluation) happens in the plugin broker. This design keeps the interceptor simple, agent-agnostic, and easy to maintain.
 
 ## Design Principles
 

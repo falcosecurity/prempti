@@ -59,7 +59,7 @@ test-interceptor: build-interceptor
 
 ## Run end-to-end tests (Rust, cross-platform, requires Falco built)
 test-e2e: build
-	cd tests && cargo test --test e2e --test e2e_monitor --test e2e_concurrent --test e2e_hot_reload -- --nocapture
+	cd tests && cargo test --test e2e --test e2e_monitor --test e2e_concurrent -- --nocapture
 
 ## Build Linux packages for all architectures
 linux: linux-x86_64 linux-aarch64

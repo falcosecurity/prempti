@@ -95,7 +95,7 @@ fn print_hook_warning() {
     eprintln!("  WARNING: The interceptor runs in fail-closed mode. When the hook is");
     eprintln!("  registered, ALL Claude Code tool calls will be BLOCKED if the");
     eprintln!("  coding-agents-kit service is not running or is temporarily unavailable");
-    eprintln!("  (e.g., during config hot-reload or service restart).");
+    eprintln!("  (e.g., during a `ctl mode` restart or other service downtime).");
     eprintln!();
     eprintln!("  To unblock Claude Code, remove the hook:");
     eprintln!("    coding-agents-kit-ctl hook remove");
@@ -103,9 +103,20 @@ fn print_hook_warning() {
 
 fn print_restart_warning() {
     eprintln!();
-    eprintln!("  WARNING: Changing the config triggers a full Falco restart. During the");
-    eprintln!("  restart (a few seconds), the broker is unavailable and ALL Claude Code");
-    eprintln!("  tool calls will be BLOCKED (fail-closed). This is expected and temporary.");
+    eprintln!("  WARNING: Applying a mode change requires stopping and starting the");
+    eprintln!("  service. During the restart (a few seconds), the broker is");
+    eprintln!("  unavailable and ALL Claude Code tool calls will be BLOCKED");
+    eprintln!("  (fail-closed). This is expected and temporary.");
+}
+
+fn is_hook_registered() -> bool {
+    let path = claude_settings_path();
+    if !path.exists() {
+        return false;
+    }
+    fs::read_to_string(&path)
+        .map(|data| data.contains("claude-interceptor"))
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +279,36 @@ fn mode_get(prefix: &PathBuf) {
     println!("guardrails");
 }
 
+/// Rewrite the `mode:` line in a plugin-config YAML, preserving indentation
+/// and comments. Returns `None` if no `mode:` line is found.
+fn rewrite_mode_in_yaml(data: &str, mode: &str) -> Option<String> {
+    let mut found = false;
+    let mut out = String::with_capacity(data.len());
+    let line_count = data.lines().count();
+    for (idx, line) in data.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("mode:") {
+            found = true;
+            out.push_str(&line.replace(trimmed, &format!("mode: {mode}")));
+        } else {
+            out.push_str(line);
+        }
+        if idx + 1 < line_count {
+            out.push('\n');
+        }
+    }
+    // Preserve trailing newline (standard for config files; matches what
+    // the previous implementation produced).
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if found {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 fn mode_set(prefix: &PathBuf, mode: &str) {
     if mode != "guardrails" && mode != "monitor" {
         eprintln!("error: mode must be 'guardrails' or 'monitor'");
@@ -280,36 +321,47 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
         process::exit(1);
     });
 
-    // Replace the mode line in the YAML. This preserves formatting and comments.
-    let mut found = false;
-    let new_data: String = data
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("mode:") {
-                found = true;
-                line.replace(trimmed, &format!("mode: {mode}"))
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-
-    if !found {
+    let new_data = rewrite_mode_in_yaml(&data, mode).unwrap_or_else(|| {
         eprintln!("error: 'mode:' not found in {}", config_path.display());
         process::exit(1);
-    }
+    });
+
+    // Snapshot service / hook state BEFORE rewriting so we know what to
+    // restore after the restart cycle.
+    let was_running = is_service_running();
+    let hook_was_registered = is_hook_registered();
 
     fs::write(&config_path, new_data).unwrap_or_else(|e| {
         eprintln!("error writing {}: {e}", config_path.display());
         process::exit(1);
     });
 
-    println!("Mode set to: {mode}");
-    println!("Falco will detect the config change and restart automatically.");
+    if !was_running {
+        println!("Mode set to: {mode}");
+        println!("(Service is not running. Start it to apply: coding-agents-kit-ctl start)");
+        return;
+    }
+
+    println!("Restarting service to apply mode change...");
     print_restart_warning();
+    eprintln!();
+
+    service_stop();
+
+    // Re-register the hook before starting back up so the brief restart
+    // window stays fail-closed (interceptor → no broker → deny) rather than
+    // unchecked. Linux's systemd ExecStopPost and the macOS launcher's
+    // shutdown trap both run `ctl hook remove` as part of stop; on Windows
+    // taskkill /F bypasses the launcher's PowerShell `finally`, so the hook
+    // typically remains. `hook_add` is idempotent in all cases.
+    if hook_was_registered {
+        hook_add(prefix);
+    }
+
+    service_start();
+
+    println!();
+    println!("Mode set to: {mode}");
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +387,16 @@ fn systemctl(args: &[&str]) -> bool {
     Command::new("systemctl")
         .arg("--user")
         .args(args)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn is_service_running() -> bool {
+    // `systemctl is-active --quiet` exits 0 when the unit is active.
+    Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", SERVICE_NAME])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
@@ -406,6 +468,12 @@ fn is_service_loaded() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn is_service_running() -> bool {
+    // launchctl-loaded with KeepAlive == "running" for our purposes.
+    is_service_loaded()
 }
 
 #[cfg(target_os = "macos")]
@@ -528,6 +596,11 @@ const RUN_VALUE_NAME: &str = "CodingAgentsKit";
 #[cfg(target_os = "windows")]
 fn is_falco_running() -> bool {
     falco_pids().is_some()
+}
+
+#[cfg(target_os = "windows")]
+fn is_service_running() -> bool {
+    is_falco_running()
 }
 
 /// Return the list of running `falco.exe` PIDs, or `None` on error / no match.
@@ -1107,6 +1180,65 @@ mod logs_tests {
     #[test]
     fn unknown_flag() {
         assert!(parse_logs_args(&["--bogus"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::rewrite_mode_in_yaml;
+
+    #[test]
+    fn flips_mode_value_preserving_indent() {
+        let yaml = "plugins:\n  - name: coding_agent\n    init_config:\n      mode: guardrails\n      http_port: 2802\n";
+        let out = rewrite_mode_in_yaml(yaml, "monitor").expect("mode line found");
+        assert!(out.contains("      mode: monitor\n"), "indent preserved: {out}");
+        // Other lines untouched.
+        assert!(out.contains("plugins:\n"));
+        assert!(out.contains("      http_port: 2802\n"));
+    }
+
+    #[test]
+    fn preserves_trailing_comments() {
+        let yaml = "init_config:\n  mode: guardrails  # active mode\n  http_port: 2802\n";
+        let out = rewrite_mode_in_yaml(yaml, "monitor").unwrap();
+        // The `mode:` line is rewritten in full, so the inline comment is
+        // dropped — document this behavior. (Keeping the comment would
+        // require a smarter rewriter; not worth the complexity for a config
+        // line that shouldn't carry inline comments anyway.)
+        assert!(out.contains("  mode: monitor\n"));
+        assert!(out.contains("  http_port: 2802\n"));
+    }
+
+    #[test]
+    fn returns_none_when_mode_absent() {
+        let yaml = "init_config:\n  http_port: 2802\n";
+        assert!(rewrite_mode_in_yaml(yaml, "monitor").is_none());
+    }
+
+    #[test]
+    fn keeps_other_yaml_structure_intact() {
+        let yaml = "# Comment header\nplugins:\n  - name: coding_agent\n    init_config:\n      mode: monitor\n      socket_path: /tmp/x\nrules_files:\n  - /tmp/r.yaml\n";
+        let out = rewrite_mode_in_yaml(yaml, "guardrails").unwrap();
+        assert!(out.starts_with("# Comment header\n"));
+        assert!(out.ends_with("- /tmp/r.yaml\n"));
+        assert!(out.contains("      mode: guardrails\n"));
+        assert!(out.contains("      socket_path: /tmp/x\n"));
+    }
+
+    #[test]
+    fn preserves_no_trailing_newline_input_by_adding_one() {
+        // Input without trailing newline gets one (matches previous behavior).
+        let yaml = "init_config:\n  mode: guardrails";
+        let out = rewrite_mode_in_yaml(yaml, "monitor").unwrap();
+        assert!(out.ends_with("  mode: monitor\n"));
+    }
+
+    #[test]
+    fn matches_indented_or_non_indented_mode() {
+        // `mode:` at column 0 (unusual but legal in YAML) is also rewritten.
+        let yaml = "mode: guardrails\nother: thing\n";
+        let out = rewrite_mode_in_yaml(yaml, "monitor").unwrap();
+        assert!(out.contains("mode: monitor\n"));
     }
 }
 

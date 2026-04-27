@@ -29,6 +29,12 @@ const DEFAULT_QUEUE_CAPACITY: usize = 1024;
 /// - Sourcing: receives events from interceptors via Unix socket,
 ///   queues them, and delivers to Falco via next_batch.
 /// - Extraction: exposes agent.* and tool.* fields for Falco rules.
+///
+/// Lifecycle: `Plugin::new()` runs exactly once at Falco startup and `Drop`
+/// exactly once at shutdown. Falco's `watch_config_files` is disabled at the
+/// config level (see `configs/falco.yaml`) precisely so this invariant
+/// holds — config changes go through `coding-agents-kit-ctl` as an explicit
+/// stop → rewrite → start cycle, not via in-process re-init.
 pub struct CodingAgentPlugin {
     #[allow(dead_code)]
     config: CodingAgentConfig,
@@ -41,7 +47,8 @@ pub struct CodingAgentPlugin {
     /// Handle to the socket server background thread.
     #[allow(dead_code)]
     socket_thread: Option<std::thread::JoinHandle<()>>,
-    /// Handle to the HTTP alert receiver (thread + server for shutdown).
+    /// Handle to the HTTP alert receiver (thread + server, for graceful
+    /// shutdown via `unblock()` + `join()` on `Drop`).
     http_handle: Option<http_server::HttpServerHandle>,
     /// Handle to the pending request reaper thread.
     #[allow(dead_code)]
@@ -74,6 +81,19 @@ impl Plugin for CodingAgentPlugin {
         config: Self::ConfigType,
     ) -> Result<Self, Error> {
         let Json(config) = config;
+
+        // Validate mode early. Without this, a typo (e.g. `mode: monitr`)
+        // silently falls through to guardrails (`config.mode == "monitor"`
+        // is false) — which is the safer default but hides the user's
+        // configuration mistake.
+        match config.mode.as_str() {
+            "guardrails" | "monitor" => {}
+            other => {
+                return Err(anyhow::anyhow!(
+                    "invalid plugin mode '{other}': must be 'guardrails' or 'monitor'"
+                ));
+            }
+        }
 
         log::info!(
             "coding_agent plugin initialized (mode={}, socket_path={}, http_port={})",
@@ -115,18 +135,31 @@ impl Plugin for CodingAgentPlugin {
         })
     }
 
-    // Note: set_config() is NOT called by Falco 0.43. The watch_config_files
-    // mechanism performs a full restart (destroy + init), so config changes are
-    // handled by new() being called again with the updated config.
+    // Note: `set_config()` is defined in the C plugin API and the Rust SDK,
+    // but Falco 0.43 never calls it. Config changes come via process restart
+    // (driven by `coding-agents-kit-ctl`), which produces a fresh plugin
+    // instance with the updated config in `Plugin::new()`.
 }
 
 impl Drop for CodingAgentPlugin {
     fn drop(&mut self) {
+        // Drop runs cleanly on Linux SIGTERM (Falco's signal handler is
+        // `#ifdef __linux__`). On macOS and Windows, Falco has no signal
+        // handler — the service manager terminates the process abruptly and
+        // this Drop never executes. Resources we leave behind in that case:
+        //   - HTTP TCP listener: kernel reclaims on process exit.
+        //   - AF_UNIX broker socket file: persists; cleaned up on next start
+        //     by `prepare_listener`'s `has_live_peer` + `remove_file` flow.
+        //   - Background threads: vanish with the process.
+        // For our fail-closed design this is acceptable — the interceptor
+        // sees a closed socket and denies. Don't add anything here that
+        // *requires* execution to be correct.
         log::info!("plugin shutting down, signaling background threads...");
         self.broker.shutdown();
 
         // Unblock the HTTP server so its thread can exit, then join it.
-        // This releases the TCP port before the new plugin instance binds.
+        // This releases the TCP port before the next plugin instance binds
+        // (across `ctl mode` restarts).
         if let Some(handle) = self.http_handle.take() {
             handle.unblock();
             let _ = handle.thread.join();
@@ -137,7 +170,7 @@ impl Drop for CodingAgentPlugin {
             let _ = handle.join();
         }
 
-        // Join the reaper thread (it checks shutdown flag every REAPER_INTERVAL_SECS).
+        // Join the reaper thread (it polls shutdown flag via REAPER_SHUTDOWN_POLL).
         if let Some(handle) = self.reaper_thread.take() {
             let _ = handle.join();
         }

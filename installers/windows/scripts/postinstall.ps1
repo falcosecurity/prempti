@@ -60,7 +60,10 @@ json_include_tags_property: true
 rule_matching: all
 priority: debug
 
-watch_config_files: true
+# Disabled deliberately - Falco's watch_config_files is Linux-only. All
+# config changes go through coding-agents-kit-ctl, which explicitly
+# stops/restarts the service.
+watch_config_files: false
 "@
 
 Set-Content -Path (Join-Path $ConfigDir 'falco.yaml') -Value $falcoYaml -Encoding UTF8

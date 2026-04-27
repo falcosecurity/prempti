@@ -221,7 +221,7 @@ init_config:
 
 On startup the plugin refuses to clobber a socket already held by another running instance and refuses to bind an HTTP port already in use — both surface as clean plugin init errors, not panics, so a stray `falco.exe -V ...` cannot take down a running coding-agents-kit service.
 
-Mode switching via `coding-agents-kit-ctl mode <guardrails|monitor>` modifies this file. Falco's `watch_config_files: true` detects the change and performs a full restart (destroy → init).
+Mode switching via `coding-agents-kit-ctl mode <guardrails|monitor>` rewrites this file and then performs an explicit service restart (`stop` → rewrite → `start`) on every platform. Falco's `watch_config_files` is intentionally disabled (it is Linux-only upstream), so config edits — whether made by `ctl` or directly — take effect at the next service start. `ctl mode` re-registers the interceptor hook between stop and start so the restart window stays fail-closed.
 
 ## Catch-all Seen Rule
 
@@ -244,5 +244,5 @@ Since `correlation.id` is a broker-assigned monotonic counter starting at 1, thi
 
 1. **Socket server is single-threaded**: One slow connection blocks the accept loop for other interceptors. Mitigated by the 5s read timeout.
 2. **No pending request TTL**: If a seen alert never arrives for an event (e.g., Falco crashes mid-evaluation), the pending request leaks. The interceptor will timeout and fail-closed.
-3. **Falco restart during config change**: `watch_config_files` triggers a full restart (~2-3s). During this window, the broker socket is unavailable and interceptors fail-closed.
-4. **Background threads not joined on destroy**: Plugin threads may briefly outlive the plugin struct during Falco restart. The .so is not unloaded, so no segfault, but resources may leak temporarily.
+3. **Brief unavailability during `ctl mode`**: applying a mode change runs `service_stop` + `service_start` (~2–3s). The broker socket is unavailable in that window and interceptors fail-closed (the hook is intentionally re-registered between stop and start to keep this property).
+4. **`Plugin::Drop` only runs on graceful shutdown**: on Linux, Falco's `SIGTERM` handler tears the plugin down cleanly. On macOS and Windows, Falco has no signal handler — the service manager terminates the process, so `Drop` is skipped. Resources are still reclaimed correctly: TCP listener via the kernel, AF_UNIX socket file via `prepare_listener`'s stale-file cleanup on next start, threads via process exit.

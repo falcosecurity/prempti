@@ -30,26 +30,35 @@ enum VerdictType {
     Unknown,
 }
 
-/// Handle to a running HTTP alert receiver (thread + server for shutdown).
+/// Handle to a running HTTP alert receiver (thread + server).
+///
+/// Owned by `CodingAgentPlugin`. On `Plugin::Drop`, the caller invokes
+/// `unblock()` to break the accept loop and then `thread.join()` to wait for
+/// the receiver thread to exit, releasing the bound TCP port before the
+/// process terminates (or before a follow-on plugin instance binds it).
+///
+/// The plugin lifecycle is `new()` exactly once, `Drop` exactly once: Falco's
+/// `watch_config_files` is disabled at the config level (see
+/// `configs/falco.yaml`), and config changes are driven through
+/// `coding-agents-kit-ctl` as an explicit stop → rewrite → start cycle.
 pub struct HttpServerHandle {
     pub thread: std::thread::JoinHandle<()>,
     server: Arc<tiny_http::Server>,
 }
 
 impl HttpServerHandle {
-    /// Unblock the HTTP server so the thread can exit.
+    /// Unblock the HTTP server so the receiver thread can exit.
     pub fn unblock(&self) {
         self.server.unblock();
     }
 }
 
-/// Start the HTTP alert receiver in a background thread.
-/// Listens for Falco JSON alerts via http_output and resolves verdicts.
+/// Start the HTTP alert receiver on `config.http_port`, with `broker` as the
+/// verdict target.
 ///
-/// Returns an error if the port is already in use. Returning an error —
-/// rather than panicking — lets Falco report a clean plugin init failure
-/// without taking the host process down and without any side effects on
-/// the existing (possibly-running) coding-agents-kit instance.
+/// Returns an error if the port is already in use. The caller (`Plugin::new`)
+/// propagates this as a Falco plugin init failure rather than panicking, so a
+/// stray second Falco instance can't take down the host process.
 pub fn start(
     config: &CodingAgentConfig,
     broker: Arc<Broker>,
@@ -93,20 +102,16 @@ fn run_server(
     broker: &Broker,
 ) {
     for mut request in server.incoming_requests() {
-        // Respond 200 immediately to avoid blocking Falco's output worker.
-        // Parse and process the alert asynchronously (in this same thread,
-        // since tiny_http is synchronous and we process sequentially).
+        // Read the body first, then respond 200 before processing the alert.
+        // tiny_http is synchronous so we process sequentially in this thread,
+        // which is fine because Falco's output worker is also single-threaded.
         let mut body = String::new();
         if let Err(e) = request.as_reader().take(MAX_BODY_SIZE).read_to_string(&mut body) {
             log::warn!("failed to read HTTP request body: {}", e);
-            let response = tiny_http::Response::empty(200);
-            let _ = request.respond(response);
+            let _ = request.respond(tiny_http::Response::empty(200));
             continue;
         }
-
-        // Respond immediately before processing.
-        let response = tiny_http::Response::empty(200);
-        let _ = request.respond(response);
+        let _ = request.respond(tiny_http::Response::empty(200));
 
         // Parse the Falco alert JSON.
         let alert: FalcoAlert = match serde_json::from_str(&body) {
@@ -134,19 +139,15 @@ fn run_server(
             }
         };
 
-        // Determine verdict type from tags.
         let verdict_type = classify_tags(&alert.tags, deny_tags, ask_tags, seen_tags);
 
         // Build reason string from rule name and message.
-        // The message field contains the rule output without the timestamp prefix
-        // (requires json_include_message_property: true in falco.yaml).
         let reason = if alert.message.is_empty() {
             alert.rule.clone()
         } else {
             format!("{}: {}", alert.rule, alert.message)
         };
 
-        // Apply verdict to the broker.
         match verdict_type {
             VerdictType::Deny => {
                 log::debug!("deny alert for {} (rule={})", correlation_id, alert.rule);

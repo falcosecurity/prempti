@@ -20,7 +20,7 @@ const MAX_REQUEST_SIZE: u64 = 128 * 1024;
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Accept timeout for the listener. The accept loop checks the broker's shutdown
-/// flag after each timeout, enabling clean exit during config hot-reload.
+/// flag after each timeout, enabling clean exit on `Plugin::Drop`.
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Probe the socket path to detect whether another process is already
@@ -42,8 +42,14 @@ fn has_live_peer(socket_path: &str) -> std::io::Result<bool> {
 
 /// Prepare the listener: abort if another server is live, otherwise remove
 /// any stale socket file and bind a fresh listener. Returns an error that
-/// Plugin::new() propagates to Falco so a second instance cannot clobber
-/// the running one's socket file.
+/// `Plugin::new()` propagates to Falco so a second Falco instance cannot
+/// clobber the running one's socket file.
+///
+/// Plugin lifecycle: `Plugin::new()` runs exactly once per Falco process
+/// (config-driven hot-reload is disabled — see `configs/falco.yaml`). All
+/// config changes go through `coding-agents-kit-ctl` as an explicit stop →
+/// rewrite → start cycle, so by the time `prepare_listener` is called the
+/// previous instance has already exited and released its listener.
 ///
 /// Note: there is a narrow TOCTOU between `has_live_peer()` returning
 /// `false` and `bind()` succeeding below. If a second instance were to come
@@ -125,12 +131,11 @@ mod tests {
 
     #[test]
     fn prepare_listener_refuses_to_clobber_live_peer() {
+        // A different Falco process holding the socket must be refused so the
+        // running server keeps working.
         let path = temp_socket_path("live");
         let _ = std::fs::remove_file(&path);
-        // First bind succeeds.
         let first = prepare_listener(&path).expect("first bind");
-        // Second attempt must fail WITHOUT removing the first socket file,
-        // so the live server keeps working.
         let second = prepare_listener(&path);
         assert!(second.is_err(), "expected error when another server is live");
         let err = format!("{}", second.unwrap_err());

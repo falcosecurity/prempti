@@ -266,7 +266,9 @@ json_include_output_fields_property: true
 json_include_tags_property: true
 rule_matching: all
 priority: debug
-watch_config_files: true
+# Mirror production: hot-reload is disabled. ctl drives all config changes
+# via stop -> rewrite -> start. See configs/falco.yaml for the rationale.
+watch_config_files: false
 http_output:
   enabled: true
   url: http://127.0.0.1:{http_port}
