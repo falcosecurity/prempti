@@ -346,7 +346,7 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
     print_restart_warning();
     eprintln!();
 
-    service_stop();
+    service_stop(false);
 
     // Re-register the hook before starting back up so the brief restart
     // window stays fail-closed (interceptor → no broker → deny) rather than
@@ -358,7 +358,7 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
         hook_add(prefix);
     }
 
-    service_start();
+    service_start(prefix);
 
     println!();
     println!("Mode set to: {mode}");
@@ -379,6 +379,34 @@ fn warn_hook_still_registered() {
             eprintln!("  Remove the hook manually if needed:");
             eprintln!("    coding-agents-kit-ctl hook remove");
         }
+    }
+}
+
+// systemctl/launchctl return as soon as the supervisor accepts the process,
+// but the plugin binds the broker socket later, after Falco's init_config.
+#[cfg(unix)]
+fn await_broker_ready(prefix: &PathBuf, timeout: std::time::Duration) -> bool {
+    use std::os::unix::net::UnixStream;
+    let socket = prefix.join("run/broker.sock");
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if UnixStream::connect(&socket).is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(unix)]
+fn report_start_result(broker_ready: bool) {
+    if broker_ready {
+        println!("Service started.");
+    } else {
+        println!("Service started, but broker socket is not accepting connections yet.");
+        println!("Wait a moment and run `coding-agents-kit-ctl health` to verify.");
     }
 }
 
@@ -403,20 +431,21 @@ fn is_service_running() -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn service_start() {
-    if systemctl(&["start", SERVICE_NAME]) {
-        println!("Service started.");
-    } else {
+fn service_start(prefix: &PathBuf) {
+    if !systemctl(&["start", SERVICE_NAME]) {
         eprintln!("Failed to start service.");
         process::exit(1);
     }
+    report_start_result(await_broker_ready(prefix, std::time::Duration::from_secs(5)));
 }
 
 #[cfg(target_os = "linux")]
-fn service_stop() {
+fn service_stop(warn_hook: bool) {
     if systemctl(&["stop", SERVICE_NAME]) {
         println!("Service stopped.");
-        warn_hook_still_registered();
+        if warn_hook {
+            warn_hook_still_registered();
+        }
     } else {
         eprintln!("Failed to stop service.");
         process::exit(1);
@@ -477,7 +506,7 @@ fn is_service_running() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn service_start() {
+fn service_start(prefix: &PathBuf) {
     let plist = plist_path();
     if !plist.exists() {
         eprintln!("Plist not found: {}", plist.display());
@@ -496,16 +525,15 @@ fn service_start() {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    if ok {
-        println!("Service started.");
-    } else {
+    if !ok {
         eprintln!("Failed to start service.");
         process::exit(1);
     }
+    report_start_result(await_broker_ready(prefix, std::time::Duration::from_secs(5)));
 }
 
 #[cfg(target_os = "macos")]
-fn service_stop() {
+fn service_stop(warn_hook: bool) {
     if !is_service_loaded() {
         println!("Service not running.");
         return;
@@ -520,7 +548,9 @@ fn service_stop() {
         .unwrap_or(false);
     if ok {
         println!("Service stopped.");
-        warn_hook_still_registered();
+        if warn_hook {
+            warn_hook_still_registered();
+        }
     } else {
         eprintln!("Failed to stop service.");
         process::exit(1);
@@ -632,12 +662,11 @@ fn falco_pids() -> Option<Vec<u32>> {
 }
 
 #[cfg(target_os = "windows")]
-fn service_start() {
+fn service_start(prefix: &PathBuf) {
     if is_falco_running() {
         println!("Service already running.");
         return;
     }
-    let prefix = default_prefix();
     let launcher = prefix.join("bin").join("coding-agents-kit-launcher.ps1");
     if !launcher.exists() {
         eprintln!("Launcher not found: {}", launcher.display());
@@ -690,7 +719,7 @@ fn service_start() {
 }
 
 #[cfg(target_os = "windows")]
-fn service_stop() {
+fn service_stop(warn_hook: bool) {
     let Some(pids) = falco_pids() else {
         println!("Service not running.");
         return;
@@ -714,7 +743,9 @@ fn service_stop() {
     }
 
     println!("Service stopped.");
-    warn_hook_still_registered();
+    if warn_hook {
+        warn_hook_still_registered();
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -859,7 +890,7 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
         // below.
         if is_falco_running() {
             println!("Stopping service...");
-            service_stop();
+            service_stop(false);
         }
         // Remove auto-start registry key.
         let _ = Command::new("reg")
@@ -1308,8 +1339,8 @@ fn main() {
         ["hook", "status"] => hook_status(),
         ["mode"] => mode_get(&prefix),
         ["mode", mode] => mode_set(&prefix, mode),
-        ["start"] => service_start(),
-        ["stop"] => service_stop(),
+        ["start"] => service_start(&prefix),
+        ["stop"] => service_stop(true),
         ["enable"] => service_enable(),
         ["disable"] => service_disable(),
         ["status"] => service_status(),

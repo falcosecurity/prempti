@@ -9,7 +9,16 @@
 #   $3 = target volume
 #   $4 = root directory for the system
 
-INSTALL_LOCATION="$2"
+if [[ -z "$2" ]] || [[ ! -d "$2" ]]; then
+    echo "postinstall: invalid install location: $2" >&2
+    exit 1
+fi
+
+# Installer passes "$2" with a trailing /. for user-domain installs; strip
+# textually rather than via cd/pwd -P so we keep the conventional path
+# (preserve a symlinked HOME instead of resolving it).
+INSTALL_LOCATION="${2%/.}"
+INSTALL_LOCATION="${INSTALL_LOCATION%/}"
 PREFIX="${INSTALL_LOCATION}/.coding-agents-kit"
 USER_HOME="${INSTALL_LOCATION}"
 

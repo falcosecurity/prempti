@@ -56,13 +56,20 @@ Switch between modes at any time with `coding-agents-kit-ctl mode <guardrails|mo
 
 ### macOS
 
-Download the `.pkg` installer from the [latest release](https://github.com/leogr/coding-agents-kit/releases/latest) and open it:
+Download the universal `.pkg` installer from the [latest release](https://github.com/leogr/coding-agents-kit/releases/latest) and open it:
 
 ```bash
 open coding-agents-kit-<version>-darwin-universal.pkg
 ```
 
-The macOS Installer wizard guides you through the setup. Once complete, the service starts automatically on login.
+The macOS Installer wizard guides you through the setup. The service starts immediately and on every subsequent login.
+
+To install non-interactively (CI, scripted setup, SSH session):
+
+```bash
+installer -pkg coding-agents-kit-<version>-darwin-universal.pkg \
+          -target CurrentUserHomeDirectory
+```
 
 > [!NOTE]
 > Since the binaries are not code-signed, macOS Gatekeeper may block them on first run.
@@ -160,6 +167,9 @@ coding-agents-kit-ctl start
 
 ```bash
 ~/.coding-agents-kit/bin/coding-agents-kit-ctl uninstall
+
+# Keep your custom rules in rules/user/ for a future reinstall:
+~/.coding-agents-kit/bin/coding-agents-kit-ctl uninstall --keep-user-rules
 ```
 
 **Windows**
