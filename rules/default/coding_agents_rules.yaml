@@ -632,7 +632,571 @@
 # ===========================================================================
 # Section 4 — Threats: credentials, dangerous commands, exfiltration, supply chain
 # ===========================================================================
-# (filled in a subsequent commit)
+# Covers credential access (via Bash and via Read tool), dangerous shell
+# commands, pipe-to-shell, encoded payloads, data exfiltration, IMDS access,
+# credential archives, SSH covert tunnels, cron persistence, history wipe,
+# package publish, shell startup file edits, agent instruction files outside
+# the working directory, cross-agent auth file reads, untrusted-host installs,
+# MCP execution from temp directories, and credential glob patterns.
+
+# Macros — Bash threat detection
+
+- macro: is_bash
+  condition: tool.name = "Bash"
+
+- macro: references_credential
+  condition: >
+    tool.input_command contains ".aws/credentials"
+    or tool.input_command contains ".aws/config"
+    or tool.input_command contains "/.ssh/id_rsa"
+    or tool.input_command contains "/.ssh/id_ed25519"
+    or tool.input_command contains "/.ssh/id_ecdsa"
+    or tool.input_command contains "/.gnupg/"
+    or tool.input_command contains "/.netrc"
+    or tool.input_command contains "/.npmrc"
+    or tool.input_command contains "/.docker/config.json"
+    or tool.input_command contains "credentials.json"
+    or tool.input_command contains "AWS_SECRET_ACCESS_KEY"
+    or tool.input_command contains "GITHUB_TOKEN"
+    or tool.input_command contains "ANTHROPIC_API_KEY"
+    or tool.input_command contains "OPENAI_API_KEY"
+
+- macro: is_pipe_to_shell
+  condition: >
+    tool.input_command contains "| bash"
+    or tool.input_command contains "|bash"
+    or tool.input_command contains "| sh"
+    or tool.input_command contains "|sh"
+    or tool.input_command contains "| zsh"
+    or tool.input_command contains "|zsh"
+    or tool.input_command contains "bash <("
+    or tool.input_command contains "sh <("
+    or tool.input_command contains "| /bin/bash"
+    or tool.input_command contains "|/bin/bash"
+    or tool.input_command contains "| /bin/sh"
+    or tool.input_command contains "|/bin/sh"
+    or tool.input_command contains "| /usr/bin/bash"
+    or tool.input_command contains "|/usr/bin/bash"
+    or tool.input_command contains "| /usr/bin/sh"
+    or tool.input_command contains "|/usr/bin/sh"
+
+- macro: is_encoded_exec
+  condition: >
+    tool.input_command contains "base64 -d"
+    or tool.input_command contains "base64 --decode"
+    or tool.input_command contains "base64 -D"
+    or tool.input_command contains "openssl base64 -d"
+    or tool.input_command contains "xxd -r"
+    or tool.input_command contains "python3 -c"
+    or tool.input_command contains "python -c"
+    or tool.input_command contains "perl -e"
+    or tool.input_command contains "ruby -e"
+    or tool.input_command contains "node -e"
+    or tool.input_command contains "node --eval"
+    or tool.input_command contains "php -r"
+
+- macro: is_curl_exfil
+  condition: >
+    (tool.input_command contains "curl " or tool.input_command contains "wget ")
+    and (tool.input_command contains " -d "
+         or tool.input_command contains " --data"
+         or tool.input_command contains " -F "
+         or tool.input_command contains " --form"
+         or tool.input_command contains " -T "
+         or tool.input_command contains " --upload-file"
+         or tool.input_command contains "@/tmp/"
+         or tool.input_command contains "@/var/"
+         or tool.input_command contains "| curl"
+         or tool.input_command contains "| wget")
+
+- macro: is_dangerous_command
+  condition: >
+    tool.input_command contains "rm -rf"
+    or tool.input_command contains "rm -fr"
+    or tool.input_command contains "rm --recursive"
+    or tool.input_command contains "sudo rm"
+    or tool.input_command contains "sudo su"
+    or tool.input_command contains "sudo -i"
+    or tool.input_command contains "dd if="
+    or tool.input_command contains "dd of="
+    or tool.input_command contains "mkfs"
+    or tool.input_command contains "> /dev/sda"
+    or tool.input_command contains "shutdown"
+    or tool.input_command contains "reboot"
+    or tool.input_command contains "init 0"
+    or tool.input_command contains "halt"
+
+- macro: is_tmp_path
+  condition: >
+    tool.real_file_path startswith "/tmp/"
+    or tool.real_file_path startswith "/var/tmp/"
+    or tool.real_file_path startswith "/dev/shm/"
+
+# Matches Read tool calls targeting credential file paths.
+# Uses real_file_path (canonicalized) so symlinked paths are also covered.
+# The Bash credential rule covers tool.input_command; this covers tool.real_file_path
+# for direct Read calls — closing the gap where the agent bypasses Bash entirely
+# by using the Read tool to exfiltrate secrets.
+- macro: is_read_credential_path
+  condition: >
+    tool.name = "Read"
+    and tool.real_file_path != ""
+    and (tool.real_file_path contains "/.aws/credentials"
+         or tool.real_file_path contains "/.aws/config"
+         or tool.real_file_path contains "/.ssh/id_rsa"
+         or tool.real_file_path contains "/.ssh/id_ed25519"
+         or tool.real_file_path contains "/.ssh/id_ecdsa"
+         or tool.real_file_path contains "/.gnupg/"
+         or tool.real_file_path contains "/.netrc"
+         or tool.real_file_path contains "/.docker/config.json")
+
+# Shell-based reverse shell techniques.
+# is_reverse_shell_mkfifo_nc is a helper macro to avoid an (A and B) term
+# inside an or-chain, which can cause Falco condition parser issues.
+- macro: is_reverse_shell_mkfifo_nc
+  condition: >
+    tool.input_command contains "mkfifo"
+    and tool.input_command contains " nc "
+
+- macro: is_reverse_shell
+  condition: >
+    tool.input_command contains "/dev/tcp/"
+    or tool.input_command contains ">&/dev/tcp"
+    or tool.input_command contains ">& /dev/tcp"
+    or tool.input_command contains "bash -i"
+    or tool.input_command contains "nc -e"
+    or tool.input_command contains "nc -c"
+    or tool.input_command contains "ncat --exec"
+    or tool.input_command contains "ncat -e"
+    or tool.input_command contains "socat exec:"
+    or is_reverse_shell_mkfifo_nc
+    or tool.input_command contains "exec 5<>"
+
+# curl/wget targeting cloud instance metadata endpoints.
+# Covers the GET case not caught by is_curl_exfil (which requires POST/upload flags).
+# AWS IMDS 169.254.169.254 can be encoded as:
+#   Decimal: 2852039166   (169*16777216 + 254*65536 + 169*256 + 254)
+#   Hex:     0xa9fea9fe
+#   Octal:   0251.0376.0251.0376
+# These numeric forms resolve identically in curl/wget but bypass the literal check.
+- macro: is_imds_access
+  condition: >
+    (tool.input_command contains "curl " or tool.input_command contains "wget ")
+    and (tool.input_command contains "169.254.169.254"
+         or tool.input_command contains "metadata.google.internal"
+         or tool.input_command contains "metadata.azure.com"
+         or tool.input_command contains "fd00:ec2::254"
+         or tool.input_command contains "2852039166"
+         or tool.input_command contains "0xa9fea9fe"
+         or tool.input_command contains "0Xa9fea9fe"
+         or tool.input_command contains "0251.0376.0251.0376")
+
+# Archive commands that include credential directories in their paths.
+- macro: is_credential_archive
+  condition: >
+    (tool.input_command contains "tar " or tool.input_command contains "zip "
+     or tool.input_command contains "gzip " or tool.input_command contains "7z "
+     or tool.input_command contains "rar ")
+    and (tool.input_command contains "/.aws"
+         or tool.input_command contains "/.ssh"
+         or tool.input_command contains "/.gnupg"
+         or tool.input_command contains "/.kube"
+         or tool.input_command contains "/.docker")
+
+# SSH port forwarding flags used to create covert channels.
+# -R (remote forward) and -D (SOCKS proxy) are flagged; -L (local forward,
+# common for DB tunneling) is intentionally excluded.
+- macro: is_ssh_tunnel
+  condition: >
+    tool.input_command contains "ssh "
+    and (tool.input_command contains " -R "
+         or tool.input_command contains " -D "
+         or tool.input_command contains " -w ")
+
+# Commands that install or modify cron jobs.
+# Uses "crontab -" to avoid matching filenames containing "crontab" (e.g. grep crontab file).
+- macro: is_cron_persistence
+  condition: >
+    tool.input_command contains "crontab -"
+    or tool.input_command contains "| crontab"
+    or tool.input_command contains "/etc/cron"
+
+# Commands that wipe or suppress shell history.
+# Uses specific file names (.bash_history, .zsh_history) to avoid matching
+# "rm some-history-file.txt" or "grep history /etc/hosts".
+# Helper macros avoid (A and B) terms inside or-chains.
+- macro: is_history_wipe_rm_bash
+  condition: >
+    tool.input_command contains "rm "
+    and tool.input_command contains ".bash_history"
+
+- macro: is_history_wipe_rm_zsh
+  condition: >
+    tool.input_command contains "rm "
+    and tool.input_command contains ".zsh_history"
+
+- macro: is_history_wipe_truncate
+  condition: >
+    tool.input_command contains "truncate "
+    and tool.input_command contains "_history"
+
+- macro: is_history_wipe
+  condition: >
+    tool.input_command contains "history -c"
+    or tool.input_command contains "history -w"
+    or tool.input_command contains "unset HISTFILE"
+    or tool.input_command contains "HISTSIZE=0"
+    or tool.input_command contains "HISTFILESIZE=0"
+    or is_history_wipe_rm_bash
+    or is_history_wipe_rm_zsh
+    or is_history_wipe_truncate
+
+# Package registry publish commands across major ecosystems.
+- macro: is_package_publish
+  condition: >
+    tool.input_command contains "npm publish"
+    or tool.input_command contains "twine upload"
+    or tool.input_command contains "cargo publish"
+    or tool.input_command contains "gem push"
+    or tool.input_command contains "pip upload"
+
+# Reading another agent's OAuth or session credential files.
+# Each agent should only read its own credential store. The negation
+# (agent.name != X) excludes the owning agent from the deny.
+# Helper macros avoid (A and B) terms inside or-chains in is_cross_agent_auth_read.
+- macro: is_gemini_auth_cross
+  condition: >
+    tool.real_file_path contains "/.gemini/oauth_creds"
+    and agent.name != "gemini"
+
+- macro: is_codex_auth_cross
+  condition: >
+    tool.real_file_path contains "/.codex/auth"
+    and agent.name != "codex"
+
+- macro: is_cursor_auth_cross
+  condition: >
+    tool.real_file_path contains "/.cursor/session"
+    and agent.name != "cursor"
+
+- macro: is_claude_auth_cross
+  condition: >
+    tool.real_file_path contains "/.claude/oauth"
+    and agent.name != "claude_code"
+
+- macro: is_cross_agent_auth_read
+  condition: >
+    tool.name = "Read"
+    and (is_gemini_auth_cross
+         or is_codex_auth_cross
+         or is_cursor_auth_cross
+         or is_claude_auth_cross)
+
+# Package/skill install commands referencing known malicious code hosts.
+# Dual-signal: install command + untrusted host. Legitimate installs from
+# npmjs.com, pypi.org, or official GitHub are not affected.
+- macro: is_mcp_install_from_untrusted
+  condition: >
+    (tool.input_command contains "npx "
+     or tool.input_command contains "npm install"
+     or tool.input_command contains "uvx "
+     or tool.input_command contains "pip install"
+     or tool.input_command contains "claude skills install"
+     or tool.input_command contains "claude plugin install")
+    and cmd_contains_ioc_domain
+
+# MCP server transport flags (--stdio, --sse) combined with a temp path.
+# No legitimate MCP server is installed to /tmp or /dev/shm.
+- macro: is_mcp_temp_path
+  condition: >
+    (tool.input_command contains "/tmp/"
+     or tool.input_command contains "/dev/shm/"
+     or tool.input_command contains "/var/tmp/")
+    and (tool.input_command contains "--stdio"
+         or tool.input_command contains "--sse")
+
+# Glob patterns that target credential directories or key files.
+# Matches absolute-path patterns (/.aws/, /.ssh/, etc.) in tool.input JSON.
+# Relative patterns like **/.env inside a project are not affected.
+- macro: is_credential_glob
+  condition: >
+    tool.name = "Glob"
+    and (tool.input contains "/.aws/"
+         or tool.input contains "/.ssh/"
+         or tool.input contains "/.gnupg/"
+         or tool.input contains "/.kube/"
+         or tool.input contains "/id_rsa"
+         or tool.input contains "/id_ed25519"
+         or tool.input contains "oauth_creds")
+
+# Rules
+
+- rule: Deny credential file access via Bash
+  desc: >
+    Blocks Bash commands that reference credential files or secret environment
+    variable names. Prevents exfiltration of secrets through shell redirection
+    that the Read tool rules cannot intercept (e.g., cat ~/.aws/credentials,
+    inline AWS_SECRET_ACCESS_KEY= substitutions).
+  condition: is_bash and references_credential
+  output: >
+    Falco blocked a Bash command referencing a credential path or secret token (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny credential file access via Read tool
+  desc: >
+    Blocks Read tool calls targeting well-known credential file paths:
+    ~/.aws/credentials, ~/.aws/config, ~/.ssh/id_* private keys, ~/.gnupg/,
+    ~/.netrc, and ~/.docker/config.json. The Bash credential rule only inspects
+    tool.input_command and misses direct Read calls entirely — an agent can
+    Read ~/.aws/credentials without executing a shell command. Credential file
+    reads have no legitimate use in a coding workflow; any access warrants an
+    immediate block.
+  condition: is_read_credential_path
+  output: >
+    Falco blocked the Read tool accessing a credential file at %tool.real_file_path
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny dangerous shell commands
+  desc: >
+    Blocks shell commands with destructive or privilege-escalating patterns:
+    rm -rf, sudo su/sudo -i, dd, mkfs, and shutdown/reboot/halt.
+  condition: is_bash and is_dangerous_command
+  output: >
+    Falco blocked a dangerous shell command (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny pipe to shell interpreter
+  desc: >
+    Blocks Bash commands that pipe network-fetched or generated content directly
+    into a shell interpreter. Covers curl|bash, wget|sh, bash <(...), and
+    similar patterns used for remote code execution and supply chain attacks.
+  condition: is_bash and is_pipe_to_shell
+  output: >
+    Falco blocked piping content to a shell interpreter (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny encoded payload execution
+  desc: >
+    Blocks execution of base64-decoded or hex-decoded payloads and inline
+    interpreter one-liners (python -c, perl -e, ruby -e). Encoding and inline
+    interpreters are common obfuscation techniques to evade string-match detection.
+  condition: is_bash and is_encoded_exec
+  output: >
+    Falco blocked execution of a potentially encoded or inline-interpreted payload (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny curl wget exfiltration
+  desc: >
+    Blocks outbound data transfers via curl or wget that POST, upload, or pipe
+    data to an external host. Prevents the write-to-tmp-then-exfiltrate pattern.
+    Plain GET downloads (curl https://...) are not affected.
+  condition: is_bash and is_curl_exfil
+  output: >
+    Falco blocked a potential data exfiltration command via curl or wget (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny writes to tmp staging paths
+  desc: >
+    Blocks Write and Edit operations targeting /tmp, /var/tmp, and /dev/shm.
+    These paths are commonly used as staging areas for data exfiltration —
+    an agent writes sensitive data there and then curls it out.
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.real_file_path != ""
+    and is_tmp_path
+  output: >
+    Falco blocked writing to the staging path %tool.real_file_path
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny reverse shell via Bash
+  desc: >
+    Blocks Bash commands that establish reverse shell connections: /dev/tcp
+    redirection, nc/ncat with exec, socat exec, and mkfifo pipe shells.
+    These patterns have no legitimate use in a coding workflow.
+  condition: is_bash and is_reverse_shell
+  output: >
+    Falco blocked a reverse shell command (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny cloud metadata service access via Bash
+  desc: >
+    Blocks curl and wget requests to cloud instance metadata services
+    (AWS IMDS 169.254.169.254, GCP metadata.google.internal, Azure metadata.azure.com).
+    These endpoints expose IAM credentials. Plain GET requests are not covered
+    by the existing curl/wget exfiltration rule (which requires POST/upload flags).
+  condition: is_bash and is_imds_access
+  output: >
+    Falco blocked access to a cloud metadata service (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny credential directory archive via Bash
+  desc: >
+    Blocks shell commands that compress credential directories (/.aws, /.ssh,
+    /.gnupg, /.kube, /.docker) with tar, zip, gzip, 7z, or rar. Archiving
+    credential directories is the first step in a compress-then-exfiltrate pattern.
+  condition: is_bash and is_credential_archive
+  output: >
+    Falco blocked archiving a credential directory (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny SSH reverse tunnel and SOCKS proxy
+  desc: >
+    Blocks SSH commands using reverse port forwarding (-R), SOCKS proxy (-D),
+    or VPN tunnel (-w) flags. These create covert outbound channels. Legitimate
+    direct SSH and local port forwarding (-L, common for database tunneling)
+    are intentionally excluded.
+  condition: is_bash and is_ssh_tunnel
+  output: >
+    Falco blocked an SSH tunneling or proxy command (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Ask before cron and scheduled task manipulation
+  desc: >
+    Requires confirmation before crontab modifications or writes targeting
+    /etc/cron directories. Scheduled tasks are a persistence mechanism —
+    unexpected from a coding session but not always malicious (e.g., app
+    setup scripts), so ask rather than deny.
+  condition: is_bash and is_cron_persistence
+  output: >
+    Falco requires confirmation before modifying cron configuration (%tool.input_command)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+- rule: Deny audit trail destruction
+  desc: >
+    Blocks commands that wipe shell history: history -c/history -w, unset HISTFILE,
+    HISTSIZE=0, and removal or truncation of .bash_history/.zsh_history.
+    History wiping is a post-compromise covering technique with no legitimate
+    use in a coding session.
+  condition: is_bash and is_history_wipe
+  output: >
+    Falco blocked a shell history wipe attempt (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny package publish
+  desc: >
+    Blocks publishing commands across major ecosystems: npm publish, twine upload,
+    cargo publish, gem push, pip upload. Publishing packages is irreversible and
+    a direct supply chain attack vector. Should always require explicit manual
+    confirmation, not agent automation.
+  condition: is_bash and is_package_publish
+  output: >
+    Falco blocked a package publish command (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Ask before modifying shell startup files
+  desc: >
+    Requires confirmation when writing or editing shell startup files (.bashrc,
+    .zshrc, .profile, etc.). These files execute on every shell login and are a
+    persistence mechanism. Writing to them may be legitimate in dotfiles projects
+    but always warrants explicit user confirmation.
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.file_path != ""
+    and basename(tool.file_path) in (shell_startup_files)
+  output: >
+    Falco requires confirmation before modifying shell startup file %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+- rule: Ask before writing agent instruction files outside working directory
+  desc: >
+    Requires confirmation when writing or editing agent instruction files
+    (.cursorrules, .windsurfrules, .aiderrules, AGENTS.md) outside the current
+    working directory. Writing agent instructions to another project is a prompt
+    injection vector. Writes inside the current project are allowed.
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.file_path != ""
+    and basename(tool.file_path) in (agent_instruction_files)
+    and tool.real_file_path != ""
+    and is_outside_cwd
+  output: >
+    Falco requires confirmation before writing agent instruction file %tool.real_file_path outside working directory %agent.real_cwd
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+- rule: Deny cross-agent authentication file access
+  desc: >
+    Blocks reads of another agent's OAuth or session credential files. Each
+    agent should only access its own credential store. A Claude Code session
+    reading ~/.gemini/oauth_creds.json (or vice versa) signals prompt injection,
+    credential harvesting, or a compromised session pivoting between agents.
+  condition: is_cross_agent_auth_read
+  output: >
+    Falco blocked %agent.name from reading another agent's authentication file %tool.real_file_path
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny MCP server or skill install from untrusted host
+  desc: >
+    Blocks npm, npx, uvx, pip install, and claude skills/plugin install commands
+    that reference known malicious code hosting sites in the ioc_hosting_domains
+    list. These are the primary supply chain IOCs from the ClawHavoc campaign.
+    Legitimate installs from npmjs.com, pypi.org, and official GitHub are unaffected.
+  condition: is_bash and is_mcp_install_from_untrusted
+  output: >
+    Falco blocked installing a package or skill from an untrusted host (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny MCP server execution from temporary directory
+  desc: >
+    Blocks execution of processes using MCP transport flags (--stdio, --sse)
+    from /tmp, /dev/shm, or /var/tmp. Legitimate MCP servers are installed to
+    system or user package directories, not temporary storage. Running from /tmp
+    indicates a staged payload dropped and immediately executed.
+  condition: is_bash and is_mcp_temp_path
+  output: >
+    Falco blocked executing a potential MCP server from a temporary directory (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Ask before Glob with credential directory patterns
+  desc: >
+    Requires confirmation when the Glob tool is used with patterns that target
+    credential directories or key files (/.aws/, /.ssh/, /.gnupg/, /.kube/,
+    id_rsa, id_ed25519, oauth_creds). Such patterns suggest credential
+    reconnaissance before an exfiltration attempt. In-project .env globbing
+    is not affected.
+  condition: is_credential_glob
+  output: >
+    Falco requires confirmation before globbing with a credential-targeting pattern (%tool.input)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
 
 # ===========================================================================
 # Section 5 — MCP and skill content
