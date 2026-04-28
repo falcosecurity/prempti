@@ -58,20 +58,6 @@
     - credentials.json
     - token.json
 
-# IOC hosting domains observed in the ClawHavoc campaign (341 malicious skills,
-# 2024-2025) and similar AI-supply-chain attacks. Used by both Bash install
-# rules and Write/Edit content rules.
-- list: ioc_hosting_domains
-  items:
-    - pastebin.com
-    - transfer.sh
-    - file.io
-    - termbin.com
-    - ix.io
-    - glot.io
-    - hastebin.com
-    - ghostbin.co
-
 # Shell startup files that execute on every shell login.
 - list: shell_startup_files
   items: [.bashrc, .zshrc, .profile, .bash_profile, .zprofile, .bash_login, .bash_logout]
@@ -125,6 +111,13 @@
 - macro: is_outside_cwd
   condition: not tool.real_file_path startswith val(agent.real_cwd)
 
+# IOC hosting domains observed in the ClawHavoc campaign (341 malicious skills,
+# 2024-2025) and similar AI-supply-chain attacks. Inlined into the macros below
+# rather than a Falco list because Falco's condition language has no
+# substring-match-against-list operator (only "in"/"pmatch", which require
+# exact or prefix match — not what we need against a JSON blob or a Bash command).
+# Extend by overriding the macros (condition: append) in user/ rules.
+#
 # Matches an IOC domain anywhere in the tool input JSON (Write/Edit content).
 - macro: contains_ioc_domain
   condition: >
