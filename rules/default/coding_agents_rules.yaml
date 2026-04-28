@@ -1523,4 +1523,285 @@
 # ===========================================================================
 # Section 6 — Persistence vectors
 # ===========================================================================
-# (filled in a subsequent commit)
+# Detects agent actions that establish persistence across sessions or redirect
+# package/API supply chains — vectors beyond MCP servers and skill files.
+#
+# Coverage:
+#   Rule 1 (DENY):  Claude settings.json write with "hooks" key
+#                   — injects a PreToolUse/PostToolUse script that runs on every
+#                     future tool call, outside the sandbox, with no user visibility
+#   Rule 2 (ASK):   Claude settings.json write with "mcpServers" key
+#                   — alternative MCP registration path not covered by .mcp.json rules
+#   Rule 3 (ASK):   Write to .git/hooks/ directory
+#                   — git hook executes on every git operation for the lifetime
+#                     of the repository clone
+#   Rule 4 (ASK):   Write to .npmrc / .pypirc / pip.conf / .pnpmrc / .yarnrc.yml
+#                   with registry redirect
+#   Rule 5 (DENY):  Write to .env / .envrc / .env.* with AI API base URL override
+#   Rule 6 (ASK):   Write to .env / .envrc / .env.* with AI API key assignment
+#   Rule 7 (ASK):   Bash command writing to .git/hooks/
+#   Rule 8 (ASK):   Bash command running npm/pip config set for registry
+
+# Macros: Claude settings file paths
+
+# Matches Write or Edit targeting Claude Code's settings files.
+# endswith covers both user-level (~/.claude/settings.json) and
+# project-level (.claude/settings.json) with the same pattern.
+- macro: is_claude_settings_write
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.real_file_path != ""
+    and (tool.real_file_path endswith "/.claude/settings.json"
+         or tool.real_file_path endswith "/.claude/settings.local.json")
+
+# Matches content that registers a hooks block (any lifecycle event).
+# The "hooks" key is Claude Code's mechanism for running external commands
+# before or after tool calls — the exact mechanism coding-agents-kit uses.
+- macro: is_settings_hooks_content
+  condition: tool.input contains "hooks"
+
+# Matches content that registers MCP servers inside settings.json.
+# Settings-level mcpServers are an alternative to standalone .mcp.json files
+# and not covered by the Section 5 path-based checks.
+- macro: is_settings_mcp_content
+  condition: tool.input contains "mcpServers"
+
+# Macros: git hooks
+
+# Matches Write or Edit to files inside any .git/hooks/ directory.
+# Uses real_file_path (canonicalized) so symlinked repos are also covered.
+- macro: is_git_hooks_write
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.real_file_path != ""
+    and tool.real_file_path contains "/.git/hooks/"
+
+# Matches Bash commands referencing the git hooks directory path.
+# Rule 3 catches Write/Edit tool calls; shell redirection via Bash bypasses it.
+- macro: is_bash_git_hooks_write
+  condition: >
+    tool.name = "Bash"
+    and tool.input_command contains "/.git/hooks/"
+
+# Macros: package registry redirect
+
+# Matches Write or Edit to package manager configuration files that control
+# where packages are downloaded from (registry_config_files list).
+- macro: is_registry_config_write
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.file_path != ""
+    and basename(tool.file_path) in (registry_config_files)
+
+# Matches content keys that redirect package downloads to a custom index.
+# registry=            — npm/pnpm registry (no space, npmrc/.pnpmrc format)
+# npmRegistryServer    — yarn v2/v3 primary registry (in .yarnrc.yml)
+# index-url            — pip primary index (pip.conf uses "key = value" with spaces)
+# extra-index-url      — pip secondary index
+# index-server         — pypirc server section header value
+# repository           — pypirc repository URL
+# Note: pip.conf and .pypirc use "key = value" format (spaces around =),
+# so checks for the key name only — not "key=" — to match both styles.
+- macro: is_registry_redirect_content
+  condition: >
+    tool.input contains "registry="
+    or tool.input contains "npmRegistryServer"
+    or tool.input contains "index-url"
+    or tool.input contains "extra-index-url"
+    or tool.input contains "index-server"
+    or tool.input contains "repository"
+
+# Matches Bash commands running npm config set or pip config set to redirect
+# the package registry. These modify the global ~/.npmrc or pip config file
+# via the CLI, never going through the Write/Edit tool path.
+- macro: is_bash_npm_registry_redirect
+  condition: >
+    (tool.input_command contains "npm config set registry"
+     or tool.input_command contains "npm set registry")
+
+- macro: is_bash_pip_registry_redirect
+  condition: >
+    (tool.input_command contains "pip config set"
+     or tool.input_command contains "pip3 config set")
+    and (tool.input_command contains "index-url"
+         or tool.input_command contains "extra-index-url")
+
+- macro: is_bash_registry_redirect
+  condition: >
+    is_bash_npm_registry_redirect
+    or is_bash_pip_registry_redirect
+
+# Macros: environment file API redirect and key exposure
+
+# Matches Write or Edit to environment variable files that shells or tools
+# source automatically (env_file_names list). Covers project-local variants
+# to avoid false positives on remote/CI environment files not loaded locally.
+- macro: is_env_file_write
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.file_path != ""
+    and basename(tool.file_path) in (env_file_names)
+
+# Matches env content that overrides the AI API base URL.
+# ANTHROPIC_BASE_URL — Claude Code / Anthropic SDK endpoint
+# OPENAI_BASE_URL    — OpenAI SDK endpoint (used by some Codex forks)
+# OPENAI_API_BASE    — legacy OpenAI env var for the same purpose
+# Overriding these redirects ALL API calls through an attacker-controlled proxy.
+- macro: is_api_base_url_override
+  condition: >
+    tool.input contains "ANTHROPIC_BASE_URL"
+    or tool.input contains "OPENAI_BASE_URL"
+    or tool.input contains "OPENAI_API_BASE"
+
+# Matches env content that writes an AI provider API key.
+# The agent writing its own API credentials to a file risks committing the
+# key to version control or staging it for exfiltration in a later Bash step.
+# Separate from is_api_base_url_override to allow different verdicts.
+- macro: is_api_key_in_env
+  condition: >
+    tool.input contains "ANTHROPIC_API_KEY"
+    or tool.input contains "OPENAI_API_KEY"
+    or tool.input contains "GEMINI_API_KEY"
+
+# Rules
+
+- rule: Deny agent writing hooks into Claude Code settings
+  desc: >
+    Blocks the agent from writing or editing a Claude Code settings file
+    (~/.claude/settings.json or .claude/settings.json) with content that
+    registers a hooks block. Claude Code's hooks mechanism runs arbitrary
+    external commands before or after every tool call — it is the same
+    mechanism coding-agents-kit uses to intercept tool calls. An agent
+    writing a new hook command injects a persistent script that executes
+    on every future tool call, outside the sandbox, across all Claude Code
+    sessions on the machine. The agent has no legitimate reason to modify
+    its own hook configuration — hook registration is an installer/admin task.
+  condition: is_claude_settings_write and is_settings_hooks_content
+  output: >
+    Falco blocked %agent.name from injecting a hook command into Claude Code settings at %tool.real_file_path
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, AML.T0051_llm_prompt_injection,
+         AML.T0043_craft_adversarial_data, mitre_t1546_event_triggered_execution]
+
+- rule: Ask before agent registering MCP servers in Claude settings
+  desc: >
+    Requires user confirmation when the agent writes or edits a Claude Code
+    settings file with an mcpServers key. MCP servers registered in settings.json
+    persist across all projects (user-level) or all sessions in a project
+    (project-level) and grant the agent access to new external tool surfaces.
+    Section 5 covers the standalone .mcp.json and managed-mcp.json files; this
+    rule closes the settings.json registration path that bypasses those checks.
+  condition: is_claude_settings_write and is_settings_mcp_content
+  output: >
+    Falco requires confirmation before %agent.name registers an MCP server in Claude Code settings at %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0048_llm_plugin_compromise,
+         AML.T0051_llm_prompt_injection, mitre_t1059_command_and_scripting_interpreter]
+
+- rule: Ask before writing to git hooks directory
+  desc: >
+    Requires user confirmation when the agent writes or edits a file inside
+    a .git/hooks/ directory. Git hooks execute automatically on git operations
+    (commit, push, checkout, merge) for the lifetime of the repository clone —
+    they persist long after the Claude session ends and run outside any sandbox.
+    Writing a malicious pre-commit or post-checkout hook is a reliable persistence
+    mechanism that survives agent restarts and is not visible in project source files.
+    Asks rather than denies because legitimate use cases exist: setting up linters,
+    formatters, or commit message validators via hook scripts.
+  condition: is_git_hooks_write
+  output: >
+    Falco requires confirmation before writing a git hook at %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0043_craft_adversarial_data,
+         mitre_t1546_event_triggered_execution]
+
+- rule: Ask before writing package registry redirect
+  desc: >
+    Requires user confirmation when the agent writes or edits a package manager
+    configuration file (.npmrc, .pypirc, pip.conf) with content that redirects
+    package downloads to a custom registry or index. Once committed, a registry
+    redirect causes every subsequent npm install, pip install, or yarn add in the
+    project to download packages from the configured endpoint — a supply chain
+    pivot where a single compromised package can inject malicious code into all
+    future dependency installs. Legitimate corporate uses (Artifactory, Nexus,
+    private PyPI) exist, so this rule asks rather than denies.
+  condition: is_registry_config_write and is_registry_redirect_content
+  output: >
+    Falco requires confirmation before writing a package registry redirect to %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0010_ml_supply_chain_compromise,
+         mitre_t1195_supply_chain_compromise]
+
+- rule: Deny API base URL override in environment file
+  desc: >
+    Blocks writing or editing an environment file (.env, .envrc, .env.local, etc.)
+    with content that overrides ANTHROPIC_BASE_URL, OPENAI_BASE_URL, or
+    OPENAI_API_BASE. These variables redirect every API call made by the Claude
+    Code agent (and any application code that sources the file) through the
+    specified endpoint. An attacker-controlled proxy at that URL can read all
+    prompts and responses, inject malicious tool call results, or silently modify
+    agent instructions in transit. The agent has no legitimate reason to change
+    its own API endpoint — this is always a prompt injection or supply chain attack.
+  condition: is_env_file_write and is_api_base_url_override
+  output: >
+    Falco blocked %agent.name from overriding an AI API base URL in %tool.real_file_path
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, AML.T0051_llm_prompt_injection,
+         AML.T0037_llm_adversarial_example, mitre_t1565_data_manipulation]
+
+- rule: Ask before writing AI API key to environment file
+  desc: >
+    Requires user confirmation when the agent writes or edits an environment file
+    (.env, .envrc, .env.local, .env.staging, .env.test, etc.) with content containing
+    an AI provider API key variable (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY).
+    Writing the active API key to a file creates two risks: (1) the file may be
+    committed to version control and exposed publicly, and (2) it stages the credential
+    for exfiltration via a subsequent curl or upload command. Asks rather than denies
+    because legitimate project setup workflows (creating .env.example, wiring up
+    a new application) do write API key variable names to environment files.
+  condition: is_env_file_write and is_api_key_in_env
+  output: >
+    Falco requires confirmation before %agent.name writes an AI API key variable to %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0037_llm_adversarial_example,
+         mitre_t1552_unsecured_credentials]
+
+- rule: Ask before Bash command accessing git hooks directory
+  desc: >
+    Requires user confirmation when a Bash command references a .git/hooks/
+    directory path. Shell redirections (echo >, tee, cp, chmod +x) can write
+    or activate persistent git hooks without using the Write or Edit tools,
+    bypassing Rule 3. Git hooks execute automatically on git operations and
+    persist long after the agent session ends. Asks rather than denies because
+    legitimate devops tasks (installing pre-commit linters, auditing hooks)
+    also involve referencing this path.
+  condition: is_bash_git_hooks_write
+  output: >
+    Falco requires confirmation before a Bash command accesses the git hooks directory (%tool.input_command)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0043_craft_adversarial_data,
+         mitre_t1546_event_triggered_execution]
+
+- rule: Ask before Bash command redirecting package registry
+  desc: >
+    Requires user confirmation when a Bash command runs a package manager
+    CLI-level registry redirect: npm config set registry, npm set registry,
+    pip config set global.index-url, or pip config set global.extra-index-url.
+    These commands modify the user's global package manager config, redirecting
+    all future package installs to the specified endpoint. Unlike file writes
+    (caught by Rule 4), these CLI commands modify config atomically via the
+    package manager's own write path, bypassing Write/Edit tool detection.
+  condition: tool.name = "Bash" and is_bash_registry_redirect
+  output: >
+    Falco requires confirmation before a Bash command redirects the package registry (%tool.input_command)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0010_ml_supply_chain_compromise,
+         mitre_t1195_supply_chain_compromise]
