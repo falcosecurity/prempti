@@ -217,10 +217,13 @@
 # OS-level sandbox isolation, and per-command sandbox escape requests.
 #
 # Coverage:
-#   Rule A (DENY):  Agent writing sandbox-disable content to its own config file
+#   Rule A (ASK):   Agent writing sandbox-disable content to its own config file
 #                   — Claude Code (sandbox.enabled: false/0/null in settings.json or
 #                     settings.local.json), Codex (danger-full-access in config.toml),
 #                     Gemini CLI (tools.sandbox: false/none/disabled in settings.json)
+#                   ASK rather than DENY: the content macros (e.g., "enabled" + "false")
+#                   match common JSON shapes that surface in unrelated settings.json
+#                   edits via the Edit tool's old_string/new_string capture.
 #   Rule B (ASK):   Claude Code per-command escape via dangerouslyDisableSandbox:true
 #                   Bash tool parameter — the ONLY layer that can detect this
 #                   since it is a tool call parameter invisible to Falco syscalls.
@@ -522,23 +525,27 @@
 
 # Rules
 
-- rule: Deny agent writing sandbox-disable configuration
+- rule: Ask before agent writing sandbox-disable configuration
   desc: >
-    Blocks a coding agent from writing or editing its own sandbox configuration
-    file with content that disables OS-level process isolation. Hardened against
-    Edit value-only diffs, numeric/null falsy values, allowUnsandboxedCommands:1,
-    Gemini string disable variants, and settings.local.json. Fires at PreToolUse,
-    before the write executes.
+    Requires user confirmation when a coding agent writes or edits its own
+    sandbox configuration file with content that may disable OS-level process
+    isolation. Covers Edit value-only diffs, numeric/null falsy values,
+    allowUnsandboxedCommands:1, Gemini string disable variants, and
+    settings.local.json. Fires at PreToolUse, before the write executes.
+    Asks rather than denies because the content macros (e.g., "enabled" +
+    "false") match common JSON shapes that legitimately appear in unrelated
+    settings.json edits — particularly when the Edit tool surfaces an
+    existing disable-shape value in old_string/new_string.
   condition: >
     tool.name in ("Write", "Edit")
     and tool.real_file_path != ""
     and is_agent_sandbox_config
     and is_sandbox_disable_content
   output: >
-    Falco blocked %agent.name from disabling its sandbox by writing to %tool.real_file_path
-  priority: CRITICAL
+    Falco requires confirmation before %agent.name modifies its sandbox configuration at %tool.real_file_path
+  priority: WARNING
   source: coding_agent
-  tags: [coding_agent_deny, AML.T0054_llm_jailbreak, AML.T0051_llm_prompt_injection,
+  tags: [coding_agent_ask, AML.T0054_llm_jailbreak, AML.T0051_llm_prompt_injection,
          mitre_t1562.001_impair_defenses_disable_or_modify_tools]
 
 - rule: Ask before Claude Code per-command sandbox escape
@@ -702,21 +709,31 @@
          or tool.input_command contains "| curl"
          or tool.input_command contains "| wget")
 
-- macro: is_dangerous_command
+# Destructive commands with high-confidence intent. Substrings here are
+# specific enough to deny outright (dd if=, mkfs, > /dev/sda, init 0,
+# sudo su, sudo -i — none of which appear naturally in coding workflows).
+- macro: is_destructive_command
+  condition: >
+    tool.input_command contains "dd if="
+    or tool.input_command contains "dd of="
+    or tool.input_command contains "mkfs"
+    or tool.input_command contains "> /dev/sda"
+    or tool.input_command contains "init 0"
+    or tool.input_command contains "sudo su"
+    or tool.input_command contains "sudo -i"
+
+# Likely-destructive commands whose substrings collide with legitimate
+# development workflows: rm -rf is common in cleanup scripts and build
+# tooling; "shutdown"/"reboot"/"halt" appear in prose, comments, and
+# unrelated tool names. Ask rather than deny.
+- macro: is_likely_destructive_command
   condition: >
     tool.input_command contains "rm -rf"
     or tool.input_command contains "rm -fr"
     or tool.input_command contains "rm --recursive"
     or tool.input_command contains "sudo rm"
-    or tool.input_command contains "sudo su"
-    or tool.input_command contains "sudo -i"
-    or tool.input_command contains "dd if="
-    or tool.input_command contains "dd of="
-    or tool.input_command contains "mkfs"
-    or tool.input_command contains "> /dev/sda"
     or tool.input_command contains "shutdown"
     or tool.input_command contains "reboot"
-    or tool.input_command contains "init 0"
     or tool.input_command contains "halt"
 
 - macro: is_tmp_path
@@ -953,16 +970,35 @@
   source: coding_agent
   tags: [coding_agent_deny]
 
-- rule: Deny dangerous shell commands
+- rule: Deny destructive system commands
   desc: >
-    Blocks shell commands with destructive or privilege-escalating patterns:
-    rm -rf, sudo su/sudo -i, dd, mkfs, and shutdown/reboot/halt.
-  condition: is_bash and is_dangerous_command
+    Blocks shell commands whose substrings unambiguously indicate a destructive
+    or privilege-elevating operation: dd overwriting a disk (dd if=, dd of=),
+    filesystem creation (mkfs), direct device redirects (> /dev/sda), system
+    halt (init 0), and unconstrained privilege escalation (sudo su, sudo -i).
+    None of these appear in normal coding-agent workflows.
+  condition: is_bash and is_destructive_command
   output: >
-    Falco blocked a dangerous shell command (%tool.input_command)
+    Falco blocked a destructive system command (%tool.input_command)
   priority: CRITICAL
   source: coding_agent
   tags: [coding_agent_deny]
+
+- rule: Ask before potentially destructive shell commands
+  desc: >
+    Requires user confirmation before commands whose dangerous form overlaps
+    with legitimate development workflows or whose substrings collide with
+    benign content: rm -rf / rm -fr / rm --recursive (common in build cleanup
+    and Makefiles), sudo rm (admin tasks), and shutdown / reboot / halt
+    (which also appear in prose and unrelated tool names like "graceful
+    shutdown" comments). Asks rather than denies because the substring match
+    cannot distinguish a build cleanup from a destructive operation.
+  condition: is_bash and is_likely_destructive_command
+  output: >
+    Falco requires confirmation before a potentially destructive shell command (%tool.input_command)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
 
 - rule: Deny pipe to shell interpreter
   desc: >
@@ -1000,20 +1036,24 @@
   source: coding_agent
   tags: [coding_agent_deny]
 
-- rule: Deny writes to tmp staging paths
+- rule: Ask before writing to tmp staging paths
   desc: >
-    Blocks Write and Edit operations targeting /tmp, /var/tmp, and /dev/shm.
-    These paths are commonly used as staging areas for data exfiltration —
-    an agent writes sensitive data there and then curls it out.
+    Requires user confirmation for Write and Edit operations targeting
+    /tmp, /var/tmp, and /dev/shm. These paths are commonly used as staging
+    areas for data exfiltration (write sensitive data, then curl it out),
+    but they are also legitimate scratch areas for many coding workflows
+    (build artifacts, test fixtures, agent-built scripts). Asks rather than
+    denies because the path alone is not a sufficient signal of malicious
+    intent — the exfiltration follow-up is caught by the curl/wget rule.
   condition: >
     tool.name in ("Write", "Edit")
     and tool.real_file_path != ""
     and is_tmp_path
   output: >
-    Falco blocked writing to the staging path %tool.real_file_path
-  priority: CRITICAL
+    Falco requires confirmation before writing to the staging path %tool.real_file_path
+  priority: WARNING
   source: coding_agent
-  tags: [coding_agent_deny]
+  tags: [coding_agent_ask]
 
 - rule: Deny reverse shell via Bash
   desc: >
@@ -1207,7 +1247,7 @@
 # Coverage:
 #   Rule 1 (DENY):  MCP config write with "command" pointing to a temporary directory
 #   Rule 2 (DENY):  MCP config write with IOC domain in the server "url" field
-#   Rule 3 (DENY):  MCP config write with base64-encoded "command"
+#   Rule 3 (ASK):   MCP config write with base64-encoded "command"
 #   Rule 4 (ASK):   Agent self-registering MCP server via Bash (claude mcp add, etc.)
 #   Rule 5 (ASK):   Write to .claude/commands/ — persistent slash command backdoor
 #   Rule 6 (ASK):   CLAUDE.md write outside working directory — prompt injection
@@ -1364,21 +1404,22 @@
   tags: [coding_agent_deny, AML.T0048_llm_plugin_compromise,
          AML.T0010_ml_supply_chain_compromise, mitre_t1059_command_and_scripting_interpreter]
 
-- rule: Deny MCP config with encoded server command
+- rule: Ask before MCP config with encoded server command
   desc: >
-    Blocks writing an MCP server configuration file where the "command" field contains
-    base64, indicating an obfuscated server command decoded and executed at runtime.
-    Encoding MCP server commands has no legitimate use — it evades string-match detection
-    of malicious payloads in the command arguments. Typical pattern:
+    Requires user confirmation when writing an MCP server configuration file
+    that contains the substring "base64", indicating a possibly obfuscated
+    server command decoded and executed at runtime. Typical malicious pattern:
     "command": "bash", "args": ["-c", "base64 -d <<< PAYLOAD | sh"].
-    The encoded payload execution rule in Section 4 covers Bash tool calls;
-    this rule covers the same obfuscation technique in MCP config writes.
+    Asks rather than denies because the literal substring "base64" also
+    appears in benign contexts: server names referencing base64 encoding,
+    descriptions mentioning the algorithm, or data URLs (data:...;base64,...)
+    used for icons and small assets in legitimate MCP configs.
   condition: is_mcp_config_write and is_mcp_command_encoded
   output: >
-    Falco blocked writing an MCP server config with an encoded command at %tool.real_file_path
-  priority: CRITICAL
+    Falco requires confirmation before writing an MCP server config that references base64 at %tool.real_file_path
+  priority: WARNING
   source: coding_agent
-  tags: [coding_agent_deny, AML.T0048_llm_plugin_compromise,
+  tags: [coding_agent_ask, AML.T0048_llm_plugin_compromise,
          AML.T0057_llm_data_poisoning, mitre_t1027_obfuscated_files_or_information]
 
 - rule: Ask before agent self-registering MCP server
@@ -1520,9 +1561,13 @@
 # package/API supply chains — vectors beyond MCP servers and skill files.
 #
 # Coverage:
-#   Rule 1 (DENY):  Claude settings.json write with "hooks" key
+#   Rule 1 (ASK):   Claude settings.json write with "hooks" key
 #                   — injects a PreToolUse/PostToolUse script that runs on every
-#                     future tool call, outside the sandbox, with no user visibility
+#                     future tool call, outside the sandbox, with no user visibility.
+#                     Agent has no legitimate reason to write its own hooks; ASK
+#                     because the "hooks" substring also surfaces in unrelated
+#                     edits to settings.json where an existing hooks block is
+#                     captured in old_string/new_string.
 #   Rule 2 (ASK):   Claude settings.json write with "mcpServers" key
 #                   — alternative MCP registration path not covered by .mcp.json rules
 #   Rule 3 (ASK):   Write to .git/hooks/ directory
@@ -1530,7 +1575,7 @@
 #                     of the repository clone
 #   Rule 4 (ASK):   Write to .npmrc / .pypirc / pip.conf / .pnpmrc / .yarnrc.yml
 #                   with registry redirect
-#   Rule 5 (DENY):  Write to .env / .envrc / .env.* with AI API base URL override
+#   Rule 5 (ASK):   Write to .env / .envrc / .env.* with AI API base URL override
 #   Rule 6 (ASK):   Write to .env / .envrc / .env.* with AI API key assignment
 #   Rule 7 (ASK):   Bash command writing to .git/hooks/
 #   Rule 8 (ASK):   Bash command running npm/pip config set for registry
@@ -1592,9 +1637,11 @@
 # index-url            — pip primary index (pip.conf uses "key = value" with spaces)
 # extra-index-url      — pip secondary index
 # index-server         — pypirc server section header value
-# repository           — pypirc repository URL
 # Note: pip.conf and .pypirc use "key = value" format (spaces around =),
 # so checks for the key name only — not "key=" — to match both styles.
+# "repository" is intentionally excluded: .pypirc uses it as a section key,
+# but the substring also matches benign comments and metadata keys (e.g.,
+# "# our internal repository" in .npmrc) producing false positives.
 - macro: is_registry_redirect_content
   condition: >
     tool.input contains "registry="
@@ -1602,7 +1649,6 @@
     or tool.input contains "index-url"
     or tool.input contains "extra-index-url"
     or tool.input contains "index-server"
-    or tool.input contains "repository"
 
 # Matches Bash commands running npm config set or pip config set to redirect
 # the package registry. These modify the global ~/.npmrc or pip config file
@@ -1658,23 +1704,25 @@
 
 # Rules
 
-- rule: Deny agent writing hooks into Claude Code settings
+- rule: Ask before agent writing hooks into Claude Code settings
   desc: >
-    Blocks the agent from writing or editing a Claude Code settings file
-    (~/.claude/settings.json or .claude/settings.json) with content that
-    registers a hooks block. Claude Code's hooks mechanism runs arbitrary
-    external commands before or after every tool call — it is the same
-    mechanism coding-agents-kit uses to intercept tool calls. An agent
-    writing a new hook command injects a persistent script that executes
-    on every future tool call, outside the sandbox, across all Claude Code
-    sessions on the machine. The agent has no legitimate reason to modify
-    its own hook configuration — hook registration is an installer/admin task.
+    Requires user confirmation when the agent writes or edits a Claude Code
+    settings file (~/.claude/settings.json or .claude/settings.json) with
+    content matching the "hooks" keyword. Claude Code's hooks mechanism runs
+    arbitrary external commands before or after every tool call — it is the
+    same mechanism coding-agents-kit uses to intercept tool calls. The agent
+    has no legitimate reason to modify its own hook configuration — hook
+    registration is an installer/admin task, not an agent task. Asks rather
+    than denies because the "hooks" substring also surfaces in unrelated
+    edits to settings.json (an existing hooks block captured in
+    old_string/new_string when editing a sibling key, the word "hooks" in
+    benign content like "react-hooks" or comments).
   condition: is_claude_settings_write and is_settings_hooks_content
   output: >
-    Falco blocked %agent.name from injecting a hook command into Claude Code settings at %tool.real_file_path
-  priority: CRITICAL
+    Falco requires confirmation before %agent.name writes a hooks entry into Claude Code settings at %tool.real_file_path
+  priority: WARNING
   source: coding_agent
-  tags: [coding_agent_deny, AML.T0051_llm_prompt_injection,
+  tags: [coding_agent_ask, AML.T0051_llm_prompt_injection,
          AML.T0043_craft_adversarial_data, mitre_t1546_event_triggered_execution]
 
 - rule: Ask before agent registering MCP servers in Claude settings
@@ -1729,22 +1777,24 @@
   tags: [coding_agent_ask, AML.T0010_ml_supply_chain_compromise,
          mitre_t1195_supply_chain_compromise]
 
-- rule: Deny API base URL override in environment file
+- rule: Ask before API base URL override in environment file
   desc: >
-    Blocks writing or editing an environment file (.env, .envrc, .env.local, etc.)
-    with content that overrides ANTHROPIC_BASE_URL, OPENAI_BASE_URL, or
-    OPENAI_API_BASE. These variables redirect every API call made by the Claude
-    Code agent (and any application code that sources the file) through the
-    specified endpoint. An attacker-controlled proxy at that URL can read all
-    prompts and responses, inject malicious tool call results, or silently modify
-    agent instructions in transit. The agent has no legitimate reason to change
-    its own API endpoint — this is always a prompt injection or supply chain attack.
+    Requires user confirmation when the agent writes or edits an environment
+    file (.env, .envrc, .env.local, etc.) with content that sets
+    ANTHROPIC_BASE_URL, OPENAI_BASE_URL, or OPENAI_API_BASE. These variables
+    redirect every API call made by the agent (and any application code that
+    sources the file) through the specified endpoint. An attacker-controlled
+    proxy at that URL can read all prompts and responses, inject malicious
+    tool call results, or silently modify agent instructions in transit.
+    Asks rather than denies because corporate proxies and self-hosted gateways
+    (Anthropic-compatible endpoints, OpenAI-compatible inference servers) are
+    legitimate uses — the user is the right party to confirm the endpoint.
   condition: is_env_file_write and is_api_base_url_override
   output: >
-    Falco blocked %agent.name from overriding an AI API base URL in %tool.real_file_path
-  priority: CRITICAL
+    Falco requires confirmation before %agent.name overrides an AI API base URL in %tool.real_file_path
+  priority: WARNING
   source: coding_agent
-  tags: [coding_agent_deny, AML.T0051_llm_prompt_injection,
+  tags: [coding_agent_ask, AML.T0051_llm_prompt_injection,
          AML.T0037_llm_adversarial_example, mitre_t1565_data_manipulation]
 
 - rule: Ask before writing AI API key to environment file
