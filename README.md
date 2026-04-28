@@ -174,13 +174,18 @@ The MSI removes the Claude Code hook, the auto-start entry, and the `bin\` `PATH
 
 ## Default Rules
 
-The project ships with rules that provide baseline protection:
+The project ships with a default ruleset organized into six sections covering common attack surfaces for AI coding agents:
 
-| Rule | Verdict | Description |
-|------|---------|-------------|
-| Monitor activity outside working directory | — | Logs file access outside the project directory |
-| Ask before writing outside working directory | **ask** | Requires your confirmation for writes outside the project |
-| Deny writing to sensitive paths | **deny** | Blocks writes to `/etc/`, `~/.ssh/`, `~/.aws/`, `.env`, and other sensitive locations |
+| Section | Coverage |
+|---------|----------|
+| Working-directory boundary | Monitor and ask on file access outside the session's project directory |
+| Sensitive paths | Deny reads and writes to `/etc/`, `~/.ssh/`, `~/.aws/`, cloud credentials, `.env` files, etc. |
+| Sandbox disable | Detect attempts to disable the agent's own sandbox configuration (Claude Code, Codex, Gemini CLI) |
+| Threats | Credential access, destructive commands, pipe-to-shell, encoded payloads, exfiltration, IMDS access, reverse shells, supply-chain installs from known-malicious hosts |
+| MCP and skill content | MCP server config poisoning (`.mcp.json`) and slash-command file injection (`.claude/commands/`) |
+| Persistence vectors | Hook injection, git hooks, package-registry redirects, AI API base-URL overrides, API keys leaking into env files |
+
+See [`rules/default/coding_agents_rules.yaml`](rules/default/coding_agents_rules.yaml) for the full ruleset. The schema, available fields, and authoring conventions are documented in [`rules/README.md`](rules/README.md).
 
 ## Custom Rules
 

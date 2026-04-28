@@ -16,7 +16,9 @@ rules/
 
 ### `default/coding_agents_rules.yaml`
 
-The default security policies shipped with coding-agents-kit. This file is **overwritten on upgrade** — do not edit it directly. To customize behavior, add rules in the `user/` directory instead.
+The default security policies shipped with coding-agents-kit, organized into six sections: working-directory boundary, sensitive paths, sandbox disable, threats (credentials, dangerous commands, exfiltration, supply chain), MCP and skill content, and persistence vectors. The file also defines reusable lists (`sensitive_paths`, `sensitive_file_names`, `shell_startup_files`, `agent_instruction_files`, `env_file_names`, `registry_config_files`) and macros (`is_sensitive_path`, `is_outside_cwd`, `is_write_tool`, `contains_ioc_domain`, `cmd_contains_ioc_domain`) that user rules can extend via `override: append`.
+
+This file is **overwritten on upgrade** — do not edit it directly. To customize behavior, add rules in the `user/` directory instead.
 
 ### `user/`
 
@@ -85,18 +87,23 @@ Deny writing to sensitive paths: Falco blocked writing to /etc/passwd because it
 
 ### Example
 
+A custom user rule that asks for confirmation before the agent edits a dependency lockfile (these files are produced by package managers — manual edits are usually a mistake worth confirming):
+
 ```yaml
-- rule: Deny pipe to shell
-  desc: Block piping content to shell interpreters
+- list: dependency_lockfiles
+  items: [Cargo.lock, package-lock.json, yarn.lock, pnpm-lock.yaml, go.sum, Pipfile.lock, poetry.lock]
+
+- rule: Ask before modifying dependency lockfiles
+  desc: Require confirmation before the agent edits a generated lockfile.
   condition: >
-    tool.name = "Bash"
-    and (tool.input_command contains "| sh"
-         or tool.input_command contains "| bash")
+    tool.name in ("Write", "Edit")
+    and tool.file_path != ""
+    and basename(tool.file_path) in (dependency_lockfiles)
   output: >
-    Falco blocked piping to a shell interpreter (%tool.input_command)
-  priority: CRITICAL
+    Falco requires confirmation before modifying dependency lockfile %tool.real_file_path
+  priority: WARNING
   source: coding_agent
-  tags: [coding_agent_deny]
+  tags: [coding_agent_ask]
 ```
 
 ### Tips

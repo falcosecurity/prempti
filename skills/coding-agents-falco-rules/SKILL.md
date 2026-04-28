@@ -187,7 +187,18 @@ The `override` key modifies existing rules, macros, and lists across files — e
 
 When creating rules for the user, always write to `rules/user/`.
 
-Before writing a new rule, read `rules/default/coding_agents_rules.yaml` to check for overlaps. The default ruleset already covers sensitive path protection, outside-cwd writes, and file monitoring. If the user's request overlaps with an existing rule, consider using `override: append` to extend it rather than creating a duplicate. If the new rule is more restrictive (e.g., deny where the default only asks), explain the interaction to the user.
+Before writing a new rule, read `rules/default/coding_agents_rules.yaml` to check for overlaps. The default ruleset is organized into six sections covering common AI-agent attack surfaces:
+
+1. **Working-directory boundary** — monitor / ask on file access outside the session cwd
+2. **Sensitive paths** — deny reads and writes to `/etc/`, `~/.ssh/`, `~/.aws/`, `.env` files, etc.
+3. **Sandbox disable** — Claude Code / Codex / Gemini CLI sandbox-disable attempts (Write, Edit, and Bash variants)
+4. **Threats** — credential access, destructive shell commands, pipe-to-shell, encoded payloads, curl/wget exfiltration, IMDS access, credential archives, SSH covert tunnels, cron persistence, history wipe, package publish, shell startup files, agent instruction files outside cwd, cross-agent auth file reads, MCP installs from untrusted hosts, MCP execution from temp dirs, credential glob patterns
+5. **MCP and skill content** — MCP config poisoning (`.mcp.json`) and slash-command file injection (`.claude/commands/`)
+6. **Persistence vectors** — settings hooks, settings-level mcpServers, git hooks, package registry redirects, `.env` API base-URL overrides, AI API keys in env files
+
+The file also exposes reusable lists (`sensitive_paths`, `sensitive_file_names`, `shell_startup_files`, `agent_instruction_files`, `env_file_names`, `registry_config_files`) and macros (`is_sensitive_path`, `is_outside_cwd`, `is_write_tool`, `contains_ioc_domain`, `cmd_contains_ioc_domain`) that user rules can extend via `override: append`.
+
+If the user's request overlaps with an existing rule, prefer extending it via `override: append` rather than creating a duplicate. If the new rule is more restrictive (e.g., deny where the default only asks), explain the interaction to the user.
 
 ## Validation
 
