@@ -166,7 +166,10 @@ coding-agents-kit-ctl start
 
 Any of these paths works — they all run the same cleanup custom action:
 
-- `Uninstall-CodingAgentsKit.ps1` (bundled with the release),
+- ```powershell
+  powershell -ExecutionPolicy Bypass -File Uninstall-CodingAgentsKit.ps1
+  ```
+  (bundled with the release),
 - Apps & Features,
 - `msiexec /x <product-code>`.
 
@@ -187,6 +190,13 @@ The project ships with rules that provide baseline protection:
 The default ruleset is deliberately generic — it catches obviously risky actions that apply to most workflows. For the kit to be genuinely useful, you'll typically want to write your own rules tailored to your specific work: the projects you edit, the remotes you push to, the files you treat as sensitive, the commands you never want your agent to run.
 
 Add your own rules to `~/.coding-agents-kit/rules/user/`. They are preserved across upgrades. You can write them by hand, or use the [rule-authoring skill](#rule-authoring-skill-for-claude-code) to have Claude Code draft and validate them for you interactively.
+
+New or edited rules take effect on the next service start — restart the service with:
+
+```bash
+coding-agents-kit-ctl stop
+coding-agents-kit-ctl start
+```
 
 Example — block piping content to shell interpreters:
 

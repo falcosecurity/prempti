@@ -28,7 +28,7 @@ coding-agents-kit-ctl mode guardrails     # Switch to guardrails (deny/ask enfor
 coding-agents-kit-ctl mode monitor        # Switch to monitor (all verdicts allow, alerts logged)
 ```
 
-Mode changes modify the plugin config YAML. Falco detects the file change and performs a full restart.
+Mode changes rewrite the plugin config YAML and then restart the service (stop + start). The brief restart window is fail-closed.
 
 ### Service Management
 
@@ -51,14 +51,6 @@ coding-agents-kit-ctl logs --err [flags]   # Same, but against the stderr log
 ```
 
 `logs` defaults to a snapshot-and-exit (like `kubectl logs` / `docker logs`). Pass `-f` / `--follow` to stream. `--tail=N` limits the initial output. The `--err` flag targets `falco.err` instead of `falco.log`.
-
-## Options
-
-```bash
-coding-agents-kit-ctl --prefix=/custom/path <command>
-```
-
-`--prefix` overrides the installation directory (default: `~/.coding-agents-kit`).
 
 ## Service Lifecycle
 

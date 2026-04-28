@@ -1273,6 +1273,10 @@ fn print_usage() {
     eprintln!();
     eprintln!("  uninstall        Remove coding-agents-kit completely");
     eprintln!("  uninstall --keep-user-rules  Uninstall but preserve custom rules");
+    eprintln!();
+    eprintln!("Flags:");
+    eprintln!("  -V, --version    Print version and exit");
+    eprintln!("  -h, --help       Print this help and exit");
 }
 
 fn main() {
@@ -1284,6 +1288,9 @@ fn main() {
     for arg in &args[1..] {
         if arg == "--help" || arg == "-h" {
             print_usage();
+            process::exit(0);
+        } else if arg == "--version" || arg == "-V" {
+            println!("coding-agents-kit-ctl {}", env!("CARGO_PKG_VERSION"));
             process::exit(0);
         } else {
             cmd_args.push(arg);
