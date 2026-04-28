@@ -2,6 +2,38 @@
 # Shipped with the project. Overwritten on upgrade.
 # Users should add custom rules in the user/ directory instead of editing this file.
 # Users can extend the lists below using Falco's override mechanism in user/ rules.
+#
+# File layout (sections):
+#   1. Working-directory boundary
+#   2. Sensitive paths
+#   3. Sandbox disable
+#   4. Threats — credentials, dangerous commands, exfiltration, supply chain
+#   5. MCP and skill content
+#   6. Persistence vectors
+#
+# Output convention:
+#   The rule output is an LLM-friendly sentence that explains what happened and
+#   why the verdict was applied. It must start with "Falco" to attribute the
+#   verdict. Use resolved field values (%tool.real_file_path, %agent.real_cwd)
+#   to make the message informative. Keep it clean — no structured key=value pairs.
+#
+#   correlation.id is a suggested output field (add_output in the plugin) and is
+#   always included in output_fields. The catch-all seen rule (seen.yaml) includes
+#   all fields for audit logging. Deny/ask rules only need the fields they reference.
+#
+#   The append_output config appends an AI agent instruction to every alert.
+#   The broker constructs the verdict reason as: "Rule Name: <rendered message>".
+#
+#   Example reason seen by the coding agent:
+#     Deny writing to sensitive paths: Falco blocked writing to /etc/passwd
+#     because it is a sensitive path | For AI Agents: inform the user that
+#     this action was flagged by a Falco rule | correlation=42
+#
+# Priority convention:
+#   CRITICAL — deny verdict
+#   WARNING  — ask verdict
+#   NOTICE   — monitor only (no verdict tag)
+#   DEBUG    — reserved for the catch-all seen rule (seen.yaml)
 
 # ---------------------------------------------------------------------------
 # Lists
@@ -26,8 +58,47 @@
     - credentials.json
     - token.json
 
+# IOC hosting domains observed in the ClawHavoc campaign (341 malicious skills,
+# 2024-2025) and similar AI-supply-chain attacks. Used by both Bash install
+# rules and Write/Edit content rules.
+- list: ioc_hosting_domains
+  items:
+    - pastebin.com
+    - transfer.sh
+    - file.io
+    - termbin.com
+    - ix.io
+    - glot.io
+    - hastebin.com
+    - ghostbin.co
+
+# Shell startup files that execute on every shell login.
+- list: shell_startup_files
+  items: [.bashrc, .zshrc, .profile, .bash_profile, .zprofile, .bash_login, .bash_logout]
+
+# Agent instruction files that other coding agents read as prompt context.
+- list: agent_instruction_files
+  items: [.cursorrules, .windsurfrules, .aiderrules, AGENTS.md]
+
+# Environment variable files commonly sourced by shells, frameworks, and CI.
+- list: env_file_names
+  items:
+    - .env
+    - .envrc
+    - .env.local
+    - .env.development
+    - .env.production
+    - .env.staging
+    - .env.test
+    - .env.ci
+    - .env.override
+
+# Package manager configuration files that control where packages are downloaded.
+- list: registry_config_files
+  items: [.npmrc, .pypirc, pip.conf, .pnpmrc, .yarnrc.yml]
+
 # ---------------------------------------------------------------------------
-# Macros
+# Macros — shared
 # ---------------------------------------------------------------------------
 
 - macro: is_write_tool
@@ -54,28 +125,33 @@
 - macro: is_outside_cwd
   condition: not tool.real_file_path startswith val(agent.real_cwd)
 
-# ---------------------------------------------------------------------------
-# Rules
-# ---------------------------------------------------------------------------
+# Matches an IOC domain anywhere in the tool input JSON (Write/Edit content).
+- macro: contains_ioc_domain
+  condition: >
+    tool.input contains "pastebin.com"
+    or tool.input contains "transfer.sh"
+    or tool.input contains "file.io"
+    or tool.input contains "termbin.com"
+    or tool.input contains "ix.io"
+    or tool.input contains "glot.io"
+    or tool.input contains "hastebin.com"
+    or tool.input contains "ghostbin.co"
 
-# Output convention for coding-agents-kit rules:
-#
-# The rule output is an LLM-friendly sentence that explains what happened and
-# why the verdict was applied. It must start with "Falco" to attribute the
-# verdict. Use resolved field values (%tool.real_file_path, %agent.real_cwd)
-# to make the message informative. Keep it clean — no structured key=value pairs.
-#
-# correlation.id is a suggested output field (add_output in the plugin) and is
-# always included in output_fields. The catch-all seen rule (seen.yaml) includes
-# all fields for audit logging. Deny/ask rules only need the fields they reference.
-#
-# The append_output config appends an AI agent instruction to every alert.
-# The broker constructs the verdict reason as: "Rule Name: <rendered message>".
-#
-# Example reason seen by the coding agent:
-#   Deny writing to sensitive paths: Falco blocked writing to /etc/passwd
-#   because it is a sensitive path | For AI Agents: inform the user that
-#   this action was flagged by a Falco rule | correlation=42
+# Matches an IOC domain in a Bash command string.
+- macro: cmd_contains_ioc_domain
+  condition: >
+    tool.input_command contains "pastebin.com"
+    or tool.input_command contains "transfer.sh"
+    or tool.input_command contains "file.io"
+    or tool.input_command contains "termbin.com"
+    or tool.input_command contains "ix.io"
+    or tool.input_command contains "glot.io"
+    or tool.input_command contains "hastebin.com"
+    or tool.input_command contains "ghostbin.co"
+
+# ===========================================================================
+# Section 1 — Working-directory boundary
+# ===========================================================================
 
 - rule: Monitor activity outside working directory
   desc: >
@@ -105,6 +181,10 @@
   priority: WARNING
   source: coding_agent
   tags: [coding_agent_ask]
+
+# ===========================================================================
+# Section 2 — Sensitive paths
+# ===========================================================================
 
 - rule: Deny reading sensitive paths
   desc: >
@@ -136,3 +216,23 @@
   priority: CRITICAL
   source: coding_agent
   tags: [coding_agent_deny]
+
+# ===========================================================================
+# Section 3 — Sandbox disable
+# ===========================================================================
+# (filled in a subsequent commit)
+
+# ===========================================================================
+# Section 4 — Threats: credentials, dangerous commands, exfiltration, supply chain
+# ===========================================================================
+# (filled in a subsequent commit)
+
+# ===========================================================================
+# Section 5 — MCP and skill content
+# ===========================================================================
+# (filled in a subsequent commit)
+
+# ===========================================================================
+# Section 6 — Persistence vectors
+# ===========================================================================
+# (filled in a subsequent commit)
