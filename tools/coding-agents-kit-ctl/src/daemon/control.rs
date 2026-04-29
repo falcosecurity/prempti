@@ -30,6 +30,10 @@ pub enum ControlEvent {
 /// Bind the supervisor socket. Mirrors `socket_server::prepare_listener`:
 /// abort if a live peer answers (another supervisor is running for this
 /// prefix), otherwise clear any stale file and rebind.
+///
+/// On Unix, the run directory is created mode 0700 and the socket is
+/// chmod'd to 0600 after bind. Without this, another local user with
+/// traversal access to the install prefix could connect and send `STOP`.
 pub fn bind(path: &Path) -> io::Result<UnixListener> {
     if has_live_peer(path) {
         return Err(io::Error::new(
@@ -43,10 +47,44 @@ pub fn bind(path: &Path) -> io::Result<UnixListener> {
     }
     let _ = std::fs::remove_file(path);
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
+        restrict_dir_mode(parent);
     }
-    UnixListener::bind(path)
+    let listener = UnixListener::bind(path)?;
+    restrict_socket_mode(path);
+    Ok(listener)
 }
+
+#[cfg(unix)]
+fn restrict_dir_mode(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
+        eprintln!(
+            "supervisor: warning: failed to chmod 0700 on {}: {e}",
+            path.display()
+        );
+    }
+}
+
+#[cfg(unix)]
+fn restrict_socket_mode(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        eprintln!(
+            "supervisor: warning: failed to chmod 0600 on {}: {e}",
+            path.display()
+        );
+    }
+}
+
+#[cfg(windows)]
+fn restrict_dir_mode(_path: &Path) {
+    // Windows: %LOCALAPPDATA% inherits per-user ACLs from the user profile,
+    // which already excludes other local users by default.
+}
+
+#[cfg(windows)]
+fn restrict_socket_mode(_path: &Path) {}
 
 fn has_live_peer(path: &Path) -> bool {
     if !path.exists() {
@@ -253,6 +291,29 @@ mod tests {
         shutdown.store(true, Ordering::Relaxed);
         handle.join().unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bind_chmods_socket_and_run_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "cak-bind-perms-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sock = dir.join("supervisor.sock");
+        let listener = bind(&sock).expect("bind");
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let sock_mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "run dir should be 0700");
+        assert_eq!(sock_mode, 0o600, "socket should be 0600");
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
