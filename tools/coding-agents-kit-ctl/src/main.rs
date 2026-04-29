@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{self, Command};
 
+mod daemon;
 mod hook;
 mod logs_pretty;
 

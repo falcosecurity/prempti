@@ -1,0 +1,14 @@
+# Supervisor configuration for coding-agents-kit.
+# Read by `coding-agents-kit-ctl daemon` at startup.
+# Changes require a manual daemon restart (e.g., `coding-agents-kit-ctl restart`).
+
+# Log rotation threshold in bytes. When falco.log or falco.err crosses this
+# size, the supervisor rotates it (.1, .2, ..., oldest dropped).
+log_rotate_bytes: 10485760    # 10 MiB
+
+# Number of rotated archives to keep. Older archives are dropped.
+log_rotate_keep: 3
+
+# Graceful stop timeout. The supervisor sends SIGTERM (or TerminateProcess
+# on Windows) and waits this long before escalating to SIGKILL.
+stop_timeout_secs: 20
