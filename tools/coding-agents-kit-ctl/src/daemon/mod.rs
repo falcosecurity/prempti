@@ -43,7 +43,9 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
         .map_err(|e| format!("failed to bind {}: {e}", paths.supervisor_sock.display()))?;
 
     match hook::add(&prefix) {
-        Ok(hook::AddResult::Added(p)) => eprintln!("supervisor: hook registered in {}", p.display()),
+        Ok(hook::AddResult::Added(p)) => {
+            eprintln!("supervisor: hook registered in {}", p.display())
+        }
         Ok(hook::AddResult::AlreadyRegistered) => {
             eprintln!("supervisor: hook already registered");
         }
@@ -462,10 +464,7 @@ mod tests {
             .join()
             .expect("watcher should terminate when signal flag is set");
 
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(ControlEvent::StopRequested)
-        ));
+        assert!(matches!(rx.try_recv(), Ok(ControlEvent::StopRequested)));
     }
 
     #[test]
@@ -483,9 +482,6 @@ mod tests {
             run_signal_watcher(&tx, &s, &r, Duration::from_millis(10));
         });
         handle.join().unwrap();
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(ControlEvent::StopRequested)
-        ));
+        assert!(matches!(rx.try_recv(), Ok(ControlEvent::StopRequested)));
     }
 }

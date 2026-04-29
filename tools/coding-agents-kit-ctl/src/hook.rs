@@ -61,8 +61,7 @@ pub fn add(prefix: &Path) -> Result<AddResult, String> {
     let mut settings: serde_json::Value = if path.exists() {
         let data = fs::read_to_string(&path)
             .map_err(|e| format!("error reading {}: {e}", path.display()))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("error parsing {}: {e}", path.display()))?
+        serde_json::from_str(&data).map_err(|e| format!("error parsing {}: {e}", path.display()))?
     } else {
         serde_json::json!({})
     };
@@ -114,8 +113,8 @@ pub fn remove() -> Result<RemoveResult, String> {
         return Ok(RemoveResult::NotFound);
     }
 
-    let data = fs::read_to_string(&path)
-        .map_err(|e| format!("error reading {}: {e}", path.display()))?;
+    let data =
+        fs::read_to_string(&path).map_err(|e| format!("error reading {}: {e}", path.display()))?;
     let mut settings: serde_json::Value = serde_json::from_str(&data)
         .map_err(|e| format!("error parsing {}: {e}", path.display()))?;
 
@@ -123,16 +122,17 @@ pub fn remove() -> Result<RemoveResult, String> {
     if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
         if let Some(pre_tool) = hooks.get_mut("PreToolUse").and_then(|p| p.as_array_mut()) {
             pre_tool.retain(|group| {
-                let dominated = group
-                    .get("hooks")
-                    .and_then(|h| h.as_array())
-                    .is_some_and(|group_hooks| {
-                        group_hooks.iter().any(|h| {
-                            h.get("command")
-                                .and_then(|c| c.as_str())
-                                .is_some_and(|c| c.contains("claude-interceptor"))
-                        })
-                    });
+                let dominated =
+                    group
+                        .get("hooks")
+                        .and_then(|h| h.as_array())
+                        .is_some_and(|group_hooks| {
+                            group_hooks.iter().any(|h| {
+                                h.get("command")
+                                    .and_then(|c| c.as_str())
+                                    .is_some_and(|c| c.contains("claude-interceptor"))
+                            })
+                        });
                 if dominated {
                     removed = true;
                 }

@@ -68,10 +68,7 @@ pub fn drain<R: Read>(
 
         if let Err(e) = writer.write_all(line.as_bytes()) {
             if !warned_write_error {
-                eprintln!(
-                    "supervisor: failed to write to {}: {e}",
-                    log_path.display()
-                );
+                eprintln!("supervisor: failed to write to {}: {e}", log_path.display());
                 warned_write_error = true;
             }
         }
@@ -111,7 +108,14 @@ mod tests {
         let log = dir.join("falco.log");
         let input = "line one\nline two\nline three\n";
         let rotated = Arc::new(AtomicU32::new(0));
-        drain(Cursor::new(input), log.clone(), 1024 * 1024, 3, rotated.clone()).unwrap();
+        drain(
+            Cursor::new(input),
+            log.clone(),
+            1024 * 1024,
+            3,
+            rotated.clone(),
+        )
+        .unwrap();
         assert_eq!(std::fs::read_to_string(&log).unwrap(), input);
         assert_eq!(rotated.load(Ordering::Relaxed), 0);
     }

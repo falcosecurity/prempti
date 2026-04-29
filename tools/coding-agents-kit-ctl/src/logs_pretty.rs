@@ -311,7 +311,11 @@ impl<R: SessionNameResolver> Formatter<R> {
         let tags: Vec<String> = v
             .get("tags")
             .and_then(|t| t.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let cid = v
             .get("output_fields")
@@ -347,7 +351,11 @@ impl<R: SessionNameResolver> Formatter<R> {
             .unwrap_or("")
             .to_string();
         let entry = self.in_flight.entry(cid).or_default();
-        entry.verdicts.push(VerdictAlert { kind, rule_name, priority });
+        entry.verdicts.push(VerdictAlert {
+            kind,
+            rule_name,
+            priority,
+        });
     }
 
     fn finalize(&mut self, cid: u64, seen: &Value) -> Vec<String> {
@@ -391,7 +399,10 @@ impl<R: SessionNameResolver> Formatter<R> {
             let color_code = pick_session_color(&session_id);
             self.sessions.insert(
                 session_id.clone(),
-                SessionState { color_code, last_title: None },
+                SessionState {
+                    color_code,
+                    last_title: None,
+                },
             );
             self.counters.sessions += 1;
             new_session = true;
@@ -415,26 +426,22 @@ impl<R: SessionNameResolver> Formatter<R> {
                 .get(&session_id)
                 .and_then(|s| s.last_title.clone());
             if resolved_title != prev && resolved_title.is_some() {
-                out.push(self.format_banner(
-                    &session_id,
-                    color_code,
-                    resolved_title.as_deref(),
-                ));
+                out.push(self.format_banner(&session_id, color_code, resolved_title.as_deref()));
                 if let Some(state) = self.sessions.get_mut(&session_id) {
                     state.last_title = resolved_title.clone();
                 }
             }
         }
 
-        let need_cwd_line =
-            new_session || self.last_emitted_cwd.as_deref() != Some(cwd.as_str());
+        let need_cwd_line = new_session || self.last_emitted_cwd.as_deref() != Some(cwd.as_str());
         if need_cwd_line && !cwd.is_empty() {
             out.push(self.format_cwd_line(&time_str, &session_id, color_code, &cwd));
             self.last_emitted_cwd = Some(cwd.clone());
         }
 
         if render_verdict {
-            let event_line = self.format_event_line(&time_str, &session_id, color_code, final_v, fields);
+            let event_line =
+                self.format_event_line(&time_str, &session_id, color_code, final_v, fields);
             out.push(event_line);
             for va in buf.verdicts.iter() {
                 if (va.kind == VerdictKind::Deny && final_v == FinalVerdict::Deny)
@@ -453,12 +460,7 @@ impl<R: SessionNameResolver> Formatter<R> {
         out
     }
 
-    fn format_banner(
-        &self,
-        session_id: &str,
-        color_code: u8,
-        name: Option<&str>,
-    ) -> String {
+    fn format_banner(&self, session_id: &str, color_code: u8, name: Option<&str>) -> String {
         let label = short_session_id(session_id);
         let label_painted = self.paint(&label, &session_color_code(color_code));
 
@@ -482,7 +484,13 @@ impl<R: SessionNameResolver> Formatter<R> {
         format!("{middle} {dashes_painted}")
     }
 
-    fn format_cwd_line(&self, time_str: &str, session_id: &str, color_code: u8, cwd: &str) -> String {
+    fn format_cwd_line(
+        &self,
+        time_str: &str,
+        session_id: &str,
+        color_code: u8,
+        cwd: &str,
+    ) -> String {
         let abbrev = shorten_path(cwd, &self.home, 60);
         let label = self.format_session_label(session_id, color_code);
         let arrow = self.paint("▸", ANSI_DIM);
@@ -1070,7 +1078,14 @@ mod tests {
         }
     }
 
-    fn make_seen(cid: u64, session: &str, cwd: &str, tool: &str, body_field: &str, body: &str) -> String {
+    fn make_seen(
+        cid: u64,
+        session: &str,
+        cwd: &str,
+        tool: &str,
+        body_field: &str,
+        body: &str,
+    ) -> String {
         let input_json = if tool == "Read" || tool == "Edit" || tool == "Write" {
             format!("{{\"file_path\":\"{body}\"}}")
         } else if tool == "Bash" {
@@ -1107,7 +1122,10 @@ mod tests {
         assert_eq!(ShowMask::parse("deny,ask,allow").unwrap().0, SHOW_DEFAULT);
         assert_eq!(ShowMask::parse("all").unwrap().0, SHOW_ALL);
         assert_eq!(ShowMask::parse("seen").unwrap().0, SHOW_SEEN);
-        assert_eq!(ShowMask::parse("deny, ask").unwrap().0, SHOW_DENY | SHOW_ASK);
+        assert_eq!(
+            ShowMask::parse("deny, ask").unwrap().0,
+            SHOW_DENY | SHOW_ASK
+        );
         assert!(ShowMask::parse("bogus").is_err());
     }
 
@@ -1180,7 +1198,14 @@ mod tests {
             StubResolver(HashMap::new()),
         );
         f.process_line(&make_ask(11, "Sensitive write", "Falco asks", "Warning"));
-        let out = f.process_line(&make_seen(11, "s", "/home/u", "Edit", "file", "/etc/passwd"));
+        let out = f.process_line(&make_seen(
+            11,
+            "s",
+            "/home/u",
+            "Edit",
+            "file",
+            "/etc/passwd",
+        ));
         let joined = out.join("\n");
         assert!(joined.contains("⊙"));
         assert!(joined.contains("WARNING  Sensitive write"));
@@ -1213,7 +1238,14 @@ mod tests {
             "/home/u".to_string(),
             StubResolver(HashMap::new()),
         );
-        let out = f.process_line(&make_seen(1, "abc", "/home/u/proj", "Bash", "command", "ls"));
+        let out = f.process_line(&make_seen(
+            1,
+            "abc",
+            "/home/u/proj",
+            "Bash",
+            "command",
+            "ls",
+        ));
         let joined = out.join("\n");
         assert!(joined.contains("── abc"), "banner expected: {joined}");
         assert!(joined.contains("[abc]"), "label in event line: {joined}");
@@ -1227,7 +1259,14 @@ mod tests {
             "/home/u".to_string(),
             StubResolver(HashMap::new()),
         );
-        let out = f.process_line(&make_seen(1, "abc", "/home/u/proj", "Bash", "command", "ls"));
+        let out = f.process_line(&make_seen(
+            1,
+            "abc",
+            "/home/u/proj",
+            "Bash",
+            "command",
+            "ls",
+        ));
         let cwd_line = out
             .iter()
             .find(|l| l.contains("▸"))
@@ -1339,14 +1378,13 @@ mod tests {
     fn show_seen_renders_audit_line() {
         let mut opts = opts_no_color();
         opts.show = ShowMask(SHOW_SEEN);
-        let mut f = Formatter::new(
-            opts,
-            "/home/u".to_string(),
-            StubResolver(HashMap::new()),
-        );
+        let mut f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
         let out = f.process_line(&make_seen(1, "s", "/home/u", "Bash", "command", "ls"));
         let joined = out.join("\n");
-        assert!(!joined.contains("●"), "no allow bullet when SHOW_ALLOW unset");
+        assert!(
+            !joined.contains("●"),
+            "no allow bullet when SHOW_ALLOW unset"
+        );
         assert!(joined.contains("·"), "seen audit bullet expected");
         // Counter still increments.
         assert_eq!(f.counters().events, 1);
@@ -1378,11 +1416,15 @@ mod tests {
         let read = serde_json::json!({"tool.name":"Read","tool.real_file_path":"/home/u/x.rs","tool.file_path":"/home/u/x.rs","tool.input":"{\"file_path\":\"/home/u/x.rs\"}"});
         let grep = serde_json::json!({"tool.name":"Grep","tool.input":"{\"pattern\":\"foo|bar\"}"});
         let webfetch = serde_json::json!({"tool.name":"WebFetch","tool.input":"{\"url\":\"https://example.com\"}"});
-        let task = serde_json::json!({"tool.name":"Task","tool.input":"{\"description\":\"do thing\"}"});
+        let task =
+            serde_json::json!({"tool.name":"Task","tool.input":"{\"description\":\"do thing\"}"});
         assert_eq!(f.render_tool_body(Some(&bash)), "Bash(ls -la)");
         assert_eq!(f.render_tool_body(Some(&read)), "Read(~/x.rs)");
         assert_eq!(f.render_tool_body(Some(&grep)), "Grep(foo|bar)");
-        assert_eq!(f.render_tool_body(Some(&webfetch)), "WebFetch(https://example.com)");
+        assert_eq!(
+            f.render_tool_body(Some(&webfetch)),
+            "WebFetch(https://example.com)"
+        );
         assert_eq!(f.render_tool_body(Some(&task)), "Task(do thing)");
     }
 
@@ -1394,7 +1436,9 @@ mod tests {
             StubResolver(HashMap::new()),
         );
         let cmd = "x".repeat(200);
-        let raw = format!("{{\"tool.name\":\"Bash\",\"tool.input_command\":\"{cmd}\",\"tool.input\":\"{{}}\"}}");
+        let raw = format!(
+            "{{\"tool.name\":\"Bash\",\"tool.input_command\":\"{cmd}\",\"tool.input\":\"{{}}\"}}"
+        );
         let v: Value = serde_json::from_str(&raw).unwrap();
         let body = f.render_tool_body(Some(&v));
         // Body width inside parens is bounded.
@@ -1409,12 +1453,16 @@ mod tests {
             StubResolver(HashMap::new()),
         );
         let out = f.process_line("Hook registered in /home/u/.claude/settings.json");
-        assert_eq!(out, vec!["Hook registered in /home/u/.claude/settings.json".to_string()]);
+        assert_eq!(
+            out,
+            vec!["Hook registered in /home/u/.claude/settings.json".to_string()]
+        );
     }
 
     #[test]
     fn condense_session_name_strips_newlines_and_truncates() {
-        let s = "Line one\nLine two\twith tabs and a very long body that goes on and on and on and on";
+        let s =
+            "Line one\nLine two\twith tabs and a very long body that goes on and on and on and on";
         let out = condense_session_name(s);
         assert!(!out.contains('\n'));
         assert!(!out.contains('\t'));

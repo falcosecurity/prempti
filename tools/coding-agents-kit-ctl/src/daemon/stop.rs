@@ -83,10 +83,7 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            Command::new("cmd")
-                .args(["/C", "exit 0"])
-                .spawn()
-                .unwrap()
+            Command::new("cmd").args(["/C", "exit 0"]).spawn().unwrap()
         }
     }
 

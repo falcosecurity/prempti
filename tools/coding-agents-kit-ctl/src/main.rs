@@ -17,9 +17,8 @@ pub(crate) fn home_dir() -> String {
     }
     #[cfg(windows)]
     {
-        env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-            env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string())
-        })
+        env::var("LOCALAPPDATA")
+            .unwrap_or_else(|_| env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string()))
     }
 }
 
@@ -245,7 +244,10 @@ fn service_start(prefix: &PathBuf) {
         eprintln!("Failed to start service.");
         process::exit(1);
     }
-    report_start_result(await_broker_ready(prefix, std::time::Duration::from_secs(5)));
+    report_start_result(await_broker_ready(
+        prefix,
+        std::time::Duration::from_secs(5),
+    ));
 }
 
 #[cfg(target_os = "linux")]
@@ -338,7 +340,10 @@ fn service_start(prefix: &PathBuf) {
         eprintln!("Failed to start service.");
         process::exit(1);
     }
-    report_start_result(await_broker_ready(prefix, std::time::Duration::from_secs(5)));
+    report_start_result(await_broker_ready(
+        prefix,
+        std::time::Duration::from_secs(5),
+    ));
 }
 
 #[cfg(target_os = "macos")]
@@ -525,7 +530,13 @@ fn service_start(prefix: &PathBuf) {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     let ps_cmd = build_start_powershell_command(&launcher, prefix);
     let ok = Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &ps_cmd,
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -619,7 +630,17 @@ fn service_enable() {
     let launcher = prefix.join("bin").join("coding-agents-kit-launcher.ps1");
     let cmd = build_run_key_value(&launcher, &prefix);
     let ok = Command::new("reg")
-        .args(["add", RUN_KEY, "/v", RUN_VALUE_NAME, "/t", "REG_SZ", "/d", &cmd, "/f"])
+        .args([
+            "add",
+            RUN_KEY,
+            "/v",
+            RUN_VALUE_NAME,
+            "/t",
+            "REG_SZ",
+            "/d",
+            &cmd,
+            "/f",
+        ])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -669,14 +690,7 @@ fn service_status() {
             println!("Service running.");
             for pid in &pids {
                 let row = Command::new("tasklist")
-                    .args([
-                        "/FI",
-                        &format!("PID eq {pid}"),
-                        "/FO",
-                        "CSV",
-                        "/NH",
-                        "/V",
-                    ])
+                    .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH", "/V"])
                     .output()
                     .ok()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -1019,12 +1033,20 @@ fn logs_conflict_warning(opts: &LogsOpts) -> String {
     if ignored.is_empty() {
         return String::new();
     }
-    let with = if opts.raw { "--raw" } else { "--err (stderr is plain text)" };
+    let with = if opts.raw {
+        "--raw"
+    } else {
+        "--err (stderr is plain text)"
+    };
     format!("warning: {} ignored with {}", ignored.join(", "), with)
 }
 
 fn logs(prefix: &PathBuf, opts: &LogsOpts) {
-    let file = if opts.stderr { "falco.err" } else { "falco.log" };
+    let file = if opts.stderr {
+        "falco.err"
+    } else {
+        "falco.log"
+    };
     let path = prefix.join("log").join(file);
     if !path.exists() {
         eprintln!("Log file not found: {}", path.display());
@@ -1099,7 +1121,9 @@ fn run_logs_pretty(path: &PathBuf, opts: &LogsOpts) {
         .unwrap_or(false);
     let color = !opts.no_color && !no_color_env && stdout_is_tty;
     let stats = !opts.no_stats && stdout_is_tty;
-    let show = opts.show.unwrap_or_else(logs_pretty::ShowMask::default_mask);
+    let show = opts
+        .show
+        .unwrap_or_else(logs_pretty::ShowMask::default_mask);
 
     if color {
         logs_pretty::enable_vt_mode();
@@ -1279,7 +1303,10 @@ mod mode_tests {
     fn flips_mode_value_preserving_indent() {
         let yaml = "plugins:\n  - name: coding_agent\n    init_config:\n      mode: guardrails\n      http_port: 2802\n";
         let out = rewrite_mode_in_yaml(yaml, "monitor").expect("mode line found");
-        assert!(out.contains("      mode: monitor\n"), "indent preserved: {out}");
+        assert!(
+            out.contains("      mode: monitor\n"),
+            "indent preserved: {out}"
+        );
         // Other lines untouched.
         assert!(out.contains("plugins:\n"));
         assert!(out.contains("      http_port: 2802\n"));
@@ -1370,9 +1397,13 @@ fn print_usage() {
     eprintln!("                   service; advanced users can run it manually.");
     eprintln!("                     --prefix PATH              install prefix (default: ~/.coding-agents-kit)");
     eprintln!("                     --config PATH              supervisor config (default: <prefix>/config/supervisor.yaml)");
-    eprintln!("                     --log-rotate-bytes N       override config: rotation size threshold");
+    eprintln!(
+        "                     --log-rotate-bytes N       override config: rotation size threshold"
+    );
     eprintln!("                     --log-rotate-keep N        override config: archives to keep");
-    eprintln!("                     --stop-timeout-secs N      override config: graceful stop timeout");
+    eprintln!(
+        "                     --stop-timeout-secs N      override config: graceful stop timeout"
+    );
     eprintln!();
     eprintln!("  uninstall        Remove coding-agents-kit completely");
     eprintln!("  uninstall --keep-user-rules  Uninstall but preserve custom rules");
@@ -1409,8 +1440,7 @@ fn parse_daemon_args(args: &[&str], default_prefix: PathBuf) -> Result<daemon::D
         match name {
             "--prefix" => opts.prefix = PathBuf::from(next_flag_value(args, &mut i, "--prefix")?),
             "--config" => {
-                opts.config_path =
-                    Some(PathBuf::from(next_flag_value(args, &mut i, "--config")?));
+                opts.config_path = Some(PathBuf::from(next_flag_value(args, &mut i, "--config")?));
             }
             "--log-rotate-bytes" => {
                 let v = next_flag_value(args, &mut i, "--log-rotate-bytes")?;
@@ -1621,12 +1651,8 @@ mod windows_command_tests {
 
     #[test]
     fn start_command_uses_hidden_window() {
-        let cmd = build_start_powershell_command(
-            Path::new("a/launcher.ps1"),
-            Path::new("a"),
-        );
+        let cmd = build_start_powershell_command(Path::new("a/launcher.ps1"), Path::new("a"));
         assert!(cmd.contains("'-WindowStyle','Hidden'"));
         assert!(cmd.ends_with("-WindowStyle Hidden"));
     }
 }
-
