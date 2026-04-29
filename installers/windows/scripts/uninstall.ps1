@@ -18,17 +18,26 @@ $ErrorActionPreference = 'SilentlyContinue'
 # (see installers/windows/Package.wxs).
 $Prefix = $Prefix.TrimEnd([char[]]@('\', '.'))
 
-# Stop Falco if running
+# Stop the supervisor gracefully (it routes through supervisor.sock and
+# runs the full cleanup chain: graceful Falco stop, drain pipes, hook
+# remove, close logs). Force-kill any leftover falco.exe only as a fallback
+# for legacy installs without the supervisor or for a broken state.
+$ctlExe = Join-Path $Prefix 'bin\coding-agents-kit-ctl.exe'
+if (Test-Path $ctlExe) {
+    Write-Host "Stopping service..."
+    & $ctlExe stop 2>$null | Out-Null
+}
+
 $falcoProcs = Get-Process -Name falco -ErrorAction SilentlyContinue
 if ($falcoProcs) {
-    Write-Host "Stopping Falco..."
+    Write-Host "Force-stopping leftover Falco..."
     $falcoProcs | Stop-Process -Force
     Start-Sleep -Seconds 1
 }
 
-# Launcher's `finally` already removed the hook on shutdown; keep this
-# call as a fallback but suppress its output.
-$ctlExe = Join-Path $Prefix 'bin\coding-agents-kit-ctl.exe'
+# Fallback hook removal — the supervisor already removed it as part of
+# `ctl stop`, but call this in case the supervisor didn't run (e.g.,
+# legacy install).
 if (Test-Path $ctlExe) {
     & $ctlExe hook remove 2>$null | Out-Null
 }
