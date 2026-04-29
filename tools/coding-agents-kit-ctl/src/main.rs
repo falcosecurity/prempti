@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
 mod daemon;
@@ -470,6 +470,35 @@ fn falco_pids() -> Option<Vec<u32>> {
     }
 }
 
+/// Render the PowerShell `-Command` string used by `ctl start` on Windows.
+///
+/// `-Prefix` must be passed explicitly: the MSI supports a custom install
+/// directory and `default_prefix()` derives that from the installed
+/// ctl.exe location, but the launcher itself defaults to
+/// `%LOCALAPPDATA%\coding-agents-kit` when `-Prefix` is omitted, which
+/// then fails to find ctl.exe under a non-default prefix.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn build_start_powershell_command(launcher: &Path, prefix: &Path) -> String {
+    format!(
+        "Start-Process -FilePath 'powershell.exe' -ArgumentList @(\
+'-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',\
+'-File','{}','-Prefix','{}') -WindowStyle Hidden",
+        launcher.display(),
+        prefix.display()
+    )
+}
+
+/// Render the `REG_SZ` value written by `ctl enable` on Windows.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn build_run_key_value(launcher: &Path, prefix: &Path) -> String {
+    format!(
+        "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden \
+-File \"{}\" -Prefix \"{}\"",
+        launcher.display(),
+        prefix.display()
+    )
+}
+
 #[cfg(target_os = "windows")]
 fn service_start(prefix: &PathBuf) {
     if is_falco_running() {
@@ -494,10 +523,7 @@ fn service_start(prefix: &PathBuf) {
     // the launcher stays in the caller's job, keeping the pipeline open.
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let ps_cmd = format!(
-        "Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','{}') -WindowStyle Hidden",
-        launcher.display()
-    );
+    let ps_cmd = build_start_powershell_command(&launcher, prefix);
     let ok = Command::new("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd])
         .stdin(std::process::Stdio::null())
@@ -591,10 +617,7 @@ fn service_stop(warn_hook: bool) {
 fn service_enable() {
     let prefix = default_prefix();
     let launcher = prefix.join("bin").join("coding-agents-kit-launcher.ps1");
-    let cmd = format!(
-        "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"",
-        launcher.display()
-    );
+    let cmd = build_run_key_value(&launcher, &prefix);
     let ok = Command::new("reg")
         .args(["add", RUN_KEY, "/v", RUN_VALUE_NAME, "/t", "REG_SZ", "/d", &cmd, "/f"])
         .status()
@@ -1558,3 +1581,52 @@ mod daemon_arg_tests {
         assert!(err.contains("invalid"), "got: {err}");
     }
 }
+
+#[cfg(test)]
+mod windows_command_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn start_command_includes_file_and_prefix() {
+        let launcher = PathBuf::from("C:/cak/bin/coding-agents-kit-launcher.ps1");
+        let prefix = PathBuf::from("C:/cak");
+        let cmd = build_start_powershell_command(&launcher, &prefix);
+        assert!(
+            cmd.contains("'-File','C:/cak/bin/coding-agents-kit-launcher.ps1'"),
+            "missing -File arg: {cmd}"
+        );
+        assert!(
+            cmd.contains("'-Prefix','C:/cak'"),
+            "missing -Prefix arg: {cmd}"
+        );
+        assert!(cmd.starts_with("Start-Process "), "got: {cmd}");
+    }
+
+    #[test]
+    fn run_key_value_includes_file_and_prefix() {
+        let launcher = PathBuf::from("D:/install/bin/coding-agents-kit-launcher.ps1");
+        let prefix = PathBuf::from("D:/install");
+        let cmd = build_run_key_value(&launcher, &prefix);
+        assert!(
+            cmd.contains("-File \"D:/install/bin/coding-agents-kit-launcher.ps1\""),
+            "missing -File: {cmd}"
+        );
+        assert!(
+            cmd.contains("-Prefix \"D:/install\""),
+            "missing -Prefix: {cmd}"
+        );
+        assert!(cmd.starts_with("powershell "), "got: {cmd}");
+    }
+
+    #[test]
+    fn start_command_uses_hidden_window() {
+        let cmd = build_start_powershell_command(
+            Path::new("a/launcher.ps1"),
+            Path::new("a"),
+        );
+        assert!(cmd.contains("'-WindowStyle','Hidden'"));
+        assert!(cmd.ends_with("-WindowStyle Hidden"));
+    }
+}
+
