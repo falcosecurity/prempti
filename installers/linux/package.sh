@@ -103,6 +103,7 @@ tar xzf "$FALCO_CACHE" --strip-components=3 -C "$BUILD_DIR/bin/" \
 # Config files.
 cp "$ROOT_DIR/configs/falco.yaml" "$BUILD_DIR/config/"
 cp "$ROOT_DIR/configs/falco.coding_agents_plugin.yaml" "$BUILD_DIR/config/"
+cp "$ROOT_DIR/configs/supervisor.yaml" "$BUILD_DIR/config/"
 
 # Rules.
 cp "$ROOT_DIR/rules/default/coding_agents_rules.yaml" "$BUILD_DIR/rules/default/"

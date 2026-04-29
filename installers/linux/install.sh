@@ -57,6 +57,7 @@ run() {
 for f in bin/falco bin/claude-interceptor bin/coding-agents-kit-ctl \
          share/libcoding_agent.so \
          config/falco.yaml config/falco.coding_agents_plugin.yaml \
+         config/supervisor.yaml \
          rules/seen.yaml systemd/coding-agents-kit.service; do
     [[ -f "$SCRIPT_DIR/$f" ]] || err "Missing package file: $f (are you running from the extracted package?)"
 done
@@ -116,6 +117,13 @@ run install -m 644 "$SCRIPT_DIR/share/libcoding_agent.so" "$PREFIX/share/libcodi
 info "Installing configuration..."
 run install -m 644 "$SCRIPT_DIR/config/falco.yaml" "$PREFIX/config/falco.yaml"
 run install -m 644 "$SCRIPT_DIR/config/falco.coding_agents_plugin.yaml" "$PREFIX/config/falco.coding_agents_plugin.yaml"
+# supervisor.yaml: ship the default file only on a fresh install. Existing
+# installations may have user edits (the file is meant to be edited).
+if [[ ! -f "$PREFIX/config/supervisor.yaml" ]]; then
+    run install -m 644 "$SCRIPT_DIR/config/supervisor.yaml" "$PREFIX/config/supervisor.yaml"
+else
+    info "Preserving existing $PREFIX/config/supervisor.yaml"
+fi
 
 info "Installing rules..."
 run install -m 644 "$SCRIPT_DIR/rules/default/coding_agents_rules.yaml" "$PREFIX/rules/default/coding_agents_rules.yaml"

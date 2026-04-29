@@ -4,13 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStartPost=@PREFIX@/bin/coding-agents-kit-ctl hook add
-ExecStart=@PREFIX@/bin/falco -U \
-  -c @PREFIX@/config/falco.yaml \
-  --disable-source syscall
-ExecStopPost=@PREFIX@/bin/coding-agents-kit-ctl hook remove
-StandardOutput=append:@PREFIX@/log/falco.log
-StandardError=append:@PREFIX@/log/falco.err
+# The supervisor (`ctl daemon`) spawns Falco, owns the log files and rotation,
+# and owns the Claude Code hook lifecycle. systemd just tracks the supervisor.
+ExecStart=@PREFIX@/bin/coding-agents-kit-ctl daemon --prefix @PREFIX@
 Restart=on-failure
 RestartSec=5
 Environment=HOME=%h
