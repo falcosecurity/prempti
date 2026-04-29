@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{self, Command};
 
+mod logs_pretty;
+
 #[cfg(target_os = "linux")]
 const SERVICE_NAME: &str = "coding-agents-kit";
 
@@ -1076,16 +1078,31 @@ struct LogsOpts {
     stderr: bool,
     follow: bool,
     tail: Option<u64>,
+    raw: bool,
+    no_color: bool,
+    no_stats: bool,
+    show: Option<logs_pretty::ShowMask>,
 }
 
 fn parse_logs_args(args: &[&str]) -> Result<LogsOpts, String> {
-    let mut opts = LogsOpts { stderr: false, follow: false, tail: None };
+    let mut opts = LogsOpts {
+        stderr: false,
+        follow: false,
+        tail: None,
+        raw: false,
+        no_color: false,
+        no_stats: false,
+        show: None,
+    };
     let mut i = 0;
     while i < args.len() {
         let a = args[i];
         match a {
             "--err" => opts.stderr = true,
             "-f" | "--follow" => opts.follow = true,
+            "--raw" => opts.raw = true,
+            "--no-color" => opts.no_color = true,
+            "--no-stats" => opts.no_stats = true,
             "--tail" => {
                 i += 1;
                 let v = args
@@ -1103,11 +1120,47 @@ fn parse_logs_args(args: &[&str]) -> Result<LogsOpts, String> {
                         .map_err(|_| format!("invalid --tail value: {}", v))?,
                 );
             }
+            "--show" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--show requires a value".to_string())?;
+                opts.show = Some(logs_pretty::ShowMask::parse(v)?);
+            }
+            _ if a.starts_with("--show=") => {
+                let v = &a["--show=".len()..];
+                opts.show = Some(logs_pretty::ShowMask::parse(v)?);
+            }
             _ => return Err(format!("unknown logs flag: {}", a)),
         }
         i += 1;
     }
     Ok(opts)
+}
+
+/// Build a single coalesced warning if pretty-only flags are combined with
+/// raw-implying flags (--raw or --err). Returns an empty string when there
+/// is nothing to warn about. The caller prints this to stderr at startup.
+fn logs_conflict_warning(opts: &LogsOpts) -> String {
+    let raw_mode = opts.raw || opts.stderr;
+    if !raw_mode {
+        return String::new();
+    }
+    let mut ignored: Vec<&str> = Vec::new();
+    if opts.show.is_some() {
+        ignored.push("--show");
+    }
+    if opts.no_color {
+        ignored.push("--no-color");
+    }
+    if opts.no_stats {
+        ignored.push("--no-stats");
+    }
+    if ignored.is_empty() {
+        return String::new();
+    }
+    let with = if opts.raw { "--raw" } else { "--err (stderr is plain text)" };
+    format!("warning: {} ignored with {}", ignored.join(", "), with)
 }
 
 fn logs(prefix: &PathBuf, opts: &LogsOpts) {
@@ -1119,8 +1172,23 @@ fn logs(prefix: &PathBuf, opts: &LogsOpts) {
         process::exit(1);
     }
 
+    let warning = logs_conflict_warning(opts);
+    if !warning.is_empty() {
+        eprintln!("{warning}");
+    }
+
+    // --raw and --err both bypass the pretty path: --raw because the user
+    // asked for it, --err because Falco's stderr is plain text, not JSON.
+    if opts.raw || opts.stderr {
+        run_logs_raw(&path, opts);
+    } else {
+        run_logs_pretty(&path, opts);
+    }
+}
+
+fn build_tail_command(path: &PathBuf, opts: &LogsOpts) -> Command {
     #[cfg(unix)]
-    let status = {
+    {
         let tail_arg = match opts.tail {
             Some(n) => n.to_string(),
             // Snapshot mode without --tail: print the full file. `tail -n +1`
@@ -1132,11 +1200,11 @@ fn logs(prefix: &PathBuf, opts: &LogsOpts) {
         if opts.follow {
             cmd.arg("-f");
         }
-        cmd.arg(&path).status()
-    };
-
+        cmd.arg(path);
+        cmd
+    }
     #[cfg(windows)]
-    let status = {
+    {
         let mut ps_cmd = format!("Get-Content -Path '{}'", path.display());
         if let Some(n) = opts.tail {
             ps_cmd.push_str(&format!(" -Tail {}", n));
@@ -1144,15 +1212,77 @@ fn logs(prefix: &PathBuf, opts: &LogsOpts) {
         if opts.follow {
             ps_cmd.push_str(" -Wait");
         }
-        Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps_cmd])
-            .status()
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &ps_cmd]);
+        cmd
+    }
+}
+
+fn run_logs_raw(path: &PathBuf, opts: &LogsOpts) {
+    let mut cmd = build_tail_command(path, opts);
+    match cmd.status() {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Failed to tail log: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn run_logs_pretty(path: &PathBuf, opts: &LogsOpts) {
+    use std::io::{BufReader, IsTerminal, Write};
+    use std::process::Stdio;
+
+    let stdout_is_tty = std::io::stdout().is_terminal();
+    let no_color_env = std::env::var("NO_COLOR")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let color = !opts.no_color && !no_color_env && stdout_is_tty;
+    let stats = !opts.no_stats && stdout_is_tty;
+    let show = opts.show.unwrap_or_else(logs_pretty::ShowMask::default_mask);
+
+    if color {
+        logs_pretty::enable_vt_mode();
+    }
+
+    let pretty_opts = logs_pretty::PrettyOpts {
+        color,
+        stats,
+        follow: opts.follow,
+        show,
+        term_cols: logs_pretty::detect_term_cols(),
     };
 
-    if let Err(e) = status {
-        eprintln!("Failed to tail log: {e}");
-        process::exit(1);
+    let mut cmd = build_tail_command(path, opts);
+    cmd.stdout(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to tail log: {e}");
+            process::exit(1);
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            eprintln!("Failed to capture tail stdout");
+            let _ = child.wait();
+            process::exit(1);
+        }
+    };
+    let reader = BufReader::new(stdout);
+    let stdout_lock = std::io::stdout();
+    let mut writer = stdout_lock.lock();
+    let resolver = logs_pretty::FsSessionNameResolver::default();
+    if let Err(e) = logs_pretty::run(reader, &mut writer, pretty_opts, resolver) {
+        // BrokenPipe is expected when the consumer (e.g., `head`) closes the
+        // pipe — exit silently rather than printing an error.
+        if e.kind() != std::io::ErrorKind::BrokenPipe {
+            eprintln!("logs: {e}");
+        }
     }
+    let _ = writer.flush();
+    let _ = child.wait();
 }
 
 #[cfg(test)]
@@ -1165,6 +1295,73 @@ mod logs_tests {
         assert!(!opts.stderr);
         assert!(!opts.follow);
         assert!(opts.tail.is_none());
+        assert!(!opts.raw);
+        assert!(!opts.no_color);
+        assert!(!opts.no_stats);
+        assert!(opts.show.is_none());
+    }
+
+    #[test]
+    fn raw_flag_parsed() {
+        assert!(parse_logs_args(&["--raw"]).unwrap().raw);
+    }
+
+    #[test]
+    fn no_color_and_no_stats_parsed() {
+        let opts = parse_logs_args(&["--no-color", "--no-stats"]).unwrap();
+        assert!(opts.no_color);
+        assert!(opts.no_stats);
+    }
+
+    #[test]
+    fn show_flag_space_and_equals_form() {
+        let opts1 = parse_logs_args(&["--show", "deny,ask"]).unwrap();
+        let opts2 = parse_logs_args(&["--show=deny,ask"]).unwrap();
+        assert_eq!(opts1.show, opts2.show);
+        assert!(opts1.show.is_some());
+    }
+
+    #[test]
+    fn show_invalid_value_errors() {
+        assert!(parse_logs_args(&["--show", "bogus"]).is_err());
+        assert!(parse_logs_args(&["--show=bogus"]).is_err());
+    }
+
+    #[test]
+    fn show_missing_value_errors() {
+        assert!(parse_logs_args(&["--show"]).is_err());
+    }
+
+    #[test]
+    fn conflict_warning_empty_when_no_conflict() {
+        let opts = parse_logs_args(&["-f"]).unwrap();
+        assert_eq!(logs_conflict_warning(&opts), "");
+        let opts = parse_logs_args(&["--show", "deny"]).unwrap();
+        assert_eq!(logs_conflict_warning(&opts), "");
+    }
+
+    #[test]
+    fn conflict_warning_lists_ignored_flags_with_raw() {
+        let opts = parse_logs_args(&["--raw", "--show", "deny", "--no-color"]).unwrap();
+        let w = logs_conflict_warning(&opts);
+        assert!(w.contains("--show"), "got: {w}");
+        assert!(w.contains("--no-color"), "got: {w}");
+        assert!(w.contains("--raw"), "got: {w}");
+    }
+
+    #[test]
+    fn conflict_warning_with_err_mentions_stderr() {
+        let opts = parse_logs_args(&["--err", "--show", "deny"]).unwrap();
+        let w = logs_conflict_warning(&opts);
+        assert!(w.contains("--show"));
+        assert!(w.contains("--err"));
+        assert!(w.contains("stderr is plain text"));
+    }
+
+    #[test]
+    fn raw_alone_does_not_warn() {
+        let opts = parse_logs_args(&["--raw"]).unwrap();
+        assert_eq!(logs_conflict_warning(&opts), "");
     }
 
     #[test]
@@ -1300,7 +1497,12 @@ fn print_usage() {
     eprintln!("  logs [flags]     Print Falco stdout logs (snapshot by default)");
     eprintln!("                     -f, --follow    stream new output");
     eprintln!("                     --tail=N        print last N lines");
-    eprintln!("                     --err           target stderr log instead");
+    eprintln!("                     --err           target stderr log instead (forces raw)");
+    eprintln!("                     --raw           print raw JSON (disable pretty formatting)");
+    eprintln!("                     --show LIST     verdicts to render: deny,ask,allow,seen,all");
+    eprintln!("                                     default: deny,ask,allow (seen filtered)");
+    eprintln!("                     --no-color      pretty layout without ANSI colors");
+    eprintln!("                     --no-stats      pretty layout without status line");
     eprintln!();
     eprintln!("  uninstall        Remove coding-agents-kit completely");
     eprintln!("  uninstall --keep-user-rules  Uninstall but preserve custom rules");
