@@ -155,22 +155,36 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
     print_restart_warning();
     eprintln!();
 
+    service_restart_inner(prefix, hook_was_registered);
+
+    println!();
+    println!("Mode set to: {mode}");
+}
+
+/// Stop the service, re-register the hook to keep the gap fail-closed, then
+/// start the service again. Shared by `ctl restart` and `ctl mode`.
+fn service_restart_inner(prefix: &PathBuf, restore_hook: bool) {
     service_stop(false);
 
-    // Re-register the hook before starting back up so the brief restart
-    // window stays fail-closed rather than passing tool calls through
-    // unchecked. The supervisor removes the hook on stop; this puts it
-    // back during the gap. `hook::add` is idempotent.
-    if hook_was_registered {
+    // The supervisor removes the hook on stop; without re-adding it here,
+    // the gap between stop and start would let tool calls through
+    // unchecked. `hook::add` is idempotent.
+    if restore_hook {
         if let Err(e) = hook::add(prefix) {
             eprintln!("warning: failed to re-register hook during restart: {e}");
         }
     }
 
     service_start(prefix);
+}
 
+fn service_restart(prefix: &PathBuf) {
+    let restore_hook = hook::is_registered();
+    println!("Restarting service...");
+    eprintln!();
+    service_restart_inner(prefix, restore_hook);
     println!();
-    println!("Mode set to: {mode}");
+    println!("Service restarted.");
 }
 
 // ---------------------------------------------------------------------------
@@ -1283,6 +1297,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("  start            Start the service");
     eprintln!("  stop             Stop the service");
+    eprintln!("  restart          Stop and start the service (use after editing config files)");
     eprintln!("  enable           Enable service auto-start on login");
     eprintln!("  disable          Disable service auto-start");
     eprintln!("  status           Show service status");
@@ -1297,12 +1312,79 @@ fn print_usage() {
     eprintln!("                     --no-color      pretty layout without ANSI colors");
     eprintln!("                     --no-stats      pretty layout without status line");
     eprintln!();
+    eprintln!("  daemon [flags]   Run the supervisor (spawns Falco, owns logs and rotation,");
+    eprintln!("                   owns the hook lifecycle). Normally invoked by the platform");
+    eprintln!("                   service; advanced users can run it manually.");
+    eprintln!("                     --prefix PATH              install prefix (default: ~/.coding-agents-kit)");
+    eprintln!("                     --config PATH              supervisor config (default: <prefix>/config/supervisor.yaml)");
+    eprintln!("                     --log-rotate-bytes N       override config: rotation size threshold");
+    eprintln!("                     --log-rotate-keep N        override config: archives to keep");
+    eprintln!("                     --stop-timeout-secs N      override config: graceful stop timeout");
+    eprintln!();
     eprintln!("  uninstall        Remove coding-agents-kit completely");
     eprintln!("  uninstall --keep-user-rules  Uninstall but preserve custom rules");
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  -V, --version    Print version and exit");
     eprintln!("  -h, --help       Print this help and exit");
+}
+
+fn next_flag_value<'a>(args: &'a [&str], i: &mut usize, name: &str) -> Result<&'a str, String> {
+    let arg = args[*i];
+    let prefix = format!("{name}=");
+    if let Some(suffix) = arg.strip_prefix(&prefix) {
+        return Ok(suffix);
+    }
+    *i += 1;
+    args.get(*i)
+        .copied()
+        .ok_or_else(|| format!("{name} requires a value"))
+}
+
+fn parse_daemon_args(args: &[&str], default_prefix: PathBuf) -> Result<daemon::DaemonOpts, String> {
+    let mut opts = daemon::DaemonOpts {
+        prefix: default_prefix,
+        config_path: None,
+        log_rotate_bytes: None,
+        log_rotate_keep: None,
+        stop_timeout_secs: None,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i];
+        let name = arg.split('=').next().unwrap_or(arg);
+        match name {
+            "--prefix" => opts.prefix = PathBuf::from(next_flag_value(args, &mut i, "--prefix")?),
+            "--config" => {
+                opts.config_path =
+                    Some(PathBuf::from(next_flag_value(args, &mut i, "--config")?));
+            }
+            "--log-rotate-bytes" => {
+                let v = next_flag_value(args, &mut i, "--log-rotate-bytes")?;
+                opts.log_rotate_bytes = Some(
+                    v.parse()
+                        .map_err(|_| format!("invalid --log-rotate-bytes: {v}"))?,
+                );
+            }
+            "--log-rotate-keep" => {
+                let v = next_flag_value(args, &mut i, "--log-rotate-keep")?;
+                opts.log_rotate_keep = Some(
+                    v.parse()
+                        .map_err(|_| format!("invalid --log-rotate-keep: {v}"))?,
+                );
+            }
+            "--stop-timeout-secs" => {
+                let v = next_flag_value(args, &mut i, "--stop-timeout-secs")?;
+                opts.stop_timeout_secs = Some(
+                    v.parse()
+                        .map_err(|_| format!("invalid --stop-timeout-secs: {v}"))?,
+                );
+            }
+            _ => return Err(format!("unknown daemon flag: {arg}")),
+        }
+        i += 1;
+    }
+    Ok(opts)
 }
 
 fn main() {
@@ -1336,10 +1418,26 @@ fn main() {
         ["mode", mode] => mode_set(&prefix, mode),
         ["start"] => service_start(&prefix),
         ["stop"] => service_stop(true),
+        ["restart"] => service_restart(&prefix),
         ["enable"] => service_enable(),
         ["disable"] => service_disable(),
         ["status"] => service_status(),
         ["health"] => health(&prefix),
+        ["daemon", rest @ ..] => match parse_daemon_args(rest, prefix.clone()) {
+            Ok(opts) => match daemon::run(opts) {
+                Ok(code) => process::exit(code),
+                Err(e) => {
+                    eprintln!("supervisor: {e}");
+                    process::exit(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("{e}");
+                eprintln!();
+                print_usage();
+                process::exit(2);
+            }
+        },
         ["logs", rest @ ..] => match parse_logs_args(rest) {
             Ok(opts) => logs(&prefix, &opts),
             Err(e) => {
@@ -1357,5 +1455,76 @@ fn main() {
             print_usage();
             process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod daemon_arg_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn pfx() -> PathBuf {
+        PathBuf::from("/tmp/cak-test")
+    }
+
+    #[test]
+    fn defaults_when_no_flags() {
+        let opts = parse_daemon_args(&[], pfx()).unwrap();
+        assert_eq!(opts.prefix, pfx());
+        assert!(opts.config_path.is_none());
+        assert!(opts.log_rotate_bytes.is_none());
+        assert!(opts.log_rotate_keep.is_none());
+        assert!(opts.stop_timeout_secs.is_none());
+    }
+
+    #[test]
+    fn prefix_space_form() {
+        let opts = parse_daemon_args(&["--prefix", "/opt/cak"], pfx()).unwrap();
+        assert_eq!(opts.prefix, PathBuf::from("/opt/cak"));
+    }
+
+    #[test]
+    fn prefix_equals_form() {
+        let opts = parse_daemon_args(&["--prefix=/opt/cak"], pfx()).unwrap();
+        assert_eq!(opts.prefix, PathBuf::from("/opt/cak"));
+    }
+
+    #[test]
+    fn all_overrides_parsed() {
+        let opts = parse_daemon_args(
+            &[
+                "--config",
+                "/etc/sv.yaml",
+                "--log-rotate-bytes",
+                "1048576",
+                "--log-rotate-keep",
+                "7",
+                "--stop-timeout-secs",
+                "45",
+            ],
+            pfx(),
+        )
+        .unwrap();
+        assert_eq!(opts.config_path, Some(PathBuf::from("/etc/sv.yaml")));
+        assert_eq!(opts.log_rotate_bytes, Some(1_048_576));
+        assert_eq!(opts.log_rotate_keep, Some(7));
+        assert_eq!(opts.stop_timeout_secs, Some(45));
+    }
+
+    #[test]
+    fn unknown_flag_errors() {
+        assert!(parse_daemon_args(&["--bogus"], pfx()).is_err());
+    }
+
+    #[test]
+    fn missing_value_errors() {
+        assert!(parse_daemon_args(&["--prefix"], pfx()).is_err());
+        assert!(parse_daemon_args(&["--log-rotate-bytes"], pfx()).is_err());
+    }
+
+    #[test]
+    fn invalid_number_errors() {
+        let err = parse_daemon_args(&["--log-rotate-bytes", "lots"], pfx()).unwrap_err();
+        assert!(err.contains("invalid"), "got: {err}");
     }
 }
