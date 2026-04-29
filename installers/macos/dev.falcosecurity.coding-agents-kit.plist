@@ -6,7 +6,10 @@
 	<string>dev.falcosecurity.coding-agents-kit</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>@PREFIX@/bin/coding-agents-kit-launcher.sh</string>
+		<string>@PREFIX@/bin/coding-agents-kit-ctl</string>
+		<string>daemon</string>
+		<string>--prefix</string>
+		<string>@PREFIX@</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -15,10 +18,6 @@
 		<key>SuccessfulExit</key>
 		<false/>
 	</dict>
-	<key>StandardOutPath</key>
-	<string>@PREFIX@/log/falco.log</string>
-	<key>StandardErrorPath</key>
-	<string>@PREFIX@/log/falco.err</string>
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>HOME</key>

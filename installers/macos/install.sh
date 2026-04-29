@@ -83,9 +83,9 @@ fi
 for f in bin/falco bin/claude-interceptor bin/coding-agents-kit-ctl \
          share/libcoding_agent.dylib \
          config/falco.yaml config/falco.coding_agents_plugin.yaml \
+         config/supervisor.yaml \
          rules/default/coding_agents_rules.yaml \
-         rules/seen.yaml launchd/dev.falcosecurity.coding-agents-kit.plist \
-         launchd/coding-agents-kit-launcher.sh; do
+         rules/seen.yaml launchd/dev.falcosecurity.coding-agents-kit.plist; do
     [[ -f "$SCRIPT_DIR/$f" ]] || err "Missing package file: $f (are you running from the extracted package?)"
 done
 
@@ -136,6 +136,19 @@ run install -m 644 "$SCRIPT_DIR/share/libcoding_agent.dylib" "$PREFIX/share/libc
 info "Installing configuration..."
 run install -m 644 "$SCRIPT_DIR/config/falco.yaml" "$PREFIX/config/falco.yaml"
 run install -m 644 "$SCRIPT_DIR/config/falco.coding_agents_plugin.yaml" "$PREFIX/config/falco.coding_agents_plugin.yaml"
+# supervisor.yaml: ship the default file only on a fresh install. Existing
+# installations may have user edits (the file is meant to be edited).
+if [[ ! -f "$PREFIX/config/supervisor.yaml" ]]; then
+    run install -m 644 "$SCRIPT_DIR/config/supervisor.yaml" "$PREFIX/config/supervisor.yaml"
+else
+    info "Preserving existing $PREFIX/config/supervisor.yaml"
+fi
+
+# Remove a stale launcher.sh from a previous install: the supervisor (`ctl
+# daemon`) replaces it, and leaving it behind only causes confusion.
+if [[ -f "$PREFIX/bin/coding-agents-kit-launcher.sh" ]]; then
+    run rm -f "$PREFIX/bin/coding-agents-kit-launcher.sh"
+fi
 
 info "Installing rules..."
 run install -m 644 "$SCRIPT_DIR/rules/default/coding_agents_rules.yaml" "$PREFIX/rules/default/coding_agents_rules.yaml"
@@ -153,7 +166,7 @@ if ! $DRY_RUN; then
     mkdir -p "$PLIST_DIR"
     # If an agent from a previous install is loaded, unload it first.
     # `launchctl load` fails on an already-loaded plist ("already loaded"),
-    # and we need a clean reload to pick up any plist or launcher changes.
+    # and we need a clean reload to pick up any plist changes.
     if [[ -f "$PLIST_FILE" ]]; then
         launchctl unload "$PLIST_FILE" 2>/dev/null || true
     fi
@@ -161,17 +174,11 @@ if ! $DRY_RUN; then
     sed -e "s|@PREFIX@|${PREFIX}|g" -e "s|@HOME@|${HOME}|g" \
         "$SCRIPT_DIR/launchd/dev.falcosecurity.coding-agents-kit.plist" \
         > "$PLIST_FILE"
-    # Install and render launcher script.
-    sed "s|@PREFIX@|${PREFIX}|g" \
-        "$SCRIPT_DIR/launchd/coding-agents-kit-launcher.sh" \
-        > "$PREFIX/bin/coding-agents-kit-launcher.sh"
-    chmod 755 "$PREFIX/bin/coding-agents-kit-launcher.sh"
     # Load the service.
     launchctl load "$PLIST_FILE"
 else
     echo "  [DRY-RUN] launchctl unload $PLIST_FILE (if loaded)"
     echo "  [DRY-RUN] sed → $PLIST_FILE"
-    echo "  [DRY-RUN] sed → $PREFIX/bin/coding-agents-kit-launcher.sh"
     echo "  [DRY-RUN] launchctl load $PLIST_FILE"
 fi
 

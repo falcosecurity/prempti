@@ -37,11 +37,16 @@ sed -e "s|@PREFIX@|${PREFIX}|g" -e "s|@HOME@|${USER_HOME}|g" \
     "$PREFIX/launchd/dev.falcosecurity.coding-agents-kit.plist" \
     > "$PLIST_FILE"
 
-# Render launcher script.
-sed "s|@PREFIX@|${PREFIX}|g" \
-    "$PREFIX/launchd/coding-agents-kit-launcher.sh" \
-    > "$PREFIX/bin/coding-agents-kit-launcher.sh"
-chmod 755 "$PREFIX/bin/coding-agents-kit-launcher.sh"
+# Remove a stale launcher.sh from a previous install: the supervisor (`ctl
+# daemon`) replaces it.
+rm -f "$PREFIX/bin/coding-agents-kit-launcher.sh"
+
+# supervisor.yaml: ship the default file only on a fresh install. Existing
+# installations may have user edits (the file is meant to be edited).
+if [[ ! -f "$PREFIX/config/supervisor.yaml" && -f "$PREFIX/config/supervisor.yaml.default" ]]; then
+    cp "$PREFIX/config/supervisor.yaml.default" "$PREFIX/config/supervisor.yaml"
+fi
+rm -f "$PREFIX/config/supervisor.yaml.default"
 
 # ---------------------------------------------------------------------------
 # Create user rules directory (if not exists)

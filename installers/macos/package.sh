@@ -194,14 +194,14 @@ cp "$ROOT_DIR/configs/falco.yaml" "$BUILD_DIR/config/"
 sed 's/libcoding_agent\.so/libcoding_agent.dylib/g' \
     "$ROOT_DIR/configs/falco.coding_agents_plugin.yaml" \
     > "$BUILD_DIR/config/falco.coding_agents_plugin.yaml"
+cp "$ROOT_DIR/configs/supervisor.yaml" "$BUILD_DIR/config/"
 
 # Rules.
 cp "$ROOT_DIR/rules/default/coding_agents_rules.yaml" "$BUILD_DIR/rules/default/"
 cp "$ROOT_DIR/rules/seen.yaml" "$BUILD_DIR/rules/"
 
-# launchd service template and launcher.
+# launchd service template (no launcher.sh — the supervisor replaces it).
 cp "$SCRIPT_DIR/dev.falcosecurity.coding-agents-kit.plist" "$BUILD_DIR/launchd/"
-cp "$SCRIPT_DIR/coding-agents-kit-launcher.sh" "$BUILD_DIR/launchd/"
 
 # Installer script.
 cp "$SCRIPT_DIR/install.sh" "$BUILD_DIR/"
@@ -230,10 +230,13 @@ cp "$BUILD_DIR/bin/coding-agents-kit-ctl" "$PKG_ROOT/bin/"
 cp "$BUILD_DIR/share/libcoding_agent.dylib" "$PKG_ROOT/share/"
 cp "$BUILD_DIR/config/falco.yaml" "$PKG_ROOT/config/"
 cp "$BUILD_DIR/config/falco.coding_agents_plugin.yaml" "$PKG_ROOT/config/"
+# Stage supervisor.yaml as a `.default` file. The postinstall script promotes
+# it to supervisor.yaml only if no user-edited copy exists, so re-installs
+# don't clobber edits.
+cp "$BUILD_DIR/config/supervisor.yaml" "$PKG_ROOT/config/supervisor.yaml.default"
 cp "$BUILD_DIR/rules/default/coding_agents_rules.yaml" "$PKG_ROOT/rules/default/"
 cp "$BUILD_DIR/rules/seen.yaml" "$PKG_ROOT/rules/"
 cp "$BUILD_DIR/launchd/dev.falcosecurity.coding-agents-kit.plist" "$PKG_ROOT/launchd/"
-cp "$BUILD_DIR/launchd/coding-agents-kit-launcher.sh" "$PKG_ROOT/launchd/"
 
 # Pre/post install scripts.
 mkdir -p "$PKG_SCRIPTS"
