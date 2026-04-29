@@ -38,6 +38,7 @@ The project targets **Claude Code** on **Linux, macOS, and Windows**. The archit
 |-----------|----------|----------|------|
 | **Interceptor** | `hooks/claude-code/` | Rust | Thin passthrough: reads hook JSON from stdin, wraps in envelope, sends to broker, maps verdict to stdout. No content interpretation. |
 | **Plugin** | `plugins/` | Rust (falco_plugin SDK) | Falco source+extract plugin with embedded broker. Parses events, extracts fields, feeds Falco, receives alerts, resolves verdicts. |
+| **Supervisor** | `tools/coding-agents-kit-ctl/src/daemon/` | Rust | `ctl daemon` subcommand. Spawns Falco, captures and rotates its stdout/stderr into the log files, owns the Claude Code hook lifecycle, exposes a control socket for graceful shutdown. The init system (systemd / launchd / Windows Run key) starts the supervisor; the supervisor starts Falco. |
 | **Rules** | `rules/` | YAML (Falco rule language) | Vendor and local security policies. |
 | **Installer** | `installers/linux/`, `installers/macos/`, `installers/windows/` | Shell/PowerShell | Platform-specific packaging, installation, hook registration, mode switching. |
 | **Skills** | `skills/` | Claude Code skill format | Coding agent skills for rule authoring, status, etc. |
@@ -163,14 +164,36 @@ Two plugin modes, switchable without reinstallation via `coding-agents-kit-ctl m
 
 Mode changes are applied via an explicit service restart driven by `ctl mode`: it rewrites the plugin config fragment, stops the service, re-registers the interceptor hook (so the brief restart window stays fail-closed rather than passing tool calls through unchecked), and starts the service again. Behavior is identical on Linux, macOS, and Windows. The same flow applies to any other config edit: edits made directly to `falco.yaml` or any included config / rule file take effect on the next `ctl start` (or `ctl mode`) — Falco's own `watch_config_files` is disabled deliberately because it is Linux-only upstream.
 
+`ctl restart` exposes the same stop → re-add hook → start cycle as a standalone command for users who edit config files directly.
+
 Additionally, the interceptor hook can be unregistered via `coding-agents-kit-ctl hook remove`, which passes all tool calls through unmonitored (neither mode is active because the hook isn't firing). This is effectively a "passthrough" state used when the service is intentionally stopped.
+
+### Supervisor (`ctl daemon`)
+
+The init system (systemd user unit on Linux, launchd user agent on macOS, `HKCU\…\Run` key on Windows) does not spawn Falco directly. It spawns the **supervisor** — a Rust process running `coding-agents-kit-ctl daemon --prefix <prefix>` — which then spawns Falco as a child. The supervisor:
+
+1. **Owns Falco's lifecycle**: spawns it with `-U -c falco.yaml --disable-source syscall`, waits on it, escalates SIGTERM → SIGKILL on shutdown timeout (Unix), or `TerminateProcess` (Windows).
+2. **Owns the log files**: drains Falco's stdout into `log/falco.log` and stderr into `log/falco.err`, line by line. The `-U` (unbuffered) flag ensures Falco flushes after every alert so JSON lines arrive synchronously.
+3. **Owns rotation**: rotation parameters live in `config/supervisor.yaml` (cap, archives kept, stop timeout). The supervisor checks size before each write; over the cap, it shifts `.1 → .2 → .3`, drops the oldest, and reopens. One implementation, identical on every platform.
+4. **Owns the hook lifecycle**: runs `hook::add` on start, `hook::remove` on stop. Replaces systemd's `ExecStartPost`/`ExecStopPost`, the macOS launcher's `trap`, and the Windows launcher's `try/finally`.
+5. **Exposes a control channel**: binds `run/supervisor.sock` (separate from `run/broker.sock`) and accepts two commands:
+   - `STOP\n` — initiates graceful shutdown, returns `OK\n`.
+   - `STATUS\n` — returns `OK pid=<sup> falco_pid=<falco> started=<unix-ms> rotated=<count>\n`.
+
+This is what `ctl stop` on Windows uses to ask for a graceful shutdown (today's `taskkill /F` cannot reach a console-less process). Linux and macOS instead let the init system deliver SIGTERM to the supervisor; the supervisor then runs the same shutdown sequence.
+
+The supervisor refuses to start if it can't open log files, register the hook, or bind `supervisor.sock` — fail-fast at startup is preferable to a half-broken service that silently loses logs.
+
+Restart-on-failure is the init system's job. The supervisor is dumb: when Falco dies (whatever the cause), it exits with Falco's exit code and the init system decides whether to relaunch.
+
+Advanced users can run the supervisor directly via `ctl daemon --prefix <path>` for debugging or non-managed setups. Only one supervisor at a time per prefix because `supervisor.sock` is a singleton.
 
 ### Fail-safety
 
 - **Fail-closed**: if the plugin/Falco is unreachable, tool calls are denied.
 - No timeout-based fail-safety (see batch-completion design above).
 
-**Important**: When the hook is registered and the service is stopped or restarting (e.g., during a `ctl mode` restart cycle), ALL Claude Code tool calls are blocked. This is by design — fail-closed means no policy gap. Use `coding-agents-kit-ctl hook remove` to unblock Claude Code when the service is intentionally down. On Linux, the systemd service automatically adds the hook on start and removes it on stop via `ExecStartPost`/`ExecStopPost`. On macOS, the launcher wrapper script (`coding-agents-kit-launcher.sh`) handles this via `trap`. `ctl mode` re-registers the hook between stop and start so the restart window itself remains fail-closed.
+**Important**: When the hook is registered and the service is stopped or restarting (e.g., during a `ctl mode` or `ctl restart` cycle), ALL Claude Code tool calls are blocked. This is by design — fail-closed means no policy gap. Use `coding-agents-kit-ctl hook remove` to unblock Claude Code when the service is intentionally down. The supervisor adds the hook on start and removes it on stop on every platform; `ctl mode` and `ctl restart` re-register the hook between stop and start so the restart window itself stays fail-closed.
 
 ### Installation directory structure
 
@@ -178,13 +201,14 @@ All components are installed under `~/.coding-agents-kit/`:
 
 ```
 ~/.coding-agents-kit/
-├── bin/                    # Executables: falco, claude-interceptor
+├── bin/                    # Executables: falco, claude-interceptor, coding-agents-kit-ctl
 ├── config/
 │   ├── falco.yaml          # Base Falco config (engine, output, isolation)
-│   └── falco.coding_agents_plugin.yaml  # Plugin config (plugin def, rules, http_output)
-├── log/                    # Falco logs: falco.log (stdout), falco.err (stderr)
-├── run/                    # Runtime: broker.sock
-├── share/                  # Shared libraries: libcoding_agent.so (.dylib on macOS)
+│   ├── falco.coding_agents_plugin.yaml  # Plugin config (plugin def, rules, http_output)
+│   └── supervisor.yaml     # Supervisor config (rotation, stop timeout); preserved on upgrade
+├── log/                    # Falco logs (rotated by supervisor): falco.log[.1..N], falco.err[.1..N]
+├── run/                    # Runtime: broker.sock, supervisor.sock
+├── share/                  # Shared libraries: libcoding_agent.so (.dylib on macOS, .dll on Windows)
 └── rules/
     ├── default/
     │   └── coding_agents_rules.yaml  # Default ruleset (overwritten on upgrade)
@@ -268,9 +292,9 @@ Prerequisites: Rosetta, x86_64 Homebrew at `/usr/local` with cmake and openssl@3
 
 macOS uses launchd instead of systemd. Key differences:
 
-- **Plist**: `~/Library/LaunchAgents/dev.falcosecurity.coding-agents-kit.plist` (label uses `dev.falcosecurity` — the Falco project's registered domain)
-- **Hook lifecycle**: launchd has no `ExecStartPost`/`ExecStopPost` equivalent. A wrapper script (`coding-agents-kit-launcher.sh`) runs `ctl hook add` before Falco and uses `trap EXIT TERM INT` to run `ctl hook remove` on shutdown. Falco runs in the foreground (not `exec`) so the trap fires.
-- **ctl tool**: Platform-specific via `#[cfg(target_os)]` compile-time branching. Same commands on both platforms (`start/stop/enable/disable/status`), different implementations (systemctl vs launchctl).
+- **Plist**: `~/Library/LaunchAgents/dev.falcosecurity.coding-agents-kit.plist` (label uses `dev.falcosecurity` — the Falco project's registered domain). `ProgramArguments` invokes `coding-agents-kit-ctl daemon --prefix <prefix>` directly; there is no launcher shell script.
+- **Hook lifecycle**: handled by the supervisor (see "Supervisor" section above), not by an `ExecStartPost`/`ExecStopPost` equivalent (which launchd lacks).
+- **ctl tool**: Platform-specific via `#[cfg(target_os)]` compile-time branching. Same commands on both platforms (`start/stop/enable/disable/status/restart`), different implementations (systemctl vs launchctl).
 - **Plugin library**: `.dylib` on macOS (vs `.so` on Linux). The macOS packager transforms the plugin config via `sed`.
 
 ### macOS: `coding-agents-kit-ctl` service commands
@@ -279,9 +303,12 @@ macOS uses launchd instead of systemd. Key differences:
 |---------|-------------------|-------------------|
 | `start` | `systemctl --user start` | `launchctl load <plist>` |
 | `stop` | `systemctl --user stop` | `launchctl unload <plist>` |
+| `restart` | `service_stop` then `hook::add` then `service_start` (cross-platform helper) ||
 | `enable` | `systemctl --user enable` | `launchctl load <plist>` (RunAtLoad in plist) |
 | `disable` | `systemctl --user disable` | `launchctl unload -w <plist>` |
 | `status` | `systemctl --user status` | `launchctl list <label>` |
+
+On Linux/macOS, both `start` and `stop` operate on the supervisor; `launchctl unload` / `systemctl stop` deliver SIGTERM to the supervisor, which runs its own shutdown sequence (graceful Falco stop, drain pipes, hook remove).
 
 The macOS implementation includes `is_service_loaded()` for idempotent start/stop.
 
@@ -321,20 +348,21 @@ Several Windows-specific traps worth knowing:
 
 - **Path interpretation**: Git Bash's `/usr/bin/tar` interprets `C:` as a remote host. `build-falco.ps1` prepends `C:\Windows\System32` to `PATH` so native `tar.exe` is used instead.
 - **CRLF normalization**: `git apply` on Windows inherits `core.autocrlf`. `build-falco.ps1` clones with `core.autocrlf=false` and normalizes the patch file to LF before applying, otherwise the patch silently fails to match.
-- **Falco launched from Git Bash**: Falco can segfault when launched directly from a Git Bash shell because of stdin/stdout handle differences. The service launcher (`coding-agents-kit-launcher.ps1`), `ctl start`, and the test scripts all spawn Falco via PowerShell or `cmd.exe` to avoid this. When running Falco manually for rule validation, prefer PowerShell.
+- **Falco launched from Git Bash**: Falco can segfault when launched directly from a Git Bash shell because of stdin/stdout handle differences. The supervisor and `ctl start` spawn Falco via `std::process::Command` from a Windows console subsystem, which avoids the issue. When running Falco manually for rule validation, prefer PowerShell.
 
 ### Windows: service management
 
-Windows has no user-level systemd or launchd equivalent, so coding-agents-kit uses a **PowerShell launcher script invoked by a Registry Run key**. This is per-user, requires no admin, and mirrors how many user-space productivity apps auto-start on Windows.
+Windows has no user-level systemd or launchd equivalent, so coding-agents-kit uses a **PowerShell launcher script invoked by a Registry Run key**, which in turn invokes the supervisor. The launcher exists solely to provide `WindowStyle Hidden` so the supervisor's console window does not flash at login.
 
-- **Run key**: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodingAgentsKit` — value points at `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <launcher>`. Set by `postinstall.ps1` and by `ctl enable`; removed by `uninstall.ps1` and `ctl disable`.
-- **Launcher**: `coding-agents-kit-launcher.ps1` runs `ctl hook add` before starting Falco and registers a `finally` block that runs `ctl hook remove` + `Process.Kill` on exit. This is the Windows equivalent of Linux's `ExecStartPost`/`ExecStopPost` and macOS's `trap EXIT TERM INT`. Falco runs via `System.Diagnostics.Process.Start` with `UseShellExecute=$false` and async stdout/stderr drains into log files; this is required to avoid OS pipe-buffer deadlocks.
+- **Run key**: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodingAgentsKit` — value points at `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <launcher> -Prefix <prefix>`. Set by `postinstall.ps1` and by `ctl enable`; removed by `uninstall.ps1` and `ctl disable`.
+- **Launcher**: `coding-agents-kit-launcher.ps1` is a ~5-line wrapper that just `& <prefix>\bin\coding-agents-kit-ctl.exe daemon --prefix <prefix>` and propagates the exit code. All real work — Falco lifecycle, log capture, rotation, hook lifecycle — happens inside the supervisor.
+- **Graceful shutdown via `supervisor.sock`**: `ctl stop` connects to `run/supervisor.sock` and sends `STOP\n`. The supervisor calls `Child::kill` (which is `TerminateProcess` on Windows) on Falco, drains the pipes, removes the hook, and exits. `ctl stop` polls for the supervisor's process to disappear and falls back to `taskkill /F /PID <sup-pid>` only if the supervisor itself doesn't exit within 30 seconds. This replaces the old `taskkill /F /IM falco.exe` path which lost the cleanup chain entirely.
 - **No Windows Service**: the installer intentionally does not create a Windows Service. A per-user install cannot register a service without admin, and interception must run under the user's session anyway (it modifies `~/.claude/settings.json` in the user profile, and per-user-socket lifetime follows the user).
 - **Path separators**: all runtime paths (broker socket, library_path, rules_files, http_output URL) are normalized to forward slashes at config-generation time. The plugin also canonicalizes paths to forward slashes for rule matching (stripping the Windows `\\?\` long-path prefix that `std::fs::canonicalize` sometimes adds).
-- **AF_UNIX**: the broker socket is a real Unix domain socket (Windows 10+ has kernel `AF_UNIX` support). The `uds_windows` crate provides Rust bindings. The socket path must be referenced identically by both ends — the interceptor and plugin both normalize to forward slashes so the strings match byte-for-byte.
+- **AF_UNIX**: both `broker.sock` and `supervisor.sock` are real Unix domain sockets (Windows 10+ has kernel `AF_UNIX` support). The `uds_windows` crate provides Rust bindings.
 - **Plugin library**: `coding_agent.dll` on Windows (vs `.so` on Linux and `.dylib` on macOS). The Windows packager copies the DLL into `%LOCALAPPDATA%\coding-agents-kit\share\` and the post-install script renders a `library_path` in `falco.coding_agents_plugin.yaml` that points at the absolute path with forward slashes.
 - **Fail-safety on MSI uninstall**: the MSI declares a deferred `REMOVE=ALL` custom action (`installers/windows/Package.wxs`) that runs `uninstall.ps1` before `RemoveFiles`, so Apps & Features, `msiexec /x` and the bundled helper all stop the service, remove the hook, drop the Run-key entry and clean `bin\` from the user `PATH`. `Return="ignore"` on the CA keeps a user-edited `settings.json` from blocking the uninstall.
-- **`ctl start` detachment**: the launcher is a long-lived descendant (it waits on Falco), so a direct `CreateProcess` of the launcher is tracked by the caller's PowerShell job object and keeps a captured pipeline (`& ctl start 2>&1`) open until Falco exits. To break that chain, `service_start` in `tools/coding-agents-kit-ctl/src/main.rs` invokes PowerShell's `Start-Process` (which uses ShellExecute), producing a grandchild that's fully independent of the caller. Caveat: `Start-Process -Wait ctl start` from a script still hangs because `-Wait` follows the whole process tree — the captured form `& ctl start 2>&1` is the one to use.
+- **`ctl start` detachment**: the launcher is a long-lived descendant (it waits on the supervisor, which waits on Falco), so a direct `CreateProcess` of the launcher is tracked by the caller's PowerShell job object and keeps a captured pipeline (`& ctl start 2>&1`) open until everything exits. To break that chain, `service_start` invokes PowerShell's `Start-Process` (ShellExecute), producing a grandchild that's fully independent of the caller. Caveat: `Start-Process -Wait ctl start` from a script still hangs because `-Wait` follows the whole process tree — the captured form `& ctl start 2>&1` is the one to use.
 - **Post-install auto-start fail-safety**: `postinstall.ps1` starts the service via `Start-Process` after registering the hook, polls up to 5s for Falco, and falls through to a `Write-Warning` if it doesn't see Falco in time. Install still completes; the user recovers with `coding-agents-kit-ctl start` manually. If Falco fails to start at all (port conflict, missing DLL, etc.) the user is not silently left with a registered hook and a dead broker.
 
 ### Windows: `coding-agents-kit-ctl` service commands
@@ -342,7 +370,8 @@ Windows has no user-level systemd or launchd equivalent, so coding-agents-kit us
 | Command | Linux (systemctl) | macOS (launchctl) | Windows |
 |---------|-------------------|-------------------|---------|
 | `start` | `systemctl --user start` | `launchctl load <plist>` | `powershell … -File <launcher>` (spawned, polled via `tasklist`) |
-| `stop` | `systemctl --user stop` | `launchctl unload <plist>` | `taskkill /F /IM falco.exe` |
+| `stop` | `systemctl --user stop` | `launchctl unload <plist>` | `STOP` over `supervisor.sock`, then poll for supervisor exit (fallback `taskkill /F /PID <sup>`) |
+| `restart` | shared helper: `service_stop` → `hook::add` → `service_start` |
 | `enable` | `systemctl --user enable` | `launchctl load <plist>` | `reg add <Run key>` |
 | `disable` | `systemctl --user disable` | `launchctl unload -w <plist>` | `reg delete <Run key>` |
 | `status` | `systemctl --user status` | `launchctl list <label>` | `tasklist /FI "IMAGENAME eq falco.exe"` |
