@@ -48,8 +48,10 @@ http_output:
   enabled: true
   url: http://127.0.0.1:2802
 
+# stdout JSON alerts are captured by the supervisor (`ctl daemon`) into
+# the rotating log files under log/. This is what `ctl logs` reads.
 stdout_output:
-  enabled: false
+  enabled: true
 
 json_output: true
 json_include_output_property: false
@@ -68,6 +70,27 @@ watch_config_files: false
 
 Set-Content -Path (Join-Path $ConfigDir 'falco.yaml') -Value $falcoYaml -Encoding UTF8
 Write-Host "Generated falco.yaml"
+
+# ---------------------------------------------------------------------------
+# Generate supervisor.yaml with default values (preserve user edits)
+# ---------------------------------------------------------------------------
+
+$SupervisorYamlPath = Join-Path $ConfigDir 'supervisor.yaml'
+if (-not (Test-Path $SupervisorYamlPath)) {
+    $supervisorYaml = @"
+# Supervisor configuration for coding-agents-kit.
+# Read by ``coding-agents-kit-ctl daemon`` at startup.
+# Changes require a manual daemon restart (e.g., ``coding-agents-kit-ctl restart``).
+
+log_rotate_bytes: 10485760    # 10 MiB
+log_rotate_keep: 3
+stop_timeout_secs: 20
+"@
+    Set-Content -Path $SupervisorYamlPath -Value $supervisorYaml -Encoding UTF8
+    Write-Host "Generated supervisor.yaml"
+} else {
+    Write-Host "Preserving existing supervisor.yaml"
+}
 
 # ---------------------------------------------------------------------------
 # Generate plugin config with resolved Windows paths

@@ -529,26 +529,56 @@ fn service_start(prefix: &PathBuf) {
 
 #[cfg(target_os = "windows")]
 fn service_stop(warn_hook: bool) {
-    let Some(pids) = falco_pids() else {
-        println!("Service not running.");
-        return;
-    };
+    let prefix = default_prefix();
+    let sock = daemon::control::supervisor_socket_path(&prefix);
 
-    // Straight `/F`: Falco is launched by the service launcher with
-    // `CreateNoWindow = $true`, which leaves it with no top-level window
-    // and no attached console. `taskkill` without `/F` has no delivery
-    // channel for such a process — neither `WM_CLOSE` nor
-    // `CTRL_CLOSE_EVENT` is reachable — so attempting graceful shutdown
-    // would just block for the grace window and then escalate anyway.
-    // A truly graceful shutdown would require plumbing a shutdown request
-    // through the broker socket, which is a separate change. Scope by PID
-    // so unrelated `falco.exe` instances from other projects are left alone.
-    for pid in &pids {
-        let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+    if !sock.exists() {
+        // No supervisor running. Fall back to a hard kill on any stray
+        // `falco.exe` from this install (legacy installs without the
+        // supervisor, or a broken state with the daemon already gone).
+        if let Some(pids) = falco_pids() {
+            for pid in &pids {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+            println!("Service stopped (legacy fallback).");
+        } else {
+            println!("Service not running.");
+        }
+        if warn_hook {
+            hook::warn_if_still_registered();
+        }
+        return;
+    }
+
+    // Identify the supervisor PID before sending STOP so we can poll for
+    // its exit. The supervisor will run its own cleanup (TerminateProcess
+    // on Falco, drain stdout/stderr, hook remove, close logs) before exit.
+    let supervisor_pid = daemon::control::send_command(&sock, "STATUS")
+        .ok()
+        .and_then(|r| daemon::control::parse_supervisor_pid(&r));
+
+    if let Err(e) = daemon::control::send_command(&sock, "STOP") {
+        eprintln!("warning: failed to send STOP to supervisor: {e}");
+    }
+
+    if let Some(pid) = supervisor_pid {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while daemon::process_alive(pid) {
+            if std::time::Instant::now() >= deadline {
+                eprintln!("supervisor did not exit in 30s; force killing pid {pid}");
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
 
     println!("Service stopped.");
