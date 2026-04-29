@@ -38,7 +38,7 @@ bash installers/macos/package.sh --target x86_64       # Intel
 
 Output: `build/coding-agents-kit-<version>-darwin-<arch>.{tar.gz,pkg}`
 
-The package is self-contained: Falco binary (built from source), interceptor, plugin, ctl tool, configs, rules, launchd plist, launcher script, and installer.
+The package is self-contained: Falco binary (built from source), interceptor, plugin, ctl tool, configs (`falco.yaml`, `falco.coding_agents_plugin.yaml`, `supervisor.yaml`), rules, launchd plist, and installer.
 
 ### Falco Build from Source
 
@@ -80,8 +80,8 @@ bash install.sh --dry-run                # Show what would be done
 
 1. Verifies macOS and architecture match the package
 2. Copies binaries (`falco`, `claude-interceptor`, `coding-agents-kit-ctl`), plugin, configs, and rules to `~/.coding-agents-kit/`
-3. Installs and loads a launchd user agent (`dev.falcosecurity.coding-agents-kit`)
-4. Registers the Claude Code hook via a launcher wrapper script
+3. Installs and loads a launchd user agent (`dev.falcosecurity.coding-agents-kit`) that runs `coding-agents-kit-ctl daemon --prefix <prefix>`
+4. The supervisor (`ctl daemon`) registers the Claude Code hook on start and removes it on stop
 
 ### Gatekeeper
 
@@ -102,11 +102,11 @@ xattr -dr com.apple.quarantine ~/.coding-agents-kit
 
 ```
 ~/.coding-agents-kit/
-├── bin/                    # falco, claude-interceptor, coding-agents-kit-ctl,
-│                           # coding-agents-kit-launcher.sh
-├── config/                 # falco.yaml, falco.coding_agents_plugin.yaml
-├── log/                    # falco.log (stdout), falco.err (stderr)
-├── run/                    # broker.sock (runtime)
+├── bin/                    # falco, claude-interceptor, coding-agents-kit-ctl
+├── config/                 # falco.yaml, falco.coding_agents_plugin.yaml,
+│                           # supervisor.yaml (preserved on upgrade)
+├── log/                    # falco.log[.1..N], falco.err[.1..N] (rotated by supervisor)
+├── run/                    # broker.sock, supervisor.sock (runtime)
 ├── share/                  # libcoding_agent.dylib
 └── rules/
     ├── default/            # Default rules (overwritten on upgrade)
@@ -118,15 +118,14 @@ The launchd plist is installed to `~/Library/LaunchAgents/dev.falcosecurity.codi
 
 ## Service Management
 
-The launcher wrapper script (`coding-agents-kit-launcher.sh`) handles hook lifecycle — it registers the hook before starting Falco and removes it on exit via `trap`. Falco runs in the foreground (not `exec`) so the trap fires on SIGTERM from launchd.
+launchd invokes `coding-agents-kit-ctl daemon --prefix <prefix>` directly — no shell wrapper. The supervisor handles hook registration on start and removal on stop, captures Falco's stdout/stderr into rotating log files, and exposes a control socket at `run/supervisor.sock` for graceful shutdown. SIGTERM from launchd reaches the supervisor, which then orchestrates the cleanup chain.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `package.sh` | Build script: compiles Rust components and Falco, creates tar.gz and .pkg |
-| `install.sh` | Installer: copies files, sets up launchd, registers hook |
+| `install.sh` | Installer: copies files, sets up launchd, kicks off the supervisor |
 | `build-falco.sh` | Builds Falco from source with http_output patch |
 | `falco-macos-http-output.patch` | CMake patch enabling http_output on macOS |
-| `dev.falcosecurity.coding-agents-kit.plist` | launchd user agent template |
-| `coding-agents-kit-launcher.sh` | Wrapper script for hook lifecycle management |
+| `dev.falcosecurity.coding-agents-kit.plist` | launchd user agent template (invokes `ctl daemon`) |
