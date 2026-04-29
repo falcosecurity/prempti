@@ -3,12 +3,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{self, Command};
 
+mod hook;
 mod logs_pretty;
 
 #[cfg(target_os = "linux")]
 const SERVICE_NAME: &str = "coding-agents-kit";
 
-fn home_dir() -> String {
+pub(crate) fn home_dir() -> String {
     #[cfg(unix)]
     {
         env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
@@ -55,207 +56,12 @@ fn plugin_config_path(prefix: &PathBuf) -> PathBuf {
     prefix.join("config/falco.coding_agents_plugin.yaml")
 }
 
-fn claude_settings_path() -> PathBuf {
-    #[cfg(unix)]
-    {
-        PathBuf::from(home_dir()).join(".claude/settings.json")
-    }
-    #[cfg(windows)]
-    {
-        let home = env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string());
-        PathBuf::from(home).join(".claude/settings.json")
-    }
-}
-
-fn interceptor_command(prefix: &PathBuf) -> String {
-    let prefix_str = prefix.to_string_lossy();
-    #[cfg(unix)]
-    {
-        let home = env::var("HOME").unwrap_or_default();
-        let default = format!("{home}/.coding-agents-kit");
-        if prefix_str == default {
-            // Use $HOME for portability in settings.json.
-            "$HOME/.coding-agents-kit/bin/claude-interceptor".to_string()
-        } else {
-            format!("{}/bin/claude-interceptor", prefix_str)
-        }
-    }
-    #[cfg(windows)]
-    {
-        // Use forward slashes — Claude Code runs hooks via /usr/bin/bash
-        // (Git Bash) which strips backslashes as escape characters.
-        format!("{}/bin/claude-interceptor.exe", prefix_str.replace('\\', "/"))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Warnings
-// ---------------------------------------------------------------------------
-
-fn print_hook_warning() {
-    eprintln!();
-    eprintln!("  WARNING: The interceptor runs in fail-closed mode. When the hook is");
-    eprintln!("  registered, ALL Claude Code tool calls will be BLOCKED if the");
-    eprintln!("  coding-agents-kit service is not running or is temporarily unavailable");
-    eprintln!("  (e.g., during a `ctl mode` restart or other service downtime).");
-    eprintln!();
-    eprintln!("  To unblock Claude Code, remove the hook:");
-    eprintln!("    coding-agents-kit-ctl hook remove");
-}
-
 fn print_restart_warning() {
     eprintln!();
     eprintln!("  WARNING: Applying a mode change requires stopping and starting the");
     eprintln!("  service. During the restart (a few seconds), the broker is");
     eprintln!("  unavailable and ALL Claude Code tool calls will be BLOCKED");
     eprintln!("  (fail-closed). This is expected and temporary.");
-}
-
-fn is_hook_registered() -> bool {
-    let path = claude_settings_path();
-    if !path.exists() {
-        return false;
-    }
-    fs::read_to_string(&path)
-        .map(|data| data.contains("claude-interceptor"))
-        .unwrap_or(false)
-}
-
-// ---------------------------------------------------------------------------
-// Hook management
-// ---------------------------------------------------------------------------
-
-fn hook_add(prefix: &PathBuf) {
-    let path = claude_settings_path();
-    let mut settings: serde_json::Value = if path.exists() {
-        let data = fs::read_to_string(&path).unwrap_or_else(|e| {
-            eprintln!("error reading {}: {e}", path.display());
-            process::exit(1);
-        });
-        serde_json::from_str(&data).unwrap_or_else(|e| {
-            eprintln!("error parsing {}: {e}", path.display());
-            process::exit(1);
-        })
-    } else {
-        serde_json::json!({})
-    };
-
-    let hook_cmd = interceptor_command(prefix);
-    let hooks = settings
-        .as_object_mut()
-        .unwrap()
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}));
-    let pre_tool = hooks
-        .as_object_mut()
-        .unwrap()
-        .entry("PreToolUse")
-        .or_insert_with(|| serde_json::json!([]));
-
-    // Check if already registered.
-    if let Some(arr) = pre_tool.as_array() {
-        for group in arr {
-            if let Some(group_hooks) = group.get("hooks").and_then(|h| h.as_array()) {
-                for h in group_hooks {
-                    if h.get("command")
-                        .and_then(|c| c.as_str())
-                        .map_or(false, |c| c.contains("claude-interceptor"))
-                    {
-                        println!("Hook already registered.");
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    pre_tool.as_array_mut().unwrap().push(serde_json::json!({
-        "matcher": "",
-        "hooks": [{"type": "command", "command": hook_cmd}]
-    }));
-
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let output = serde_json::to_string_pretty(&settings).unwrap();
-    fs::write(&path, format!("{output}\n")).unwrap_or_else(|e| {
-        eprintln!("error writing {}: {e}", path.display());
-        process::exit(1);
-    });
-    println!("Hook registered in {}", path.display());
-    print_hook_warning();
-}
-
-fn hook_remove() {
-    let path = claude_settings_path();
-    if !path.exists() {
-        println!("No settings file found.");
-        return;
-    }
-
-    let data = fs::read_to_string(&path).unwrap_or_else(|e| {
-        eprintln!("error reading {}: {e}", path.display());
-        process::exit(1);
-    });
-    let mut settings: serde_json::Value = serde_json::from_str(&data).unwrap_or_else(|e| {
-        eprintln!("error parsing {}: {e}", path.display());
-        process::exit(1);
-    });
-
-    let mut removed = false;
-    if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        if let Some(pre_tool) = hooks.get_mut("PreToolUse").and_then(|p| p.as_array_mut()) {
-            pre_tool.retain(|group| {
-                let dominated = group
-                    .get("hooks")
-                    .and_then(|h| h.as_array())
-                    .map_or(false, |group_hooks| {
-                        group_hooks.iter().any(|h| {
-                            h.get("command")
-                                .and_then(|c| c.as_str())
-                                .map_or(false, |c| c.contains("claude-interceptor"))
-                        })
-                    });
-                if dominated {
-                    removed = true;
-                }
-                !dominated
-            });
-            // Clean up empty structures.
-            if pre_tool.is_empty() {
-                hooks.remove("PreToolUse");
-            }
-        }
-        if hooks.is_empty() {
-            settings.as_object_mut().unwrap().remove("hooks");
-        }
-    }
-
-    if removed {
-        let output = serde_json::to_string_pretty(&settings).unwrap();
-        fs::write(&path, format!("{output}\n")).unwrap_or_else(|e| {
-            eprintln!("error writing {}: {e}", path.display());
-            process::exit(1);
-        });
-        println!("Hook removed from {}", path.display());
-    } else {
-        println!("No hook found to remove.");
-    }
-}
-
-fn hook_status() {
-    let path = claude_settings_path();
-    if !path.exists() {
-        println!("Not registered (no settings file).");
-        return;
-    }
-
-    let data = fs::read_to_string(&path).unwrap_or_default();
-    if data.contains("claude-interceptor") {
-        println!("Registered.");
-    } else {
-        println!("Not registered.");
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +137,7 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
     // Snapshot service / hook state BEFORE rewriting so we know what to
     // restore after the restart cycle.
     let was_running = is_service_running();
-    let hook_was_registered = is_hook_registered();
+    let hook_was_registered = hook::is_registered();
 
     fs::write(&config_path, new_data).unwrap_or_else(|e| {
         eprintln!("error writing {}: {e}", config_path.display());
@@ -351,13 +157,13 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
     service_stop(false);
 
     // Re-register the hook before starting back up so the brief restart
-    // window stays fail-closed (interceptor → no broker → deny) rather than
-    // unchecked. Linux's systemd ExecStopPost and the macOS launcher's
-    // shutdown trap both run `ctl hook remove` as part of stop; on Windows
-    // taskkill /F bypasses the launcher's PowerShell `finally`, so the hook
-    // typically remains. `hook_add` is idempotent in all cases.
+    // window stays fail-closed rather than passing tool calls through
+    // unchecked. The supervisor removes the hook on stop; this puts it
+    // back during the gap. `hook::add` is idempotent.
     if hook_was_registered {
-        hook_add(prefix);
+        if let Err(e) = hook::add(prefix) {
+            eprintln!("warning: failed to re-register hook during restart: {e}");
+        }
     }
 
     service_start(prefix);
@@ -369,20 +175,6 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
 // ---------------------------------------------------------------------------
 // Service management
 // ---------------------------------------------------------------------------
-
-fn warn_hook_still_registered() {
-    let path = claude_settings_path();
-    if path.exists() {
-        let data = fs::read_to_string(&path).unwrap_or_default();
-        if data.contains("claude-interceptor") {
-            eprintln!();
-            eprintln!("  WARNING: The interceptor hook is still registered in Claude Code.");
-            eprintln!("  With the service stopped, ALL tool calls will be BLOCKED.");
-            eprintln!("  Remove the hook manually if needed:");
-            eprintln!("    coding-agents-kit-ctl hook remove");
-        }
-    }
-}
 
 // systemctl/launchctl return as soon as the supervisor accepts the process,
 // but the plugin binds the broker socket later, after Falco's init_config.
@@ -446,7 +238,7 @@ fn service_stop(warn_hook: bool) {
     if systemctl(&["stop", SERVICE_NAME]) {
         println!("Service stopped.");
         if warn_hook {
-            warn_hook_still_registered();
+            hook::warn_if_still_registered();
         }
     } else {
         eprintln!("Failed to stop service.");
@@ -551,7 +343,7 @@ fn service_stop(warn_hook: bool) {
     if ok {
         println!("Service stopped.");
         if warn_hook {
-            warn_hook_still_registered();
+            hook::warn_if_still_registered();
         }
     } else {
         eprintln!("Failed to stop service.");
@@ -746,7 +538,7 @@ fn service_stop(warn_hook: bool) {
 
     println!("Service stopped.");
     if warn_hook {
-        warn_hook_still_registered();
+        hook::warn_if_still_registered();
     }
 }
 
@@ -906,7 +698,7 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
     // already. But if the service wasn't running or the stop hooks didn't
     // fire, the hook would stay registered and brick Claude Code.
     println!("Removing Claude Code hook...");
-    hook_remove();
+    hook::cli_remove();
 
     // 3. Remove the installation directory.
     if prefix.exists() {
@@ -1536,9 +1328,9 @@ fn main() {
     }
 
     match cmd_args.as_slice() {
-        ["hook", "add"] => hook_add(&prefix),
-        ["hook", "remove"] => hook_remove(),
-        ["hook", "status"] => hook_status(),
+        ["hook", "add"] => hook::cli_add(&prefix),
+        ["hook", "remove"] => hook::cli_remove(),
+        ["hook", "status"] => hook::cli_status(),
         ["mode"] => mode_get(&prefix),
         ["mode", mode] => mode_set(&prefix, mode),
         ["start"] => service_start(&prefix),
