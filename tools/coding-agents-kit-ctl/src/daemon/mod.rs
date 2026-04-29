@@ -53,6 +53,9 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
         }
     }
 
+    // Reset the process-wide signal flag in case a prior invocation in the
+    // same process (tests, embedded use) left it set.
+    SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
     install_signal_handlers();
 
     let mut child = match spawn_falco(&paths) {
@@ -103,26 +106,58 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
     )
     .map_err(|e| format!("failed to start control listener: {e}"))?;
 
-    let signal_handle = spawn_signal_watcher(event_tx.clone());
-    let waiter_handle = spawn_falco_waiter(child.id(), event_tx);
+    let signal_handle = spawn_signal_watcher(event_tx.clone(), shutdown_listener.clone());
+    drop(event_tx);
 
     eprintln!("supervisor: Falco running (pid {})", child.id());
 
-    // Main loop: block until one of the watcher threads forwards an event,
-    // then begin shutdown. Any event is a stop signal.
-    let _ = event_rx.recv_timeout(Duration::from_secs(60 * 60 * 24 * 365));
+    // Main loop: poll `child.try_wait()` (which reaps the zombie if Falco
+    // exited) and pump the event channel. Either an own-exit or any event
+    // ends the loop. Polling from the main thread is the only reliable way
+    // to notice an unexpected Falco exit on Unix — `kill(pid, 0)` succeeds
+    // for an unreaped zombie, so a separate waiter thread that polled it
+    // would never fire.
+    let poll_interval = Duration::from_millis(500);
+    let falco_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("supervisor: child.try_wait error: {e}");
+                break None;
+            }
+        }
+        match event_rx.recv_timeout(poll_interval) {
+            Ok(_) => break None,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break None,
+        }
+    };
     drain_pending_events(&event_rx);
 
-    let exit_code = perform_shutdown(
-        &mut child,
-        Duration::from_secs(cfg.stop_timeout_secs),
-    );
-
-    // Stop accepting new control connections, then join helper threads.
+    // Tell helper threads to wind down. The signal watcher checks both
+    // `shutdown_listener` and `SHUTDOWN_REQUESTED`; setting either is
+    // sufficient for it to exit. Setting both is belt-and-suspenders so
+    // `signal_handle.join()` can never block indefinitely.
     shutdown_listener.store(true, Ordering::Relaxed);
+    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+
+    // If Falco hasn't already exited, stop it gracefully (SIGTERM with
+    // timeout, escalating to SIGKILL/TerminateProcess on Windows).
+    let exit_code = match falco_status {
+        Some(status) => exit_code_from(status),
+        None => match stop::graceful_stop(&mut child, Duration::from_secs(cfg.stop_timeout_secs)) {
+            Ok(status) => exit_code_from(status),
+            Err(e) => {
+                eprintln!("supervisor: graceful_stop error: {e}");
+                1
+            }
+        },
+    };
+
+    // Join helpers — they all observe the shutdown flags above.
     let _ = control_handle.join();
     let _ = signal_handle.join();
-    let _ = waiter_handle.join();
     let _ = stdout_handle.join();
     let _ = stderr_handle.join();
 
@@ -249,40 +284,53 @@ fn spawn_drain<R: std::io::Read + Send + 'static>(
         .expect("spawn drain thread")
 }
 
-fn spawn_signal_watcher(event_tx: Sender<ControlEvent>) -> thread::JoinHandle<()> {
+/// Loop body for the signal watcher. Extracted for unit testing so we can
+/// drive the watcher with a local `requested` flag instead of mutating the
+/// process-wide `SHUTDOWN_REQUESTED` static.
+fn run_signal_watcher(
+    event_tx: &Sender<ControlEvent>,
+    shutdown: &AtomicBool,
+    requested: &AtomicBool,
+    poll: Duration,
+) {
+    loop {
+        if requested.load(Ordering::SeqCst) {
+            let _ = event_tx.send(ControlEvent::StopRequested);
+            return;
+        }
+        if shutdown.load(Ordering::Relaxed) {
+            return;
+        }
+        thread::sleep(poll);
+    }
+}
+
+fn spawn_signal_watcher(
+    event_tx: Sender<ControlEvent>,
+    shutdown: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("cak-supervisor-signal".to_string())
-        .spawn(move || loop {
-            if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
-                let _ = event_tx.send(ControlEvent::StopRequested);
-                return;
-            }
-            thread::sleep(Duration::from_millis(200));
+        .spawn(move || {
+            run_signal_watcher(
+                &event_tx,
+                &shutdown,
+                &SHUTDOWN_REQUESTED,
+                Duration::from_millis(200),
+            )
         })
         .expect("spawn signal watcher")
 }
 
-fn spawn_falco_waiter(pid: u32, event_tx: Sender<ControlEvent>) -> thread::JoinHandle<()> {
-    // We can't move the Child handle here because the main thread owns it.
-    // Instead, poll the OS via a platform-specific check. On Unix we use
-    // libc::kill(pid, 0); on Windows we use OpenProcess + GetExitCodeProcess.
-    thread::Builder::new()
-        .name("cak-supervisor-waiter".to_string())
-        .spawn(move || loop {
-            if !process_alive(pid) {
-                let _ = event_tx.send(ControlEvent::StopRequested);
-                return;
-            }
-            thread::sleep(Duration::from_millis(500));
-        })
-        .expect("spawn falco waiter")
-}
-
+/// Probe whether a foreign PID is still running. Used by the Windows
+/// `ctl stop` path to wait for the supervisor process (which it does not
+/// own as a child) to exit. Not used by the supervisor for its own child:
+/// `kill(pid, 0)` reports an unreaped zombie as alive, so a self-child
+/// poll would never observe Falco's death — the main loop reaps via
+/// `child.try_wait()` instead.
 #[cfg(unix)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn process_alive(pid: u32) -> bool {
-    // kill(pid, 0) returns 0 if the process exists and we have permission.
-    // ESRCH means the process is gone; EPERM means it exists but we can't
-    // signal it (still alive for our purposes).
     let rc = unsafe { libc::kill(pid as i32, 0) };
     if rc == 0 {
         return true;
@@ -311,20 +359,6 @@ pub(crate) fn process_alive(pid: u32) -> bool {
 
 fn drain_pending_events(rx: &mpsc::Receiver<ControlEvent>) {
     while rx.try_recv().is_ok() {}
-}
-
-fn perform_shutdown(child: &mut std::process::Child, timeout: Duration) -> i32 {
-    // If Falco already exited (waiter thread fired), try_wait collects it.
-    if let Ok(Some(status)) = child.try_wait() {
-        return exit_code_from(status);
-    }
-    match stop::graceful_stop(child, timeout) {
-        Ok(status) => exit_code_from(status),
-        Err(e) => {
-            eprintln!("supervisor: graceful_stop error: {e}");
-            1
-        }
-    }
 }
 
 fn exit_code_from(status: std::process::ExitStatus) -> i32 {
@@ -380,3 +414,78 @@ fn install_signal_handlers() {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn watcher_exits_quietly_when_shutdown_flag_set() {
+        let (tx, rx) = mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let requested = Arc::new(AtomicBool::new(false));
+
+        let s = shutdown.clone();
+        let r = requested.clone();
+        let handle = thread::spawn(move || {
+            run_signal_watcher(&tx, &s, &r, Duration::from_millis(10));
+        });
+
+        // Simulate orderly shutdown not driven by SIGTERM. The watcher
+        // should exit and NOT enqueue a StopRequested.
+        thread::sleep(Duration::from_millis(30));
+        shutdown.store(true, Ordering::Relaxed);
+        handle
+            .join()
+            .expect("watcher should terminate when shutdown flag is set");
+        assert!(
+            rx.try_recv().is_err(),
+            "no event expected on orderly shutdown"
+        );
+    }
+
+    #[test]
+    fn watcher_forwards_stop_when_signal_requested() {
+        let (tx, rx) = mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let requested = Arc::new(AtomicBool::new(false));
+
+        let s = shutdown.clone();
+        let r = requested.clone();
+        let handle = thread::spawn(move || {
+            run_signal_watcher(&tx, &s, &r, Duration::from_millis(10));
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        requested.store(true, Ordering::SeqCst);
+        handle
+            .join()
+            .expect("watcher should terminate when signal flag is set");
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ControlEvent::StopRequested)
+        ));
+    }
+
+    #[test]
+    fn watcher_returns_when_both_flags_set() {
+        // Signal flag wins (StopRequested is forwarded) when both flags are
+        // raised — the SIGTERM-arrived path is preferred over orderly exit
+        // because the user-visible intent is "stop now".
+        let (tx, rx) = mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let requested = Arc::new(AtomicBool::new(true));
+
+        let s = shutdown.clone();
+        let r = requested.clone();
+        let handle = thread::spawn(move || {
+            run_signal_watcher(&tx, &s, &r, Duration::from_millis(10));
+        });
+        handle.join().unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ControlEvent::StopRequested)
+        ));
+    }
+}
