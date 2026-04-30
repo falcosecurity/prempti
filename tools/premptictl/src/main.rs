@@ -826,6 +826,39 @@ fn service_status() {
 // Uninstall
 // ---------------------------------------------------------------------------
 
+/// Remove `p` regardless of whether it's a file, symlink, or directory.
+/// `fs::remove_dir_all` errors out on regular files, which made
+/// `rules/seen.yaml` silently survive `uninstall --keep-user-rules`.
+fn remove_path(p: &Path) -> std::io::Result<()> {
+    let meta = fs::symlink_metadata(p)?;
+    if meta.is_dir() {
+        fs::remove_dir_all(p)
+    } else {
+        fs::remove_file(p)
+    }
+}
+
+/// Cleanup pass for `uninstall --keep-user-rules`: drop everything under
+/// `prefix` except `prefix/rules/user/`. Both passes use [`remove_path`] so
+/// regular files (e.g. `rules/seen.yaml`, stray dotfiles) are removed too.
+fn keep_user_rules_cleanup(prefix: &Path) {
+    if let Ok(entries) = fs::read_dir(prefix) {
+        for entry in entries.flatten() {
+            if entry.file_name() != "rules" {
+                let _ = remove_path(&entry.path());
+            }
+        }
+    }
+    let rules_dir = prefix.join("rules");
+    if let Ok(entries) = fs::read_dir(&rules_dir) {
+        for entry in entries.flatten() {
+            if entry.file_name() != "user" {
+                let _ = remove_path(&entry.path());
+            }
+        }
+    }
+}
+
 fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
     println!("=== Uninstalling Prempti ===");
     println!("  Prefix: {}", prefix.display());
@@ -893,25 +926,7 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
             let user_rules = prefix.join("rules/user");
             if user_rules.is_dir() {
                 println!("Preserving user rules: {}", user_rules.display());
-                // Remove everything except rules/user/.
-                if let Ok(entries) = fs::read_dir(prefix) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name();
-                        if name != "rules" {
-                            let _ = fs::remove_dir_all(entry.path());
-                        }
-                    }
-                }
-                // Inside rules/, remove everything except user/.
-                let rules_dir = prefix.join("rules");
-                if let Ok(entries) = fs::read_dir(&rules_dir) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name();
-                        if name != "user" {
-                            let _ = fs::remove_dir_all(entry.path());
-                        }
-                    }
-                }
+                keep_user_rules_cleanup(prefix);
             }
         } else {
             println!("Removing {}...", prefix.display());
@@ -1913,5 +1928,94 @@ mod windows_command_tests {
         let cmd = build_start_powershell_command(Path::new("a/launcher.ps1"), Path::new("a"));
         assert!(cmd.contains("'-WindowStyle','Hidden'"));
         assert!(cmd.ends_with("-WindowStyle Hidden"));
+    }
+}
+
+#[cfg(test)]
+mod uninstall_tests {
+    use super::{keep_user_rules_cleanup, remove_path};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn tmpdir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "prempti-uninstall-{}-{label}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_file(p: &Path, contents: &str) {
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(p, contents).unwrap();
+    }
+
+    #[test]
+    fn remove_path_handles_files_and_dirs() {
+        let root = tmpdir("remove-path");
+        let file = root.join("a.txt");
+        let dir = root.join("d");
+        write_file(&file, "x");
+        write_file(&dir.join("nested.txt"), "y");
+
+        remove_path(&file).unwrap();
+        remove_path(&dir).unwrap();
+
+        assert!(!file.exists());
+        assert!(!dir.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keep_user_rules_cleanup_removes_seen_yaml_and_default_rules() {
+        let root = tmpdir("keep-user-rules");
+
+        // Mirror the installed layout that uninstall encounters.
+        write_file(&root.join("bin/premptictl"), "");
+        write_file(&root.join("config/falco.yaml"), "");
+        write_file(&root.join("share/coding_agent.so"), "");
+        write_file(&root.join("rules/seen.yaml"), "rules:\n");
+        write_file(&root.join("rules/default/coding_agents_rules.yaml"), "");
+        write_file(&root.join("rules/user/my_rule.yaml"), "preserve me");
+
+        keep_user_rules_cleanup(&root);
+
+        // Sibling dirs gone.
+        assert!(!root.join("bin").exists(), "bin/ should be removed");
+        assert!(!root.join("config").exists(), "config/ should be removed");
+        assert!(!root.join("share").exists(), "share/ should be removed");
+
+        // Inside rules/, only user/ survives.
+        assert!(
+            !root.join("rules/seen.yaml").exists(),
+            "rules/seen.yaml must be removed (the bug this test guards)"
+        );
+        assert!(
+            !root.join("rules/default").exists(),
+            "rules/default/ should be removed"
+        );
+        assert!(
+            root.join("rules/user/my_rule.yaml").exists(),
+            "rules/user/* must survive"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keep_user_rules_cleanup_tolerates_missing_rules_dir() {
+        let root = tmpdir("missing-rules");
+        write_file(&root.join("bin/premptictl"), "");
+
+        // No rules/ at all — must not panic.
+        keep_user_rules_cleanup(&root);
+
+        assert!(!root.join("bin").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 }
