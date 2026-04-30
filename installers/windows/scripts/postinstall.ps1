@@ -210,12 +210,19 @@ function Test-InstalledFalcoRunning {
 $falcoRunning = Test-InstalledFalcoRunning -TargetPath $installedFalco
 if (-not $falcoRunning -and (Test-Path $launcherScript)) {
     try {
+        # Pre-quote the path arguments. Start-Process -ArgumentList joins
+        # the array with bare spaces and does NOT quote elements that
+        # contain spaces, so a custom INSTALLDIR like "C:\Program
+        # Files\coding-agents-kit" would otherwise be split before
+        # reaching the spawned powershell.
+        $quotedLauncher = '"' + $launcherScript + '"'
+        $quotedPrefix = '"' + $Prefix + '"'
         $startArgs = @(
             '-NoProfile',
             '-ExecutionPolicy', 'Bypass',
             '-WindowStyle', 'Hidden',
-            '-File', $launcherScript,
-            '-Prefix', $Prefix
+            '-File', $quotedLauncher,
+            '-Prefix', $quotedPrefix
         )
         Start-Process -FilePath 'powershell.exe' -ArgumentList $startArgs -WindowStyle Hidden | Out-Null
         # Wait up to 5s for Falco to appear before declaring success.

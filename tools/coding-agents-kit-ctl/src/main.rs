@@ -482,12 +482,20 @@ fn falco_pids() -> Option<Vec<u32>> {
 /// ctl.exe location, but the launcher itself defaults to
 /// `%LOCALAPPDATA%\coding-agents-kit` when `-Prefix` is omitted, which
 /// then fails to find ctl.exe under a non-default prefix.
+///
+/// Path arguments are pre-wrapped in `"..."` inside the single-quoted
+/// array elements. `Start-Process -ArgumentList` joins the array with
+/// bare spaces and does NOT quote elements that contain spaces, so a
+/// path like `C:\Program Files\Foo\launcher.ps1` would otherwise be
+/// split into `C:\Program` and `Files\Foo\launcher.ps1` by the
+/// receiving powershell. The embedded double quotes survive the
+/// single-quoted PowerShell literal and reach the spawned process intact.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn build_start_powershell_command(launcher: &Path, prefix: &Path) -> String {
     format!(
         "Start-Process -FilePath 'powershell.exe' -ArgumentList @(\
 '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',\
-'-File','{}','-Prefix','{}') -WindowStyle Hidden",
+'-File','\"{}\"','-Prefix','\"{}\"') -WindowStyle Hidden",
         launcher.display(),
         prefix.display()
     )
@@ -1705,14 +1713,32 @@ mod windows_command_tests {
         let prefix = PathBuf::from("C:/cak");
         let cmd = build_start_powershell_command(&launcher, &prefix);
         assert!(
-            cmd.contains("'-File','C:/cak/bin/coding-agents-kit-launcher.ps1'"),
+            cmd.contains("'-File','\"C:/cak/bin/coding-agents-kit-launcher.ps1\"'"),
             "missing -File arg: {cmd}"
         );
         assert!(
-            cmd.contains("'-Prefix','C:/cak'"),
+            cmd.contains("'-Prefix','\"C:/cak\"'"),
             "missing -Prefix arg: {cmd}"
         );
         assert!(cmd.starts_with("Start-Process "), "got: {cmd}");
+    }
+
+    #[test]
+    fn start_command_quotes_paths_with_spaces() {
+        // Start-Process -ArgumentList does not auto-quote elements that
+        // contain spaces; without explicit "..." wrapping the receiving
+        // powershell would split "Program Files" into two tokens.
+        let launcher = PathBuf::from("C:/Program Files/Foo/launcher.ps1");
+        let prefix = PathBuf::from("C:/Program Files/Foo");
+        let cmd = build_start_powershell_command(&launcher, &prefix);
+        assert!(
+            cmd.contains("'-File','\"C:/Program Files/Foo/launcher.ps1\"'"),
+            "path-with-spaces -File not quoted: {cmd}"
+        );
+        assert!(
+            cmd.contains("'-Prefix','\"C:/Program Files/Foo\"'"),
+            "path-with-spaces -Prefix not quoted: {cmd}"
+        );
     }
 
     #[test]
