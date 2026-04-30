@@ -25,6 +25,8 @@ The package is self-contained: Falco binary, interceptor, plugin, ctl tool, conf
 
 ## Installation
 
+> **Migrating from `coding-agents-kit`?** Prempti does not migrate or remove existing `coding-agents-kit` installations. Uninstall `coding-agents-kit` first to avoid duplicate services or stale Claude Code hooks.
+
 ```bash
 tar xzf prempti-<version>-linux-x86_64.tar.gz
 cd prempti-<version>-linux-x86_64

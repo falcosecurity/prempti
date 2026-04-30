@@ -71,7 +71,7 @@ impl Plugin for CodingAgentPlugin {
     const NAME: &'static CStr = c"coding_agent";
     const PLUGIN_VERSION: &'static CStr = PLUGIN_VERSION_CSTR;
     const DESCRIPTION: &'static CStr =
-        c"premptictl - Runtime Security for AI Coding Agents with Falco";
+        c"Prempti - Runtime Security for AI Coding Agents with Falco";
     const CONTACT: &'static CStr = c"https://github.com/falcosecurity/prempti";
 
     type ConfigType = Json<CodingAgentConfig>;

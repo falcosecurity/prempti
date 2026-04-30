@@ -54,6 +54,8 @@ The build applies a patch (`falco-macos-http-output.patch`) to enable http_outpu
 
 ## Installation
 
+> **Migrating from `coding-agents-kit`?** Prempti does not migrate or remove existing `coding-agents-kit` installations. Uninstall `coding-agents-kit` first to avoid duplicate services or stale Claude Code hooks.
+
 ### From .pkg (recommended)
 
 ```bash

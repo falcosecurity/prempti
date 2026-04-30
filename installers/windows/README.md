@@ -166,6 +166,8 @@ powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1 -SkipRus
 
 ## Installing
 
+> **Migrating from `coding-agents-kit`?** Prempti does not migrate or remove existing `coding-agents-kit` installations. Uninstall `coding-agents-kit` first to avoid duplicate services or stale Claude Code hooks.
+
 ### Recommended: `Install-Prempti.ps1`
 
 The `Install-Prempti.ps1` helper (emitted next to the MSI in `build\out\`) is the recommended path. It runs the MSI silently and, if the product is already installed, opens the MSI maintenance UI instead of forcing a silent reinstall:

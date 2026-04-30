@@ -13,9 +13,9 @@
 
 [![asciicast](demo.gif)](https://asciinema.org/a/lXqokxXVO4Q3IH3W)
 
-**Prempti** brings [Falco](https://falco.org) to the world of AI coding agents. It gives you real-time visibility into every tool call your coding agent makes — shell commands, file writes, reads, API calls — and cooperative guardrails that can deny or ask for confirmation on risky actions, evaluated against [Falco rules](https://falco.org/docs/rules/) you can customize.
+**Prempti** brings [Falco](https://falco.org) to the world of AI coding agents. It gives you guardrails that can deny or ask for confirmation on unwanted behaviors, plus real-time visibility into every tool call your coding agent makes — shell commands, file writes, reads, API calls. Both are driven by [Falco rules](https://falco.org/docs/rules/) you can customize to fit your workflow.
 
-By default, the kit runs in **guardrails mode**: rules produce verdicts that shape what the agent does. When a tool call is blocked or flagged, the agent receives an LLM-friendly explanation of why and adapts — the policy guides behavior through feedback. If you prefer pure observation without intervention, switch to **monitor mode**: every tool call proceeds while rules still evaluate and log the activity.
+By default, **Prempti** runs in **guardrails mode**: rules produce verdicts that shape what the agent does. When a tool call is blocked or flagged, the agent receives an LLM-friendly explanation of why and adapts — the policy guides behavior through feedback. If you prefer pure observation without intervention, switch to **monitor mode**: every tool call proceeds while rules still evaluate and log the activity.
 
 Who is this for? Anyone using a coding agent daily — developers, product managers, designers, vibe coders, and anyone else who wants to see what their agent is doing on their machine and set sensible boundaries for it.
 
@@ -24,6 +24,17 @@ Who is this for? Anyone using a coding agent daily — developers, product manag
 **It is** a cooperative policy and visibility layer at the tool-call level. It gives you an audit trail of agent activity, and guardrails the agent respects because it sees and understands them.
 
 **It is not** a sandbox, OS-level security, or a substitute for least-privilege environments or system hardening. It does not contain a determined adversarial agent. Use it alongside containment techniques — it complements them, it does not replace them.
+
+## Features
+
+- **Real-time tool-call interception** — every shell command, file write/edit/read, web fetch, and MCP call is evaluated *before* it runs.
+- **Allow / deny / ask verdicts** — block, prompt for confirmation, or let it through; agents receive LLM-friendly feedback on denials and adapt.
+- **Two operational modes** — *guardrails* (verdicts enforced) and *monitor* (observe-only); switch any time with `premptictl mode`.
+- **Customizable Falco rules** — standard YAML rules; a curated default ruleset ships with the project covering common attack surfaces (credentials, sandbox-disable attempts, exfiltration, persistence, MCP/skill poisoning, and more).
+- **Full audit trail** — every tool call recorded with structured fields, correlatable across rule alerts.
+- **Cross-platform** — Linux, macOS, and Windows on x86_64 and aarch64.
+- **CLI included** — `premptictl` for status, health checks, mode switching, log streaming, and hook management.
+- **Rule-authoring skill for Claude Code** — an interactive skill to draft and validate custom rules with the help of your agent.
 
 ## How It Works
 
@@ -35,7 +46,7 @@ When your coding agent tries to use a tool, **Prempti** intercepts the call *bef
 | **Deny** | The tool call is blocked — the agent is told why |
 | **Ask** | You are prompted to approve or reject the call |
 
-Rules are standard [Falco rules](https://falco.org/docs/rules/) written in YAML. A sensible default ruleset ships with the kit, and you can add your own to customize behavior for your workflow (see [Custom Rules](#custom-rules)).
+Rules are standard [Falco rules](https://falco.org/docs/rules/) written in YAML. A sensible default ruleset ships with **Prempti**, and you can add your own to customize behavior for your workflow (see [Custom Rules](#custom-rules)).
 
 ### Modes
 
@@ -53,6 +64,9 @@ Switch between modes at any time with `premptictl mode <guardrails|monitor>`.
 - Best used alongside sandboxing, system hardening, or least-privilege environments.
 
 ## Quick Start
+
+> [!IMPORTANT]
+> **Migrating from `coding-agents-kit`?** Prempti does not migrate or remove existing `coding-agents-kit` installations. Uninstall `coding-agents-kit` first to avoid duplicate services or stale Claude Code hooks.
 
 ### macOS
 
@@ -202,7 +216,7 @@ See [`rules/default/coding_agents_rules.yaml`](rules/default/coding_agents_rules
 
 ## Custom Rules
 
-The default ruleset is deliberately generic — it catches obviously risky actions that apply to most workflows. For the kit to be genuinely useful, you'll typically want to write your own rules tailored to your specific work: the projects you edit, the remotes you push to, the files you treat as sensitive, the commands you never want your agent to run.
+The default ruleset is deliberately generic — it catches obviously risky actions that apply to most workflows. To get the most out of **Prempti**, you'll typically want to write your own rules tailored to your specific work: the projects you edit, the remotes you push to, the files you treat as sensitive, the commands you never want your agent to run.
 
 Add your own rules to `~/.prempti/rules/user/`. They are preserved across upgrades. You can write them by hand, or use the [rule-authoring skill](#rule-authoring-skill-for-claude-code) to have Claude Code draft and validate them for you interactively.
 
@@ -393,7 +407,7 @@ Coverage is therefore asymmetric:
 
 - Strongest for structured tools such as `Write`, `Edit`, and `Read`, where the agent exposes first-class file semantics.
 - Weaker for generic tools such as `Bash`, where rules evaluate the declared command rather than fully resolved shell behavior.
-- Input-side only for external systems such as MCP, where the kit can inspect the requested call but not the side effects the MCP server later performs.
+- Input-side only for external systems such as MCP, where **Prempti** can inspect the requested call but not the side effects the MCP server later performs.
 
 In practice, guardrails mode can block many unsafe or out-of-policy tool calls, but it is not OS-level containment and should not be treated as a hard boundary. For deeper visibility — detecting what processes actually do at the syscall level — Falco's kernel instrumentation (eBPF/kmod) is the right tool (at least for Linux).
 
