@@ -63,7 +63,7 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
     let mut child = match spawn_falco(&paths) {
         Ok(c) => c,
         Err(e) => {
-            let _ = hook::remove();
+            let _ = hook::remove(&prefix);
             cleanup_socket(&paths.supervisor_sock);
             return Err(e);
         }
@@ -164,7 +164,7 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
     let _ = stderr_handle.join();
 
     // Best-effort cleanup. None of these failing should mask the exit code.
-    if let Err(e) = hook::remove() {
+    if let Err(e) = hook::remove(&prefix) {
         eprintln!("supervisor: failed to remove hook: {e}");
     }
     cleanup_socket(&paths.supervisor_sock);

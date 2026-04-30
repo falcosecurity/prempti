@@ -885,7 +885,7 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
     // already. But if the service wasn't running or the stop hooks didn't
     // fire, the hook would stay registered and brick Claude Code.
     println!("Removing Claude Code hook...");
-    hook::cli_remove();
+    hook::cli_remove(prefix);
 
     // 3. Remove the installation directory.
     if prefix.exists() {
@@ -1665,7 +1665,7 @@ fn main() {
 
     match cmd_args.as_slice() {
         ["hook", "add"] => hook::cli_add(&prefix),
-        ["hook", "remove"] => hook::cli_remove(),
+        ["hook", "remove"] => hook::cli_remove(&prefix),
         ["hook", "status"] => hook::cli_status(),
         ["mode"] => mode_get(&prefix),
         ["mode", mode] => mode_set(&prefix, mode),

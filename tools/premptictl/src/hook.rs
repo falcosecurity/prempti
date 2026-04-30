@@ -36,6 +36,25 @@ fn interceptor_command(prefix: &Path) -> String {
     }
 }
 
+/// Decide whether a hook command in `~/.claude/settings.json` belongs to a
+/// Prempti install. We match exactly against the command we'd write for the
+/// current prefix, plus a handful of well-known path suffixes so that legacy
+/// `coding-agents-kit` installs and non-default prefixes are still cleaned up
+/// — without sweeping arbitrary user hooks that merely mention the substring
+/// `claude-interceptor` (e.g. wrappers like `python my-claude-interceptor.py`).
+fn is_owned_interceptor_command(cmd: &str, expected: &str) -> bool {
+    if cmd == expected {
+        return true;
+    }
+    const SUFFIXES: &[&str] = &[
+        "/bin/claude-interceptor",
+        "\\bin\\claude-interceptor",
+        "/bin/claude-interceptor.exe",
+        "\\bin\\claude-interceptor.exe",
+    ];
+    SUFFIXES.iter().any(|s| cmd.ends_with(s))
+}
+
 pub enum AddResult {
     Added(PathBuf),
     AlreadyRegistered,
@@ -107,7 +126,7 @@ pub fn add(prefix: &Path) -> Result<AddResult, String> {
     Ok(AddResult::Added(path))
 }
 
-pub fn remove() -> Result<RemoveResult, String> {
+pub fn remove(prefix: &Path) -> Result<RemoveResult, String> {
     let path = claude_settings_path();
     if !path.exists() {
         return Ok(RemoveResult::NotFound);
@@ -118,34 +137,8 @@ pub fn remove() -> Result<RemoveResult, String> {
     let mut settings: serde_json::Value = serde_json::from_str(&data)
         .map_err(|e| format!("error parsing {}: {e}", path.display()))?;
 
-    let mut removed = false;
-    if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        if let Some(pre_tool) = hooks.get_mut("PreToolUse").and_then(|p| p.as_array_mut()) {
-            pre_tool.retain(|group| {
-                let dominated =
-                    group
-                        .get("hooks")
-                        .and_then(|h| h.as_array())
-                        .is_some_and(|group_hooks| {
-                            group_hooks.iter().any(|h| {
-                                h.get("command")
-                                    .and_then(|c| c.as_str())
-                                    .is_some_and(|c| c.contains("claude-interceptor"))
-                            })
-                        });
-                if dominated {
-                    removed = true;
-                }
-                !dominated
-            });
-            if pre_tool.is_empty() {
-                hooks.remove("PreToolUse");
-            }
-        }
-        if hooks.is_empty() {
-            settings.as_object_mut().unwrap().remove("hooks");
-        }
-    }
+    let expected = interceptor_command(prefix);
+    let removed = strip_owned_hooks(&mut settings, &expected);
 
     if removed {
         let output = serde_json::to_string_pretty(&settings).unwrap();
@@ -155,6 +148,44 @@ pub fn remove() -> Result<RemoveResult, String> {
     } else {
         Ok(RemoveResult::NotFound)
     }
+}
+
+/// Mutate `settings` in place, dropping any Prempti-owned hook entries from
+/// `hooks.PreToolUse[*].hooks[]`. A group is only dropped when its inner
+/// `hooks` array becomes empty after filtering — user-added hooks that share
+/// a group with Prempti's hook are preserved. Returns `true` iff at least
+/// one entry was removed.
+fn strip_owned_hooks(settings: &mut serde_json::Value, expected: &str) -> bool {
+    let mut removed = false;
+    let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
+        return false;
+    };
+    if let Some(pre_tool) = hooks.get_mut("PreToolUse").and_then(|p| p.as_array_mut()) {
+        pre_tool.retain_mut(|group| {
+            let Some(group_hooks) = group.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+                return true;
+            };
+            let before = group_hooks.len();
+            group_hooks.retain(|h| {
+                let owned = h
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| is_owned_interceptor_command(c, expected));
+                !owned
+            });
+            if group_hooks.len() != before {
+                removed = true;
+            }
+            !group_hooks.is_empty()
+        });
+        if pre_tool.is_empty() {
+            hooks.remove("PreToolUse");
+        }
+    }
+    if hooks.is_empty() {
+        settings.as_object_mut().unwrap().remove("hooks");
+    }
+    removed
 }
 
 pub fn print_warning() {
@@ -184,8 +215,8 @@ pub fn cli_add(prefix: &Path) {
     }
 }
 
-pub fn cli_remove() {
-    match remove() {
+pub fn cli_remove(prefix: &Path) {
+    match remove(prefix) {
         Ok(RemoveResult::Removed(path)) => {
             println!("Hook removed from {}", path.display());
         }
@@ -220,5 +251,140 @@ pub fn warn_if_still_registered() {
         eprintln!("  With the service stopped, ALL tool calls will be BLOCKED.");
         eprintln!("  Remove the hook manually if needed:");
         eprintln!("    premptictl hook remove");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn ownership_exact_match_on_expected_command() {
+        let expected = "$HOME/.prempti/bin/claude-interceptor";
+        assert!(is_owned_interceptor_command(expected, expected));
+    }
+
+    #[test]
+    fn ownership_path_suffix_matches_legacy_and_custom_prefixes() {
+        let expected = "$HOME/.prempti/bin/claude-interceptor";
+        assert!(is_owned_interceptor_command(
+            "/home/u/.coding-agents-kit/bin/claude-interceptor",
+            expected
+        ));
+        assert!(is_owned_interceptor_command(
+            "/opt/prempti/bin/claude-interceptor",
+            expected
+        ));
+        assert!(is_owned_interceptor_command(
+            "C:/Users/u/AppData/Local/prempti/bin/claude-interceptor.exe",
+            expected
+        ));
+        assert!(is_owned_interceptor_command(
+            r"C:\Users\u\AppData\Local\prempti\bin\claude-interceptor.exe",
+            expected
+        ));
+    }
+
+    #[test]
+    fn ownership_does_not_match_arbitrary_user_hooks() {
+        let expected = "$HOME/.prempti/bin/claude-interceptor";
+        assert!(!is_owned_interceptor_command(
+            "python my-claude-interceptor.py",
+            expected
+        ));
+        assert!(!is_owned_interceptor_command(
+            "/usr/local/bin/some-other-tool",
+            expected
+        ));
+        assert!(!is_owned_interceptor_command(
+            "echo claude-interceptor || true",
+            expected
+        ));
+    }
+
+    #[test]
+    fn strip_drops_only_owned_hook_in_mixed_group() {
+        let mut settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [
+                        {"type": "command", "command": "$HOME/.prempti/bin/claude-interceptor"},
+                        {"type": "command", "command": "python my-tool.py"}
+                    ]
+                }]
+            }
+        });
+        let removed = strip_owned_hooks(&mut settings, "$HOME/.prempti/bin/claude-interceptor");
+        assert!(removed, "expected at least one removal");
+        let remaining = settings["hooks"]["PreToolUse"][0]["hooks"]
+            .as_array()
+            .unwrap();
+        assert_eq!(remaining.len(), 1, "user hook should survive: {settings}");
+        assert_eq!(
+            remaining[0]["command"].as_str().unwrap(),
+            "python my-tool.py"
+        );
+    }
+
+    #[test]
+    fn strip_drops_group_when_empty_after_filter() {
+        let mut settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [
+                        {"type": "command", "command": "$HOME/.prempti/bin/claude-interceptor"}
+                    ]
+                }]
+            }
+        });
+        let removed = strip_owned_hooks(&mut settings, "$HOME/.prempti/bin/claude-interceptor");
+        assert!(removed);
+        // PreToolUse becomes empty → key is dropped; hooks then empty → also dropped.
+        assert!(
+            settings.get("hooks").is_none(),
+            "empty hooks object should be removed: {settings}"
+        );
+    }
+
+    #[test]
+    fn strip_preserves_unrelated_groups() {
+        let mut settings = json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": "python my-tool.py"}]
+                    },
+                    {
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": "$HOME/.prempti/bin/claude-interceptor"}]
+                    }
+                ]
+            }
+        });
+        let removed = strip_owned_hooks(&mut settings, "$HOME/.prempti/bin/claude-interceptor");
+        assert!(removed);
+        let groups = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(groups.len(), 1, "unrelated group should survive: {settings}");
+        assert_eq!(groups[0]["matcher"].as_str().unwrap(), "Bash");
+    }
+
+    #[test]
+    fn strip_returns_false_when_nothing_owned() {
+        let mut settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": "python my-tool.py"}]
+                }]
+            }
+        });
+        let snapshot = settings.clone();
+        let removed = strip_owned_hooks(&mut settings, "$HOME/.prempti/bin/claude-interceptor");
+        assert!(!removed);
+        assert_eq!(settings, snapshot, "settings should be untouched");
     }
 }
