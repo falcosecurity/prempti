@@ -23,6 +23,9 @@ pub struct PrettyOpts {
     pub follow: bool,
     pub show: ShowMask,
     pub term_cols: usize,
+    /// Command-line label shown in the status footer
+    /// (e.g. `coding-agents-kit-ctl -f`).
+    pub cmd_label: String,
 }
 
 pub const SHOW_DENY: u8 = 1 << 0;
@@ -60,6 +63,31 @@ impl ShowMask {
             };
         }
         Ok(ShowMask(mask))
+    }
+
+    /// Render the mask back to a comma-separated label like `deny,ask` so it
+    /// can be echoed in the status footer's command line.
+    pub fn label(self) -> String {
+        if self.0 == SHOW_ALL {
+            return "all".to_string();
+        }
+        if self.0 == 0 {
+            return "none".to_string();
+        }
+        let mut parts = Vec::new();
+        if self.contains(SHOW_DENY) {
+            parts.push("deny");
+        }
+        if self.contains(SHOW_ASK) {
+            parts.push("ask");
+        }
+        if self.contains(SHOW_ALLOW) {
+            parts.push("allow");
+        }
+        if self.contains(SHOW_SEEN) {
+            parts.push("seen");
+        }
+        parts.join(",")
     }
 }
 
@@ -271,6 +299,9 @@ pub struct Formatter<R: SessionNameResolver> {
     last_emitted_cwd: Option<String>,
     in_flight: HashMap<u64, EventBuffer>,
     counters: Counters,
+    /// Unix-ms timestamp of the first event we counted. Used to render
+    /// `· since <date>` in the status footer.
+    first_event_unix_ms: Option<u64>,
     resolver: R,
 }
 
@@ -284,6 +315,7 @@ impl<R: SessionNameResolver> Formatter<R> {
             last_emitted_cwd: None,
             in_flight: HashMap::new(),
             counters: Counters::default(),
+            first_event_unix_ms: None,
             resolver,
         }
     }
@@ -374,6 +406,9 @@ impl<R: SessionNameResolver> Formatter<R> {
             FinalVerdict::Ask => self.counters.ask += 1,
             FinalVerdict::Deny => self.counters.deny += 1,
         }
+        if self.first_event_unix_ms.is_none() {
+            self.first_event_unix_ms = event_unix_ms_from_alert(seen);
+        }
 
         let render_verdict = match final_v {
             FinalVerdict::Deny => self.opts.show.contains(SHOW_DENY),
@@ -440,14 +475,14 @@ impl<R: SessionNameResolver> Formatter<R> {
         }
 
         if render_verdict {
-            let event_line =
+            let (event_line, body_col) =
                 self.format_event_line(&time_str, &session_id, color_code, final_v, fields);
             out.push(event_line);
             for va in buf.verdicts.iter() {
                 if (va.kind == VerdictKind::Deny && final_v == FinalVerdict::Deny)
                     || (va.kind == VerdictKind::Ask && final_v == FinalVerdict::Ask)
                 {
-                    out.push(self.format_detail_line(&va.priority, &va.rule_name));
+                    out.push(self.format_detail_line(body_col, &va.priority, &va.rule_name));
                 }
             }
         }
@@ -492,7 +527,7 @@ impl<R: SessionNameResolver> Formatter<R> {
         cwd: &str,
     ) -> String {
         let abbrev = shorten_path(cwd, &self.home, 60);
-        let label = self.format_session_label(session_id, color_code);
+        let (label, _) = self.format_session_label(session_id, color_code);
         let arrow = self.paint("▸", ANSI_DIM);
         format!(
             "{time}  {label}  {arrow} {path}",
@@ -503,6 +538,10 @@ impl<R: SessionNameResolver> Formatter<R> {
         )
     }
 
+    /// Format the event line and return its body column (1-indexed-ish:
+    /// the visible width of the prefix `time + ws + label + ws + bullet +
+    /// ws`). The caller uses that width as left padding for sub-lines so
+    /// the rule name aligns under the tool name.
     fn format_event_line(
         &self,
         time_str: &str,
@@ -510,17 +549,19 @@ impl<R: SessionNameResolver> Formatter<R> {
         color_code: u8,
         verdict: FinalVerdict,
         fields: Option<&Value>,
-    ) -> String {
+    ) -> (String, usize) {
         let bullet = self.paint(verdict_bullet(verdict), verdict_color(verdict));
-        let label = self.format_session_label(session_id, color_code);
+        let (label, label_w) = self.format_session_label(session_id, color_code);
         let body = self.render_tool_body(fields);
-        format!(
+        let line = format!(
             "{time}  {label}  {bullet}  {body}",
             time = self.paint(time_str, ANSI_DIM),
             label = label,
             bullet = bullet,
             body = body,
-        )
+        );
+        let body_col = display_width(time_str) + 2 + label_w + 2 + 1 + 2;
+        (line, body_col)
     }
 
     fn format_seen_event_line(
@@ -531,7 +572,7 @@ impl<R: SessionNameResolver> Formatter<R> {
         fields: Option<&Value>,
     ) -> String {
         let bullet = self.paint("·", ANSI_DIM);
-        let label = self.format_session_label(session_id, color_code);
+        let (label, _) = self.format_session_label(session_id, color_code);
         let body = self.render_tool_body(fields);
         format!(
             "{time}  {label}  {bullet}  {body}",
@@ -542,8 +583,10 @@ impl<R: SessionNameResolver> Formatter<R> {
         )
     }
 
-    fn format_detail_line(&self, priority: &str, rule_name: &str) -> String {
-        // Indented to align under the tool body.
+    /// Sub-line under an event line. `body_col` is the visible column where
+    /// the tool name starts; the arrow and rule text both land there so
+    /// the sub-line reads cleanly under the event body.
+    fn format_detail_line(&self, body_col: usize, priority: &str, rule_name: &str) -> String {
         let prio_token = priority.to_ascii_uppercase();
         let prio_color = match prio_token.as_str() {
             "CRITICAL" | "ERROR" | "EMERGENCY" | "ALERT" => ANSI_FG_RED,
@@ -552,12 +595,39 @@ impl<R: SessionNameResolver> Formatter<R> {
         };
         let prio = self.paint(&prio_token, prio_color);
         let arrow = self.paint("↳", ANSI_DIM);
-        format!("                   {arrow} {prio}  {rule_name}")
+        let pad = " ".repeat(body_col);
+        format!("{pad}{arrow} {prio}  {rule_name}")
     }
 
-    fn format_session_label(&self, session_id: &str, color_code: u8) -> String {
-        let raw = format!("[{}]", short_session_id(session_id));
-        self.paint(&raw, &session_color_code(color_code))
+    /// Build the per-line session label `[<short-id> · "<title…>"]`.
+    /// Returns `(painted, visible_width)` so callers can compute the body
+    /// column for sub-line alignment without re-stripping ANSI.
+    fn format_session_label(&self, session_id: &str, color_code: u8) -> (String, usize) {
+        const TITLE_MAX_CHARS: usize = 24;
+        let sid = short_session_id(session_id);
+        let title = self
+            .sessions
+            .get(session_id)
+            .and_then(|s| s.last_title.as_deref())
+            .filter(|t| !t.is_empty());
+        let mut visible = String::with_capacity(sid.len() + 32);
+        visible.push('[');
+        visible.push_str(&sid);
+        if let Some(t) = title {
+            let total = t.chars().count();
+            visible.push_str(" · \"");
+            if total > TITLE_MAX_CHARS {
+                visible.push_str(&take_chars(t, TITLE_MAX_CHARS));
+                visible.push('…');
+            } else {
+                visible.push_str(t);
+            }
+            visible.push('"');
+        }
+        visible.push(']');
+        let width = visible.chars().count();
+        let painted = self.paint(&visible, &session_color_code(color_code));
+        (painted, width)
     }
 
     fn render_tool_body(&self, fields: Option<&Value>) -> String {
@@ -612,17 +682,24 @@ impl<R: SessionNameResolver> Formatter<R> {
 
     fn format_status_body(&self) -> String {
         let c = self.counters;
+        let cmd = self.opts.cmd_label.as_str();
+        let since_suffix = self
+            .first_event_unix_ms
+            .and_then(|ms| format_since(ms))
+            .map(|s| format!(" · since {s}"))
+            .unwrap_or_default();
         if !self.opts.color {
             return format!(
-                " coding-agents-kit: sessions {} · events {} (● allow {} · ⊙ ask {} · ⊘ deny {})",
+                " {cmd}: sessions {} · events {} (● allow {} · ⊙ ask {} · ⊘ deny {}){since_suffix}",
                 c.sessions, c.events, c.allow, c.ask, c.deny
             );
         }
         // Resume grey after each colored bullet so the row stays in the
         // same tone as the rule line above it.
         format!(
-            "{grey} coding-agents-kit: sessions {sessions} · events {events} ({green}●{grey} allow {allow} · {yellow}⊙{grey} ask {ask} · {red}⊘{grey} deny {deny}){reset}",
+            "{grey} {cmd}: sessions {sessions} · events {events} ({green}●{grey} allow {allow} · {yellow}⊙{grey} ask {ask} · {red}⊘{grey} deny {deny}){since_suffix}{reset}",
             grey = ANSI_GREY,
+            cmd = cmd,
             sessions = c.sessions,
             events = c.events,
             green = ANSI_FG_GREEN,
@@ -631,6 +708,7 @@ impl<R: SessionNameResolver> Formatter<R> {
             ask = c.ask,
             red = ANSI_FG_RED,
             deny = c.deny,
+            since_suffix = since_suffix,
             reset = ANSI_RESET,
         )
     }
@@ -776,26 +854,33 @@ pub fn shorten_path(p: &str, home: &str, max: usize) -> String {
     } else {
         p.to_string()
     };
-    if display_width(&with_tilde) <= max {
-        return with_tilde;
+    middle_ellipsis(&with_tilde, max)
+}
+
+/// Drop characters from the middle of a string, keeping as much of both
+/// ends as possible. Used to truncate long paths so the user sees the
+/// leading prefix (`~/code/github.com/...`) AND the basename, not just the
+/// first and last path segments.
+fn middle_ellipsis(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        return s.to_string();
     }
-    // Ellipsis-middle: keep the first segment and the basename.
-    let parts: Vec<&str> = with_tilde.split('/').collect();
-    if parts.len() < 3 {
-        return truncate_for_display(&with_tilde, max);
+    if max == 0 {
+        return String::new();
     }
-    let first = parts.first().copied().unwrap_or("");
-    let last = parts.last().copied().unwrap_or("");
-    let candidate = if first.is_empty() {
-        format!("/.../{}", last)
-    } else {
-        format!("{}/.../{}", first, last)
-    };
-    if display_width(&candidate) <= max {
-        candidate
-    } else {
-        truncate_for_display(&candidate, max)
+    if max == 1 {
+        return "…".to_string();
     }
+    let keep = max - 1; // 1 char for the ellipsis itself
+                        // Bias the right side slightly larger so the basename / suffix stays
+                        // visible — that's where readers look first.
+    let right_keep = keep / 2 + keep % 2;
+    let left_keep = keep - right_keep;
+    let chars: Vec<char> = s.chars().collect();
+    let left: String = chars.iter().take(left_keep).collect();
+    let right: String = chars.iter().skip(count - right_keep).collect();
+    format!("{left}…{right}")
 }
 
 fn truncate_for_display(s: &str, max: usize) -> String {
@@ -838,8 +923,21 @@ pub fn clock_time_from_alert(alert: &Value) -> String {
         .unwrap_or_else(|| "        ".to_string())
 }
 
-#[cfg(unix)]
+struct LocalTime {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+}
+
 fn epoch_to_local_hms(secs: i64) -> Option<(u32, u32, u32)> {
+    epoch_to_local(secs).map(|t| (t.hour, t.minute, t.second))
+}
+
+#[cfg(unix)]
+fn epoch_to_local(secs: i64) -> Option<LocalTime> {
     // libc's `struct tm` has 9 ints on POSIX, plus GNU extensions
     // (tm_gmtoff, tm_zone) on Linux. We over-allocate to be safe across
     // glibc/musl/macOS.
@@ -875,11 +973,18 @@ fn epoch_to_local_hms(secs: i64) -> Option<(u32, u32, u32)> {
     if ptr.is_null() {
         return None;
     }
-    Some((tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32))
+    Some(LocalTime {
+        year: tm.tm_year + 1900,
+        month: (tm.tm_mon + 1) as u32,
+        day: tm.tm_mday as u32,
+        hour: tm.tm_hour as u32,
+        minute: tm.tm_min as u32,
+        second: tm.tm_sec as u32,
+    })
 }
 
 #[cfg(windows)]
-fn epoch_to_local_hms(secs: i64) -> Option<(u32, u32, u32)> {
+fn epoch_to_local(secs: i64) -> Option<LocalTime> {
     #[repr(C)]
     struct CTm {
         tm_sec: i32,
@@ -910,7 +1015,37 @@ fn epoch_to_local_hms(secs: i64) -> Option<(u32, u32, u32)> {
     if rc != 0 {
         return None;
     }
-    Some((tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32))
+    Some(LocalTime {
+        year: tm.tm_year + 1900,
+        month: (tm.tm_mon + 1) as u32,
+        day: tm.tm_mday as u32,
+        hour: tm.tm_hour as u32,
+        minute: tm.tm_min as u32,
+        second: tm.tm_sec as u32,
+    })
+}
+
+/// Pull the `evt.time` (epoch nanoseconds) out of an alert and convert to
+/// unix milliseconds. Returns `None` when the field is missing/invalid;
+/// callers fall back to omitting `since` from the status line.
+fn event_unix_ms_from_alert(alert: &Value) -> Option<u64> {
+    alert
+        .get("output_fields")
+        .and_then(|of| of.get("evt.time"))
+        .and_then(|t| t.as_u64())
+        .map(|ns| ns / 1_000_000)
+}
+
+/// Render a unix-ms timestamp as `YYYY-MM-DD HH:MM:SS` in local time, or
+/// `None` if libc localtime fails.
+fn format_since(unix_ms: u64) -> Option<String> {
+    let secs = (unix_ms / 1000) as i64;
+    epoch_to_local(secs).map(|t| {
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            t.year, t.month, t.day, t.hour, t.minute, t.second
+        )
+    })
 }
 
 fn pick_session_color(session_id: &str) -> u8 {
@@ -1075,6 +1210,7 @@ mod tests {
             follow: false,
             show: ShowMask(SHOW_DEFAULT),
             term_cols: 80,
+            cmd_label: "coding-agents-kit-ctl".to_string(),
         }
     }
 
@@ -1100,8 +1236,11 @@ mod tests {
             "command" => (String::new(), body.to_string()),
             _ => (String::new(), String::new()),
         };
+        // evt.time matches the ISO `time` field below — real Falco alerts
+        // always include both, and the formatter's `since` line depends on
+        // evt.time being present in output_fields.
         format!(
-            "{{\"hostname\":\"x\",\"message\":\"\",\"output_fields\":{{\"agent.cwd\":\"{cwd}\",\"agent.real_cwd\":\"{cwd}\",\"agent.session_id\":\"{session}\",\"agent.transcript_path\":\"\",\"correlation.id\":{cid},\"tool.file_path\":\"{file_path}\",\"tool.real_file_path\":\"{file_path}\",\"tool.input\":{input_json:?},\"tool.input_command\":\"{cmd}\",\"tool.name\":\"{tool}\"}},\"priority\":\"Debug\",\"rule\":\"Coding Agent Event Seen\",\"source\":\"coding_agent\",\"tags\":[\"coding_agent_seen\"],\"time\":\"2026-04-29T12:16:05.365824000Z\"}}"
+            "{{\"hostname\":\"x\",\"message\":\"\",\"output_fields\":{{\"agent.cwd\":\"{cwd}\",\"agent.real_cwd\":\"{cwd}\",\"agent.session_id\":\"{session}\",\"agent.transcript_path\":\"\",\"correlation.id\":{cid},\"evt.time\":1777000000000000000,\"tool.file_path\":\"{file_path}\",\"tool.real_file_path\":\"{file_path}\",\"tool.input\":{input_json:?},\"tool.input_command\":\"{cmd}\",\"tool.name\":\"{tool}\"}},\"priority\":\"Debug\",\"rule\":\"Coding Agent Event Seen\",\"source\":\"coding_agent\",\"tags\":[\"coding_agent_seen\"],\"time\":\"2026-04-29T12:16:05.365824000Z\"}}"
         )
     }
 
@@ -1303,8 +1442,8 @@ mod tests {
         assert!(footer[0].is_empty());
         assert!(footer[1].contains("─"));
         let body = &footer[2];
-        // Form: "coding-agents-kit: sessions N · events N (● allow N · ⊙ ask N · ⊘ deny N)"
-        assert!(body.contains("coding-agents-kit:"), "tool prefix: {body}");
+        // Form: "coding-agents-kit-ctl: sessions N · events N (● allow N · ⊙ ask N · ⊘ deny N)"
+        assert!(body.contains("coding-agents-kit-ctl:"), "tool prefix: {body}");
         assert!(body.contains("sessions "));
         assert!(body.contains("events "));
         assert!(body.contains("(● allow "));
@@ -1401,8 +1540,132 @@ mod tests {
     fn shorten_path_ellipsis_when_too_long() {
         let long = "/home/u/very/deep/nested/path/leaf";
         let out = shorten_path(long, "/home/u", 18);
-        assert!(out.contains("…") || out.contains("..."), "out={out}");
+        assert!(out.contains("…"), "out={out}");
+        assert!(!out.contains("..."), "must use single-char ellipsis: {out}");
         assert!(display_width(&out) <= 18 + 1);
+    }
+
+    #[test]
+    fn shorten_path_keeps_more_than_first_and_last_segment() {
+        // The pre-supervisor truncation collapsed everything to
+        // `~/.../basename`; the new middle-ellipsis should retain meaningful
+        // context from the leading prefix as well.
+        let long = "/home/u/code/github.com/org/repo/src/sub/file.rs";
+        let out = shorten_path(long, "/home/u", 30);
+        assert!(out.contains("…"), "out={out}");
+        assert!(out.starts_with("~/code"), "prefix lost: {out}");
+        assert!(out.ends_with("file.rs"), "basename lost: {out}");
+    }
+
+    #[test]
+    fn middle_ellipsis_balances_both_ends() {
+        let s = "abcdefghijklmnopqrstuvwxyz";
+        let out = middle_ellipsis(s, 9);
+        assert!(out.starts_with("abcd"), "left side too short: {out}");
+        assert!(out.ends_with("xyz"), "right side too short: {out}");
+        assert!(out.contains('…'));
+    }
+
+    #[test]
+    fn label_includes_title_when_known() {
+        let mut resolver = HashMap::new();
+        resolver.insert(
+            "/home/u/.claude/projects/x/abc.jsonl".to_string(),
+            "prettify ctl".to_string(),
+        );
+        let mut f = Formatter::new(
+            opts_no_color(),
+            "/home/u".to_string(),
+            StubResolver(resolver),
+        );
+        // 8-char session_id so short_session_id() returns it verbatim, and
+        // the assertion below can match the full label.
+        let raw = format!(
+            "{{\"source\":\"coding_agent\",\"tags\":[\"coding_agent_seen\"],\
+             \"rule\":\"Coding Agent Event Seen\",\"priority\":\"Debug\",\
+             \"output_fields\":{{\"correlation.id\":1,\
+             \"agent.session_id\":\"ea56c92a\",\
+             \"agent.cwd\":\"/home/u\",\"agent.real_cwd\":\"/home/u\",\
+             \"agent.transcript_path\":\"/home/u/.claude/projects/x/abc.jsonl\",\
+             \"tool.name\":\"Bash\",\"tool.input_command\":\"ls\",\
+             \"tool.input\":\"{{}}\",\"evt.time\":1777000000000000000}},\
+             \"time\":\"2026-04-29T12:16:05.000000000Z\"}}"
+        );
+        let out = f.process_line(&raw);
+        let joined = out.join("\n");
+        assert!(
+            joined.contains("[ea56c92a · \"prettify ctl\"]"),
+            "label missing title: {joined}"
+        );
+    }
+
+    #[test]
+    fn label_omits_title_when_unknown() {
+        let mut f = Formatter::new(
+            opts_no_color(),
+            "/home/u".to_string(),
+            StubResolver(HashMap::new()),
+        );
+        let out = f.process_line(&make_seen(
+            1, "ea56c92a", "/home/u", "Bash", "command", "ls",
+        ));
+        let joined = out.join("\n");
+        assert!(
+            joined.contains("[ea56c92a]"),
+            "expected bare label when no title: {joined}"
+        );
+        assert!(
+            !joined.contains("[ea56c92a ·"),
+            "no `· \"...\"` when title unknown: {joined}"
+        );
+    }
+
+    /// Visible character column at which `needle` first appears in a line,
+    /// after stripping ANSI. Returns None if the needle is missing.
+    fn char_col(line: &str, needle: char) -> Option<usize> {
+        strip_ansi(line).chars().position(|c| c == needle)
+    }
+
+    #[test]
+    fn detail_line_aligns_with_tool_name() {
+        let mut f = Formatter::new(
+            opts_no_color(),
+            "/home/u".to_string(),
+            StubResolver(HashMap::new()),
+        );
+        let _ = f.process_line(&make_deny(
+            7,
+            "Deny reading sensitive paths",
+            "blocked",
+            "Critical",
+        ));
+        let seen = make_seen(7, "ea56c92a", "/home/u", "Read", "file_path", "/etc/passwd");
+        let out = f.process_line(&seen);
+        let event_line = out
+            .iter()
+            .find(|l| l.contains("⊘") && l.contains("Read"))
+            .expect("event line missing");
+        let detail_line = out
+            .iter()
+            .find(|l| l.contains("↳"))
+            .expect("detail line missing");
+        let event_tool_col = char_col(event_line, 'R').expect("R not found in event");
+        let detail_arrow_col = char_col(detail_line, '↳').expect("↳ not found in detail");
+        assert_eq!(
+            event_tool_col, detail_arrow_col,
+            "tool name and ↳ must share a column.\nevent: {event_line}\ndetail: {detail_line}"
+        );
+    }
+
+    #[test]
+    fn status_footer_uses_cmd_label_and_since_when_known() {
+        let mut opts = opts_no_color();
+        opts.cmd_label = "coding-agents-kit -f".to_string();
+        let mut f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
+        let _ = f.process_line(&make_seen(1, "s", "/home/u", "Bash", "command", "ls"));
+        let body = f.status_footer().last().unwrap().clone();
+        assert!(body.contains("coding-agents-kit -f:"), "body={body}");
+        assert!(body.contains(" · since "), "missing since: {body}");
     }
 
     #[test]

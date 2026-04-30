@@ -1068,17 +1068,84 @@ fn logs(prefix: &PathBuf, opts: &LogsOpts) {
     }
 }
 
+/// Default number of lines to keep when `--tail=N` is not given.
+const DEFAULT_TAIL_LINES: u64 = 100;
+
+/// Last-resort name when neither `argv[0]` nor `current_exe()` is usable.
+const FALLBACK_BINARY_NAME: &str = "coding-agents-kit-ctl";
+
+/// Best-effort look-up of the invoked binary name. Tries `argv[0]` first
+/// (preserves whatever name the user typed — useful when the binary is
+/// symlinked or aliased), falls back to the on-disk file name, and finally
+/// to `FALLBACK_BINARY_NAME`. The `.exe` suffix is stripped on Windows so
+/// the label reads identically across platforms.
+fn invoked_binary_name() -> String {
+    fn from_path(path: &Path) -> Option<String> {
+        path.file_name().map(|n| {
+            let s = n.to_string_lossy();
+            s.strip_suffix(".exe")
+                .or_else(|| s.strip_suffix(".EXE"))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| s.into_owned())
+        })
+    }
+    if let Some(arg0) = env::args().next() {
+        if !arg0.is_empty() {
+            if let Some(name) = from_path(Path::new(&arg0)) {
+                if !name.is_empty() {
+                    return name;
+                }
+            }
+        }
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Some(name) = from_path(&exe) {
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    FALLBACK_BINARY_NAME.to_string()
+}
+
+/// Reconstruct the command-line label shown in the status footer. Mirrors
+/// the flags actually applied to the pretty path (snapshot/follow/show/...)
+/// so the user can read off the mode at a glance, e.g.
+/// `coding-agents-kit-ctl -f`. The binary name is taken from argv[0] (the
+/// way the user actually invoked it), falling back to the on-disk exe name
+/// and finally a hardcoded default — never panics.
+fn build_logs_cmd_label(opts: &LogsOpts) -> String {
+    let mut s = invoked_binary_name();
+    if opts.follow {
+        s.push_str(" -f");
+    }
+    if let Some(n) = opts.tail {
+        s.push_str(&format!(" --tail={n}"));
+    }
+    if let Some(mask) = opts.show {
+        if mask != logs_pretty::ShowMask::default_mask() {
+            s.push_str(&format!(" --show={}", mask.label()));
+        }
+    }
+    if opts.no_color {
+        s.push_str(" --no-color");
+    }
+    if opts.no_stats {
+        s.push_str(" --no-stats");
+    }
+    s
+}
+
+fn effective_tail(opts: &LogsOpts) -> u64 {
+    opts.tail.unwrap_or(DEFAULT_TAIL_LINES)
+}
+
 fn build_tail_command(path: &PathBuf, opts: &LogsOpts) -> Command {
+    let n = effective_tail(opts);
     #[cfg(unix)]
     {
-        let tail_arg = match opts.tail {
-            Some(n) => n.to_string(),
-            // Snapshot mode without --tail: print the full file. `tail -n +1`
-            // means "starting at line 1", i.e. everything.
-            None => "+1".to_string(),
-        };
         let mut cmd = Command::new("tail");
-        cmd.args(["-n", &tail_arg]);
+        cmd.args(["-n", &n.to_string()]);
         if opts.follow {
             cmd.arg("-f");
         }
@@ -1087,10 +1154,7 @@ fn build_tail_command(path: &PathBuf, opts: &LogsOpts) -> Command {
     }
     #[cfg(windows)]
     {
-        let mut ps_cmd = format!("Get-Content -Path '{}'", path.display());
-        if let Some(n) = opts.tail {
-            ps_cmd.push_str(&format!(" -Tail {}", n));
-        }
+        let mut ps_cmd = format!("Get-Content -Path '{}' -Tail {}", path.display(), n);
         if opts.follow {
             ps_cmd.push_str(" -Wait");
         }
@@ -1135,6 +1199,7 @@ fn run_logs_pretty(path: &PathBuf, opts: &LogsOpts) {
         follow: opts.follow,
         show,
         term_cols: logs_pretty::detect_term_cols(),
+        cmd_label: build_logs_cmd_label(opts),
     };
 
     let mut cmd = build_tail_command(path, opts);
@@ -1382,9 +1447,9 @@ fn print_usage() {
     eprintln!("  disable          Disable service auto-start");
     eprintln!("  status           Show service status");
     eprintln!("  health           Check pipeline health (send synthetic event)");
-    eprintln!("  logs [flags]     Print Falco stdout logs (snapshot by default)");
+    eprintln!("  logs [flags]     Print Falco stdout logs (last 100 lines by default)");
     eprintln!("                     -f, --follow    stream new output");
-    eprintln!("                     --tail=N        print last N lines");
+    eprintln!("                     --tail=N        print last N lines (default: 100)");
     eprintln!("                     --err           target stderr log instead (forces raw)");
     eprintln!("                     --raw           print raw JSON (disable pretty formatting)");
     eprintln!("                     --show LIST     verdicts to render: deny,ask,allow,seen,all");
