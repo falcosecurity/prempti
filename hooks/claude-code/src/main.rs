@@ -161,7 +161,10 @@ fn get_socket_path() -> String {
             return String::new();
         }
         // Use forward slashes — YAML configs and AF_UNIX paths must match exactly.
-        format!("{}/coding-agents-kit/run/broker.sock", base.replace('\\', "/"))
+        format!(
+            "{}/coding-agents-kit/run/broker.sock",
+            base.replace('\\', "/")
+        )
     }
 }
 
@@ -184,6 +187,28 @@ fn remaining_timeout(start: Instant, timeout: Duration) -> Result<Duration, Stri
         .checked_sub(start.elapsed())
         .filter(|d| !d.is_zero())
         .ok_or_else(|| "broker response timeout".to_string())
+}
+
+/// Translate a `shutdown(Write)` result into the interceptor's String error.
+/// Tolerates the "peer already disconnected" family because a fast broker
+/// can read the newline-terminated request, write its response, and drop
+/// the stream before our shutdown call lands. On macOS/BSD the kernel then
+/// reports ENOTCONN / EPIPE here, but the response is already queued for
+/// us to read. The half-close is purely advisory — the `\n` in the request
+/// is what really terminates it for the broker — so any "peer is gone"
+/// error here is harmless. Anything else (EBADF, etc.) is still surfaced.
+#[cfg(unix)]
+fn tolerate_disconnected_shutdown(result: io::Result<()>) -> Result<(), String> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => match e.kind() {
+            io::ErrorKind::NotConnected
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset => Ok(()),
+            _ => Err(format!("broker shutdown failed: {e}")),
+        },
+    }
 }
 
 /// Connect to broker, send request, receive response.
@@ -211,9 +236,7 @@ fn communicate(socket_path: &str, request: &[u8], timeout: Duration) -> Result<R
     // resets the connection on some Windows builds, preventing the broker
     // from writing the verdict back to the interceptor.
     #[cfg(unix)]
-    stream
-        .shutdown(Shutdown::Write)
-        .map_err(|e| format!("broker shutdown failed: {e}"))?;
+    tolerate_disconnected_shutdown(stream.shutdown(Shutdown::Write))?;
 
     // Receive response with cumulative timeout and size limit.
     let remaining = remaining_timeout(start, timeout)?;
@@ -330,5 +353,60 @@ fn main() {
         Err(Error::BrokerError(reason)) => {
             verdict_on_error(&reason);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tolerate_disconnected_shutdown_passes_ok_through() {
+        assert!(tolerate_disconnected_shutdown(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn tolerate_disconnected_shutdown_swallows_peer_gone_errors() {
+        // These four kinds all mean "peer already closed, no point
+        // half-closing our side". Any of them is a non-fatal race that
+        // happens when a fast broker writes its response and drops the
+        // stream before our shutdown(Write) call lands.
+        for kind in [
+            io::ErrorKind::NotConnected,
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionReset,
+        ] {
+            let r = tolerate_disconnected_shutdown(Err(io::Error::new(kind, "test")));
+            assert!(r.is_ok(), "{kind:?} should be tolerated, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn tolerate_disconnected_shutdown_propagates_other_errors() {
+        let r = tolerate_disconnected_shutdown(Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "test",
+        )));
+        assert!(r.is_err(), "non-disconnect errors should not be swallowed");
+        let msg = r.unwrap_err();
+        assert!(msg.contains("broker shutdown failed"), "got: {msg}");
+    }
+
+    /// Reproduces the BSD-style race: peer drops its end (closing the
+    /// AF_UNIX connection) before we try to half-close ours. macOS reports
+    /// ENOTCONN here; Linux generally accepts the shutdown silently. Either
+    /// way, our wrapper returns Ok.
+    #[test]
+    fn shutdown_on_disconnected_unix_pair_is_tolerated() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+        let (a, b) = UnixStream::pair().expect("UnixStream::pair");
+        // Write something so the response is buffered on `a`'s read side
+        // even after `b` is gone — mirrors the production race.
+        (&b).write_all(b"hello\n").unwrap();
+        drop(b);
+        let r = tolerate_disconnected_shutdown(a.shutdown(Shutdown::Write));
+        assert!(r.is_ok(), "expected tolerance, got {r:?}");
     }
 }
