@@ -1883,3 +1883,150 @@
   source: coding_agent
   tags: [coding_agent_ask, AML.T0010_ml_supply_chain_compromise,
          mitre_t1195_supply_chain_compromise]
+
+# ===========================================================================
+# Section 7: Self-protection — block agent attempts to disable Prempti.
+#
+# Prempti only sees agent-initiated tool calls; the user types `premptictl`
+# directly in their own shell, never via a Bash tool call. So denying these
+# patterns from the agent does not block legitimate user operations.
+#
+# Three rule families:
+#   - destructive `premptictl` subcommands (stop / restart / disable /
+#     uninstall / daemon / hook remove / mode <arg>)
+#   - platform service-stop alternatives, gated by agent.os
+#   - writes/edits under the install prefix and ~/.claude/settings.json,
+#     plus an ASK on reads of settings.json
+# ===========================================================================
+
+- macro: is_premptictl_destructive
+  condition: >
+    is_bash and (
+      tool.input_command contains "premptictl stop"
+      or tool.input_command contains "premptictl restart"
+      or tool.input_command contains "premptictl disable"
+      or tool.input_command contains "premptictl uninstall"
+      or tool.input_command contains "premptictl daemon"
+      or tool.input_command contains "premptictl hook remove"
+      or tool.input_command contains "premptictl mode "
+    )
+
+- rule: Deny premptictl destructive subcommands
+  desc: >
+    Blocks agent invocations of premptictl subcommands that would take
+    Prempti down or reconfigure it: stop / restart / disable / uninstall /
+    daemon / hook remove / mode <arg>. Read-only subcommands (status,
+    health, logs, hook status, mode without arg) are allowed.
+  condition: is_premptictl_destructive
+  output: >
+    Falco blocked premptictl invocation that would disable or reconfigure Prempti (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, prempti_self_protection]
+
+- macro: is_service_stop_linux
+  condition: >
+    agent.os = "linux" and is_bash and (
+      tool.input_command contains "systemctl --user stop prempti"
+      or tool.input_command contains "systemctl --user disable prempti"
+      or tool.input_command contains "systemctl stop prempti"
+      or tool.input_command contains "systemctl disable prempti"
+      or tool.input_command contains "loginctl disable-linger"
+      or tool.input_command contains "pkill falco"
+      or tool.input_command contains "pkill -f falco"
+      or tool.input_command contains "killall falco"
+    )
+
+- macro: is_service_stop_macos
+  condition: >
+    agent.os = "macos" and is_bash and (
+      tool.input_command contains "launchctl unload"
+        and tool.input_command contains "prempti"
+      or tool.input_command contains "launchctl bootout"
+        and tool.input_command contains "prempti"
+      or tool.input_command contains "launchctl remove dev.falcosecurity.prempti"
+      or tool.input_command contains "pkill falco"
+      or tool.input_command contains "pkill -f falco"
+      or tool.input_command contains "killall falco"
+    )
+
+- macro: is_service_stop_windows
+  condition: >
+    agent.os = "windows" and is_bash and (
+      tool.input_command contains "taskkill"
+        and tool.input_command contains "falco"
+      or tool.input_command contains "Stop-Process"
+        and tool.input_command contains "falco"
+      or tool.input_command contains "Stop-Service"
+        and tool.input_command contains "falco"
+      or (tool.input_command contains "reg delete"
+        and tool.input_command contains "Run"
+        and tool.input_command contains "prempti")
+    )
+
+- rule: Deny service-stop alternatives targeting Prempti
+  desc: >
+    Blocks platform-specific commands that would stop Falco / unregister
+    the Prempti service outside of the premptictl CLI: systemd stop /
+    disable on Linux, launchctl unload / bootout on macOS, taskkill /
+    Stop-Service / Run-key delete on Windows, plus pkill/killall variants
+    against the falco process. Gated on agent.os so each pattern only
+    fires on its native platform.
+  condition: >
+    is_service_stop_linux
+    or is_service_stop_macos
+    or is_service_stop_windows
+  output: >
+    Falco blocked a platform service-stop command targeting Prempti (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, prempti_self_protection]
+
+- macro: is_prempti_install_path
+  condition: >
+    (agent.os in (linux, macos) and tool.real_file_path contains "/.prempti/")
+    or (agent.os = "windows" and tool.real_file_path contains "/prempti/")
+
+- macro: is_claude_settings_path
+  condition: >
+    tool.real_file_path contains "/.claude/settings.json"
+
+- rule: Deny writes under Prempti install prefix
+  desc: >
+    Blocks Write/Edit on any path under the Prempti install prefix
+    (~/.prempti/ on Unix, %LOCALAPPDATA%\\prempti\\ on Windows). Reads
+    are allowed so the agent can still introspect config / logs for
+    debugging. Use the supervisor's CLI to make legitimate config
+    changes.
+  condition: tool.name in ("Write", "Edit") and is_prempti_install_path
+  output: >
+    Falco blocked writing to %tool.real_file_path under the Prempti install prefix
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, prempti_self_protection]
+
+- rule: Deny writes to Claude Code settings file
+  desc: >
+    Blocks Write/Edit on ~/.claude/settings.json. The Prempti hook lives
+    here; modifying the file is the most direct way for an agent to
+    unregister the interceptor. Use `premptictl hook` for legitimate
+    hook lifecycle.
+  condition: tool.name in ("Write", "Edit") and is_claude_settings_path
+  output: >
+    Falco blocked writing to Claude Code settings at %tool.real_file_path
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, prempti_self_protection]
+
+- rule: Ask before reading Claude Code settings file
+  desc: >
+    Asks before the agent reads ~/.claude/settings.json. The file is
+    sensitive — it lists every hook the user has configured. Reads have
+    legitimate uses (debugging hook registration), but the user should
+    confirm.
+  condition: tool.name = "Read" and is_claude_settings_path
+  output: >
+    Falco requires confirmation to read Claude Code settings at %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, prempti_self_protection]
