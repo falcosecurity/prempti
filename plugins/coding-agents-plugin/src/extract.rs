@@ -27,6 +27,25 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
+    /// Operating system the plugin was compiled for. Static per build, not
+    /// parsed from the event payload — there's a single Falco process per
+    /// host, so the OS doesn't vary across events.
+    fn extract_agent_os(
+        &mut self,
+        _req: ExtractRequest<Self>,
+    ) -> Result<CString, Error> {
+        let val = if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else if cfg!(target_os = "windows") {
+            "windows"
+        } else {
+            "unknown"
+        };
+        Ok(CString::new(val)?)
+    }
+
     fn extract_correlation_id(
         &mut self,
         mut req: ExtractRequest<Self>,
@@ -157,6 +176,9 @@ impl ExtractPlugin for CodingAgentPlugin {
         field("agent.name", &Self::extract_agent_name)
             .with_display("Agent Name")
             .with_description("Coding agent identifier (e.g., claude_code)"),
+        field("agent.os", &Self::extract_agent_os)
+            .with_display("Operating System")
+            .with_description("OS the plugin was compiled for: linux, macos, windows, or unknown"),
         field("tool.use_id", &Self::extract_tool_use_id)
             .with_display("Tool Use ID")
             .with_description("Tool call identifier from Claude Code (tool_use_id, raw value)"),
