@@ -1,6 +1,6 @@
-# coding-agents-kit-ctl
+# premptictl
 
-CLI tool for managing the coding-agents-kit service. Controls hook registration, operational mode switching, supervisor lifecycle, and platform service integration (systemd / launchd / Windows Run key).
+CLI tool for managing the Prempti service. Controls hook registration, operational mode switching, supervisor lifecycle, and platform service integration (systemd / launchd / Windows Run key).
 
 ## Build
 
@@ -8,24 +8,24 @@ CLI tool for managing the coding-agents-kit service. Controls hook registration,
 cargo build --release
 ```
 
-Binary: `target/release/coding-agents-kit-ctl`
+Binary: `target/release/premptictl`
 
 ## Commands
 
 ### Hook Management
 
 ```bash
-coding-agents-kit-ctl hook add       # Register interceptor in Claude Code settings.json
-coding-agents-kit-ctl hook remove    # Remove interceptor from Claude Code settings.json
-coding-agents-kit-ctl hook status    # Check if the hook is registered
+premptictl hook add       # Register interceptor in Claude Code settings.json
+premptictl hook remove    # Remove interceptor from Claude Code settings.json
+premptictl hook status    # Check if the hook is registered
 ```
 
 ### Mode Switching
 
 ```bash
-coding-agents-kit-ctl mode                # Show current mode
-coding-agents-kit-ctl mode guardrails     # Switch to guardrails (deny/ask enforced)
-coding-agents-kit-ctl mode monitor        # Switch to monitor (all verdicts allow, alerts logged)
+premptictl mode                # Show current mode
+premptictl mode guardrails     # Switch to guardrails (deny/ask enforced)
+premptictl mode monitor        # Switch to monitor (all verdicts allow, alerts logged)
 ```
 
 Mode changes rewrite the plugin config YAML and then restart the service (stop + start). The brief restart window is fail-closed.
@@ -33,18 +33,18 @@ Mode changes rewrite the plugin config YAML and then restart the service (stop +
 ### Service Management
 
 ```bash
-coding-agents-kit-ctl start     # Start the supervisor (which spawns Falco)
-coding-agents-kit-ctl stop      # Stop the service
-coding-agents-kit-ctl restart   # Stop and start (use after editing config files)
-coding-agents-kit-ctl enable    # Enable auto-start on login
-coding-agents-kit-ctl disable   # Disable auto-start
-coding-agents-kit-ctl status    # Show service status
+premptictl start     # Start the supervisor (which spawns Falco)
+premptictl stop      # Stop the service
+premptictl restart   # Stop and start (use after editing config files)
+premptictl enable    # Enable auto-start on login
+premptictl disable   # Disable auto-start
+premptictl status    # Show service status
 ```
 
 ### Supervisor
 
 ```bash
-coding-agents-kit-ctl daemon [--prefix PATH]
+premptictl daemon [--prefix PATH]
                               [--config PATH]
                               [--log-rotate-bytes N]
                               [--log-rotate-keep N]
@@ -65,11 +65,11 @@ non-managed setups. Only one supervisor at a time per prefix because
 ### Viewing Logs
 
 ```bash
-coding-agents-kit-ctl logs                 # Print last 100 lines of Falco stdout, exit
-coding-agents-kit-ctl logs --tail=500      # Override the default — print last 500 lines
-coding-agents-kit-ctl logs -f              # Print last 100 lines, then stream new output
-coding-agents-kit-ctl logs -f --tail=20    # Print last 20 lines, then stream
-coding-agents-kit-ctl logs --err [flags]   # Same, but against the stderr log
+premptictl logs                 # Print last 100 lines of Falco stdout, exit
+premptictl logs --tail=500      # Override the default — print last 500 lines
+premptictl logs -f              # Print last 100 lines, then stream new output
+premptictl logs -f --tail=20    # Print last 20 lines, then stream
+premptictl logs --err [flags]   # Same, but against the stderr log
 ```
 
 `logs` defaults to a snapshot-and-exit (like `kubectl logs` / `docker logs`) of the **last 100 lines**. Pass `-f` / `--follow` to stream new output afterwards. `--tail=N` overrides the line count (use a large value if you want the entire file). The `--err` flag targets `falco.err` instead of `falco.log`.

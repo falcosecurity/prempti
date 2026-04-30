@@ -90,7 +90,7 @@ mod tests {
 
     fn tmp(label: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!(
-            "cak-drain-{}-{label}-{}",
+            "prempti-drain-{}-{label}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

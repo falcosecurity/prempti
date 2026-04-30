@@ -1,17 +1,17 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Integration test for the installed coding-agents-kit service on Windows.
+    Integration test for the installed Prempti service on Windows.
 
 .DESCRIPTION
     Drives the full installed pipeline (launcher -> Falco -> plugin -> rules
     -> verdict -> interceptor) using the binaries deployed under
-    %LOCALAPPDATA%\coding-agents-kit\. It kills the currently-running service,
+    %LOCALAPPDATA%\prempti\. It kills the currently-running service,
     starts a fresh launcher, sends sample hook JSON through the real
     interceptor, asserts the verdicts, and shuts the launcher down cleanly so
     its finally block can remove the Claude Code hook.
 
-    Requires: coding-agents-kit installed via MSI + postinstall.
+    Requires: Prempti installed via MSI + postinstall.
 
     WARNING: this script stops and restarts the installed service. It does not
     modify rules or switch modes, but Claude Code tool calls are blocked for
@@ -20,10 +20,10 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Prefix = Join-Path $env:LOCALAPPDATA 'coding-agents-kit'
-$Launcher = Join-Path $Prefix 'bin\coding-agents-kit-launcher.ps1'
+$Prefix = Join-Path $env:LOCALAPPDATA 'prempti'
+$Launcher = Join-Path $Prefix 'bin\prempti-launcher.ps1'
 $Hook = Join-Path $Prefix 'bin\claude-interceptor.exe'
-$Ctl = Join-Path $Prefix 'bin\coding-agents-kit-ctl.exe'
+$Ctl = Join-Path $Prefix 'bin\premptictl.exe'
 $PASS = 0
 $FAIL = 0
 $launcherProc = $null
@@ -69,9 +69,9 @@ function Run-Hook([string]$Json) {
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    # Do NOT set CODING_AGENTS_KIT_SOCKET: exercise the interceptor's default
-    # socket path discovery (%LOCALAPPDATA%/coding-agents-kit/run/broker.sock).
-    $psi.EnvironmentVariables['CODING_AGENTS_KIT_TIMEOUT_MS'] = '8000'
+    # Do NOT set PREMPTI_SOCKET: exercise the interceptor's default
+    # socket path discovery (%LOCALAPPDATA%/prempti/run/broker.sock).
+    $psi.EnvironmentVariables['PREMPTI_TIMEOUT_MS'] = '8000'
     $proc = [System.Diagnostics.Process]::Start($psi)
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
     $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
@@ -92,7 +92,7 @@ foreach ($f in @($Launcher, $Hook, $Ctl, (Join-Path $Prefix 'bin\falco.exe'), (J
     if (-not (Test-Path $f)) { $missing += (Split-Path $f -Leaf) }
 }
 if ($missing.Count -gt 0) {
-    Write-Error "coding-agents-kit not installed. Missing: $($missing -join ', ')"
+    Write-Error "Prempti not installed. Missing: $($missing -join ', ')"
     exit 1
 }
 Write-Host "  Installation verified"

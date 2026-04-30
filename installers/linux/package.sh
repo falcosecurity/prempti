@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# package.sh — Build and package coding-agents-kit for Linux.
+# package.sh — Build and package Prempti for Linux.
 #
 # Creates a self-contained tar.gz with all binaries, configs, and an installer.
 # Usage: bash package.sh [--target aarch64-unknown-linux-gnu]
@@ -48,19 +48,19 @@ if [[ "$ARCH" == "$HOST_ARCH" ]]; then
     CARGO_TARGET_FLAG=""
     INTERCEPTOR_BIN="target/release/claude-interceptor"
     PLUGIN_LIB="target/release/libcoding_agent.so"
-    CTL_BIN="target/release/coding-agents-kit-ctl"
+    CTL_BIN="target/release/premptictl"
 else
     # Cross-compilation.
     CARGO_TARGET_FLAG="--target $RUST_TARGET"
     INTERCEPTOR_BIN="target/$RUST_TARGET/release/claude-interceptor"
     PLUGIN_LIB="target/$RUST_TARGET/release/libcoding_agent.so"
-    CTL_BIN="target/$RUST_TARGET/release/coding-agents-kit-ctl"
+    CTL_BIN="target/$RUST_TARGET/release/premptictl"
 fi
 
-PACKAGE_NAME="coding-agents-kit-${VERSION}-linux-${ARCH}"
+PACKAGE_NAME="prempti-${VERSION}-linux-${ARCH}"
 BUILD_DIR="${ROOT_DIR}/build/${PACKAGE_NAME}"
 
-echo "=== Building coding-agents-kit ${VERSION} for linux/${ARCH} ==="
+echo "=== Building Prempti ${VERSION} for linux/${ARCH} ==="
 
 # Step 1: Build interceptor.
 echo "Building interceptor..."
@@ -68,11 +68,11 @@ echo "Building interceptor..."
 
 # Step 2: Build plugin.
 echo "Building plugin..."
-(cd "$ROOT_DIR/plugins/coding-agent-plugin" && cargo build --release $CARGO_TARGET_FLAG)
+(cd "$ROOT_DIR/plugins/coding-agents-plugin" && cargo build --release $CARGO_TARGET_FLAG)
 
 # Step 2b: Build ctl tool.
-echo "Building coding-agents-kit-ctl..."
-(cd "$ROOT_DIR/tools/coding-agents-kit-ctl" && cargo build --release $CARGO_TARGET_FLAG)
+echo "Building Premptictl..."
+(cd "$ROOT_DIR/tools/premptictl" && cargo build --release $CARGO_TARGET_FLAG)
 
 # Step 3: Download Falco binary.
 FALCO_URL="https://download.falco.org/packages/bin/${ARCH}/falco-${FALCO_VERSION}-${ARCH}.tar.gz"
@@ -93,7 +93,7 @@ mkdir -p "$BUILD_DIR"/{bin,share,config,rules/default,rules/user,systemd}
 
 # Binaries.
 cp "$ROOT_DIR/$INTERCEPTOR_BIN" "$BUILD_DIR/bin/claude-interceptor"
-cp "$ROOT_DIR/$CTL_BIN" "$BUILD_DIR/bin/coding-agents-kit-ctl"
+cp "$ROOT_DIR/$CTL_BIN" "$BUILD_DIR/bin/premptictl"
 cp "$ROOT_DIR/$PLUGIN_LIB" "$BUILD_DIR/share/libcoding_agent.so"
 
 # Extract only falco binary from the tarball.
@@ -110,7 +110,7 @@ cp "$ROOT_DIR/rules/default/coding_agents_rules.yaml" "$BUILD_DIR/rules/default/
 cp "$ROOT_DIR/rules/seen.yaml" "$BUILD_DIR/rules/"
 
 # Systemd service template.
-cp "$SCRIPT_DIR/coding-agents-kit.service" "$BUILD_DIR/systemd/"
+cp "$SCRIPT_DIR/prempti.service" "$BUILD_DIR/systemd/"
 
 # Installer script.
 cp "$SCRIPT_DIR/install.sh" "$BUILD_DIR/"

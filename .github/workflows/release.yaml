@@ -36,7 +36,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
-          path: build/coding-agents-kit-*-linux-${{ matrix.arch }}.tar.gz
+          path: build/prempti-*-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
   macos:
@@ -84,8 +84,8 @@ jobs:
         with:
           name: macos-universal
           path: |
-            build/coding-agents-kit-*-darwin-universal.tar.gz
-            build/coding-agents-kit-*-darwin-universal.pkg
+            build/prempti-*-darwin-universal.tar.gz
+            build/prempti-*-darwin-universal.pkg
           if-no-files-found: error
 
   windows:
@@ -143,8 +143,8 @@ jobs:
           name: windows-${{ matrix.arch }}
           path: |
             build/out/*.msi
-            build/out/Install-CodingAgentsKit.ps1
-            build/out/Uninstall-CodingAgentsKit.ps1
+            build/out/Install-Prempti.ps1
+            build/out/Uninstall-Prempti.ps1
           if-no-files-found: error
 
   publish:

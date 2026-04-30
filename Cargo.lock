@@ -72,15 +72,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
-name = "cak-tests"
-version = "0.2.0"
-dependencies = [
- "serde",
- "serde_json",
- "uds_windows",
-]
-
-[[package]]
 name = "cc"
 version = "1.2.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -131,7 +122,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "coding-agent-plugin"
+name = "coding-agents-plugin"
 version = "0.2.0"
 dependencies = [
  "anyhow",
@@ -144,17 +135,6 @@ dependencies = [
  "serde_json",
  "tiny_http",
  "uds_windows",
-]
-
-[[package]]
-name = "coding-agents-kit-ctl"
-version = "0.2.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "uds_windows",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -589,6 +569,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
 dependencies = [
  "siphasher",
+]
+
+[[package]]
+name = "prempti-tests"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uds_windows",
+]
+
+[[package]]
+name = "premptictl"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "uds_windows",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

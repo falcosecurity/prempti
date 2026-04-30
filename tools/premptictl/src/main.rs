@@ -8,7 +8,7 @@ mod hook;
 mod logs_pretty;
 
 #[cfg(target_os = "linux")]
-const SERVICE_NAME: &str = "coding-agents-kit";
+const SERVICE_NAME: &str = "prempti";
 
 pub(crate) fn home_dir() -> String {
     #[cfg(unix)]
@@ -25,16 +25,16 @@ pub(crate) fn home_dir() -> String {
 fn default_prefix() -> PathBuf {
     #[cfg(unix)]
     {
-        PathBuf::from(home_dir()).join(".coding-agents-kit")
+        PathBuf::from(home_dir()).join(".prempti")
     }
     #[cfg(windows)]
     {
         // Prefer deriving the prefix from the ctl's own location: if ctl
-        // lives at `<prefix>\bin\coding-agents-kit-ctl.exe`, `<prefix>` is
+        // lives at `<prefix>\bin\premptictl.exe`, `<prefix>` is
         // the right answer regardless of what INSTALLDIR the MSI used. This
         // keeps ctl commands (enable/disable/start/stop) aligned with a
         // custom install path picked via WixUI_InstallDir. Fall back to
-        // %LOCALAPPDATA%\coding-agents-kit when current_exe isn't a `bin`
+        // %LOCALAPPDATA%\prempti when current_exe isn't a `bin`
         // child (running from a dev target dir, or otherwise detached).
         if let Ok(exe) = env::current_exe() {
             if let Some(bin_dir) = exe.parent() {
@@ -48,7 +48,7 @@ fn default_prefix() -> PathBuf {
                 }
             }
         }
-        PathBuf::from(home_dir()).join("coding-agents-kit")
+        PathBuf::from(home_dir()).join("prempti")
     }
 }
 
@@ -146,7 +146,7 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
 
     if !was_running {
         println!("Mode set to: {mode}");
-        println!("(Service is not running. Start it to apply: coding-agents-kit-ctl start)");
+        println!("(Service is not running. Start it to apply: premptictl start)");
         return;
     }
 
@@ -214,7 +214,7 @@ fn report_start_result(broker_ready: bool) {
         println!("Service started.");
     } else {
         println!("Service started, but broker socket is not accepting connections yet.");
-        println!("Wait a moment and run `coding-agents-kit-ctl health` to verify.");
+        println!("Wait a moment and run `premptictl health` to verify.");
     }
 }
 
@@ -291,7 +291,7 @@ fn service_status() {
 }
 
 #[cfg(target_os = "macos")]
-const PLIST_LABEL: &str = "dev.falcosecurity.coding-agents-kit";
+const PLIST_LABEL: &str = "dev.falcosecurity.prempti";
 
 #[cfg(target_os = "macos")]
 fn plist_path() -> PathBuf {
@@ -321,7 +321,7 @@ fn service_start(prefix: &PathBuf) {
     let plist = plist_path();
     if !plist.exists() {
         eprintln!("Plist not found: {}", plist.display());
-        eprintln!("Is coding-agents-kit installed?");
+        eprintln!("Is Prempti installed?");
         process::exit(1);
     }
     if is_service_loaded() {
@@ -376,7 +376,7 @@ fn service_enable() {
     let plist = plist_path();
     if !plist.exists() {
         eprintln!("Plist not found: {}", plist.display());
-        eprintln!("Is coding-agents-kit installed?");
+        eprintln!("Is Prempti installed?");
         process::exit(1);
     }
     // On macOS, the plist has RunAtLoad=true, so loading it both
@@ -435,7 +435,7 @@ fn service_status() {
 #[cfg(target_os = "windows")]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(target_os = "windows")]
-const RUN_VALUE_NAME: &str = "CodingAgentsKit";
+const RUN_VALUE_NAME: &str = "Prempti";
 
 #[cfg(target_os = "windows")]
 fn is_falco_running() -> bool {
@@ -537,7 +537,7 @@ fn ps_single_quote_escape(s: &str) -> String {
 /// `-Prefix` must be passed explicitly: the MSI supports a custom install
 /// directory and `default_prefix()` derives that from the installed
 /// ctl.exe location, but the launcher itself defaults to
-/// `%LOCALAPPDATA%\coding-agents-kit` when `-Prefix` is omitted, which
+/// `%LOCALAPPDATA%\prempti` when `-Prefix` is omitted, which
 /// then fails to find ctl.exe under a non-default prefix.
 ///
 /// Path arguments are pre-wrapped in `"..."` inside the single-quoted
@@ -578,10 +578,10 @@ fn service_start(prefix: &PathBuf) {
         println!("Service already running.");
         return;
     }
-    let launcher = prefix.join("bin").join("coding-agents-kit-launcher.ps1");
+    let launcher = prefix.join("bin").join("prempti-launcher.ps1");
     if !launcher.exists() {
         eprintln!("Launcher not found: {}", launcher.display());
-        eprintln!("Is coding-agents-kit installed?");
+        eprintln!("Is Prempti installed?");
         process::exit(1);
     }
     // Spawn the launcher via PowerShell's `Start-Process` rather than a
@@ -731,7 +731,7 @@ fn service_stop(warn_hook: bool) {
 #[cfg(target_os = "windows")]
 fn service_enable() {
     let prefix = default_prefix();
-    let launcher = prefix.join("bin").join("coding-agents-kit-launcher.ps1");
+    let launcher = prefix.join("bin").join("prempti-launcher.ps1");
     let cmd = build_run_key_value(&launcher, &prefix);
     let ok = Command::new("reg")
         .args([
@@ -827,7 +827,7 @@ fn service_status() {
 // ---------------------------------------------------------------------------
 
 fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
-    println!("=== Uninstalling coding-agents-kit ===");
+    println!("=== Uninstalling Prempti ===");
     println!("  Prefix: {}", prefix.display());
     println!();
 
@@ -841,7 +841,7 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
             .args(["--user", "disable", SERVICE_NAME])
             .status();
         let service_file = PathBuf::from(env::var("HOME").unwrap_or_default())
-            .join(".config/systemd/user/coding-agents-kit.service");
+            .join(".config/systemd/user/prempti.service");
         if service_file.exists() {
             println!("Removing systemd service...");
             let _ = fs::remove_file(&service_file);
@@ -965,8 +965,8 @@ fn health(prefix: &PathBuf) {
     let test_event = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo health-check"},"session_id":"health-check","cwd":"/tmp","tool_use_id":"health-check"}"#;
 
     let output = Command::new(&interceptor)
-        .env("CODING_AGENTS_KIT_SOCKET", &socket)
-        .env("CODING_AGENTS_KIT_TIMEOUT_MS", "5000")
+        .env("PREMPTI_SOCKET", &socket)
+        .env("PREMPTI_TIMEOUT_MS", "5000")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -1177,7 +1177,7 @@ fn logs(prefix: &PathBuf, opts: &LogsOpts) {
 const DEFAULT_TAIL_LINES: u64 = 100;
 
 /// Last-resort name when neither `argv[0]` nor `current_exe()` is usable.
-const FALLBACK_BINARY_NAME: &str = "coding-agents-kit-ctl";
+const FALLBACK_BINARY_NAME: &str = "premptictl";
 
 /// Best-effort look-up of the invoked binary name. Tries `argv[0]` first
 /// (preserves whatever name the user typed — useful when the binary is
@@ -1216,7 +1216,7 @@ fn invoked_binary_name() -> String {
 /// Reconstruct the command-line label shown in the status footer. Mirrors
 /// the flags actually applied to the pretty path (snapshot/follow/show/...)
 /// so the user can read off the mode at a glance, e.g.
-/// `coding-agents-kit-ctl -f`. The binary name is taken from argv[0] (the
+/// `premptictl -f`. The binary name is taken from argv[0] (the
 /// way the user actually invoked it), falling back to the on-disk exe name
 /// and finally a hardcoded default — never panics.
 fn build_logs_cmd_label(opts: &LogsOpts) -> String {
@@ -1532,9 +1532,9 @@ mod mode_tests {
 // ---------------------------------------------------------------------------
 
 fn print_usage() {
-    eprintln!("coding-agents-kit-ctl — manage the coding-agents-kit service");
+    eprintln!("premptictl — manage the Prempti service");
     eprintln!();
-    eprintln!("Usage: coding-agents-kit-ctl <command>");
+    eprintln!("Usage: premptictl <command>");
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  hook add         Register the interceptor hook in Claude Code");
@@ -1565,7 +1565,7 @@ fn print_usage() {
     eprintln!("  daemon [flags]   Run the supervisor (spawns Falco, owns logs and rotation,");
     eprintln!("                   owns the hook lifecycle). Normally invoked by the platform");
     eprintln!("                   service; advanced users can run it manually.");
-    eprintln!("                     --prefix PATH              install prefix (default: ~/.coding-agents-kit)");
+    eprintln!("                     --prefix PATH              install prefix (default: ~/.prempti)");
     eprintln!("                     --config PATH              supervisor config (default: <prefix>/config/supervisor.yaml)");
     eprintln!(
         "                     --log-rotate-bytes N       override config: rotation size threshold"
@@ -1575,7 +1575,7 @@ fn print_usage() {
         "                     --stop-timeout-secs N      override config: graceful stop timeout"
     );
     eprintln!();
-    eprintln!("  uninstall        Remove coding-agents-kit completely");
+    eprintln!("  uninstall        Remove Prempti completely");
     eprintln!("  uninstall --keep-user-rules  Uninstall but preserve custom rules");
     eprintln!();
     eprintln!("Flags:");
@@ -1651,7 +1651,7 @@ fn main() {
             print_usage();
             process::exit(0);
         } else if arg == "--version" || arg == "-V" {
-            println!("coding-agents-kit-ctl {}", env!("CARGO_PKG_VERSION"));
+            println!("premptictl {}", env!("CARGO_PKG_VERSION"));
             process::exit(0);
         } else {
             cmd_args.push(arg);
@@ -1717,7 +1717,7 @@ mod daemon_arg_tests {
     use std::path::PathBuf;
 
     fn pfx() -> PathBuf {
-        PathBuf::from("/tmp/cak-test")
+        PathBuf::from("/tmp/prempti-test")
     }
 
     #[test]
@@ -1732,14 +1732,14 @@ mod daemon_arg_tests {
 
     #[test]
     fn prefix_space_form() {
-        let opts = parse_daemon_args(&["--prefix", "/opt/cak"], pfx()).unwrap();
-        assert_eq!(opts.prefix, PathBuf::from("/opt/cak"));
+        let opts = parse_daemon_args(&["--prefix", "/opt/prempti"], pfx()).unwrap();
+        assert_eq!(opts.prefix, PathBuf::from("/opt/prempti"));
     }
 
     #[test]
     fn prefix_equals_form() {
-        let opts = parse_daemon_args(&["--prefix=/opt/cak"], pfx()).unwrap();
-        assert_eq!(opts.prefix, PathBuf::from("/opt/cak"));
+        let opts = parse_daemon_args(&["--prefix=/opt/prempti"], pfx()).unwrap();
+        assert_eq!(opts.prefix, PathBuf::from("/opt/prempti"));
     }
 
     #[test]
@@ -1789,15 +1789,15 @@ mod windows_command_tests {
 
     #[test]
     fn start_command_includes_file_and_prefix() {
-        let launcher = PathBuf::from("C:/cak/bin/coding-agents-kit-launcher.ps1");
-        let prefix = PathBuf::from("C:/cak");
+        let launcher = PathBuf::from("C:/prempti/bin/prempti-launcher.ps1");
+        let prefix = PathBuf::from("C:/prempti");
         let cmd = build_start_powershell_command(&launcher, &prefix);
         assert!(
-            cmd.contains("'-File','\"C:/cak/bin/coding-agents-kit-launcher.ps1\"'"),
+            cmd.contains("'-File','\"C:/prempti/bin/prempti-launcher.ps1\"'"),
             "missing -File arg: {cmd}"
         );
         assert!(
-            cmd.contains("'-Prefix','\"C:/cak\"'"),
+            cmd.contains("'-Prefix','\"C:/prempti\"'"),
             "missing -Prefix arg: {cmd}"
         );
         assert!(cmd.starts_with("Start-Process "), "got: {cmd}");
@@ -1855,13 +1855,13 @@ mod windows_command_tests {
 
     #[test]
     fn windows_path_compare_handles_case_slashes_and_extended_prefix() {
-        let target = PathBuf::from(r"C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe");
+        let target = PathBuf::from(r"C:\Users\Me\AppData\Local\prempti\bin\falco.exe");
         assert!(windows_paths_equal(
-            "c:/users/me/appdata/local/coding-agents-kit/bin/falco.exe",
+            "c:/users/me/appdata/local/prempti/bin/falco.exe",
             &target
         ));
         assert!(windows_paths_equal(
-            r"\\?\C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe",
+            r"\\?\C:\Users\Me\AppData\Local\prempti\bin\falco.exe",
             &target
         ));
         assert!(!windows_paths_equal(r"C:\Other\falco.exe", &target));
@@ -1869,14 +1869,14 @@ mod windows_command_tests {
 
     #[test]
     fn falco_process_json_filters_to_installed_path() {
-        let target = PathBuf::from(r"C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe");
+        let target = PathBuf::from(r"C:\Users\Me\AppData\Local\prempti\bin\falco.exe");
         let json = serde_json::json!([
             {"Id": 101, "Path": r"C:\Other\falco.exe"},
-            {"Id": 202, "Path": r"C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe"},
-            {"Id": 303, "Path": "C:/Users/Me/AppData/Local/coding-agents-kit/bin/falco.exe"},
-            {"Id": 404, "Path": r"\\?\C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe"},
+            {"Id": 202, "Path": r"C:\Users\Me\AppData\Local\prempti\bin\falco.exe"},
+            {"Id": 303, "Path": "C:/Users/Me/AppData/Local/prempti/bin/falco.exe"},
+            {"Id": 404, "Path": r"\\?\C:\Users\Me\AppData\Local\prempti\bin\falco.exe"},
             {"Id": 505, "Path": serde_json::Value::Null},
-            {"Id": "606", "Path": r"C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe"}
+            {"Id": "606", "Path": r"C:\Users\Me\AppData\Local\prempti\bin\falco.exe"}
         ])
         .to_string();
         assert_eq!(
@@ -1887,18 +1887,18 @@ mod windows_command_tests {
 
     #[test]
     fn falco_process_json_accepts_single_object() {
-        let target = PathBuf::from(r"D:\cak\bin\falco.exe");
-        let json = serde_json::json!({"Id": 42, "Path": r"d:\CAK\bin\falco.exe"}).to_string();
+        let target = PathBuf::from(r"D:\prempti\bin\falco.exe");
+        let json = serde_json::json!({"Id": 42, "Path": r"d:\PREMPTI\bin\falco.exe"}).to_string();
         assert_eq!(falco_pids_from_process_json(&json, &target), vec![42]);
     }
 
     #[test]
     fn run_key_value_includes_file_and_prefix() {
-        let launcher = PathBuf::from("D:/install/bin/coding-agents-kit-launcher.ps1");
+        let launcher = PathBuf::from("D:/install/bin/prempti-launcher.ps1");
         let prefix = PathBuf::from("D:/install");
         let cmd = build_run_key_value(&launcher, &prefix);
         assert!(
-            cmd.contains("-File \"D:/install/bin/coding-agents-kit-launcher.ps1\""),
+            cmd.contains("-File \"D:/install/bin/prempti-launcher.ps1\""),
             "missing -File: {cmd}"
         );
         assert!(

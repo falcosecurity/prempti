@@ -1,6 +1,6 @@
 # Falco Configuration
 
-Source configuration files for coding-agents-kit. Installed to `~/.coding-agents-kit/config/`.
+Source configuration files for Prempti. Installed to `~/.prempti/config/`.
 
 ## Files
 
@@ -12,7 +12,7 @@ Key settings:
 - `engine.kind: nodriver` — no kernel driver
 - `rule_matching: all` — multiple rules fire per event (required for verdict resolution)
 - `json_output: true` — required for HTTP alert parsing
-- `watch_config_files: false` — disabled deliberately (the upstream feature is Linux-only). Config edits take effect at the next service restart; `coding-agents-kit-ctl mode` and other config-changing commands handle the restart explicitly.
+- `watch_config_files: false` — disabled deliberately (the upstream feature is Linux-only). Config edits take effect at the next service restart; `premptictl mode` and other config-changing commands handle the restart explicitly.
 - All non-essential outputs and services disabled
 
 ### `falco.coding_agents_plugin.yaml`
@@ -32,7 +32,7 @@ All paths use `${HOME}` expansion (Falco native, `${VAR}` syntax). No hardcoded 
 ## Running Falco
 
 ```bash
-falco -c ~/.coding-agents-kit/config/falco.yaml --disable-source syscall
+falco -c ~/.prempti/config/falco.yaml --disable-source syscall
 ```
 
 The systemd service handles this automatically.

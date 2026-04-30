@@ -136,7 +136,7 @@ fn handle_connection(stream: Stream, mode: &MockMode) {
 /// Generate a unique socket path in the system temp directory.
 pub fn temp_socket_path(label: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "cak-test-{}-{}.sock",
+        "prempti-test-{}-{}.sock",
         std::process::id(),
         label
     ));

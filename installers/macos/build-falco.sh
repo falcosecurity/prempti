@@ -168,7 +168,7 @@ fi
 # The patch file is at installers/macos/falco-macos-http-output.patch
 #
 
-PATCH_MARKER="coding-agents-kit"
+PATCH_MARKER="prempti"
 
 if ! grep -q "$PATCH_MARKER" "$SRC_DIR/CMakeLists.txt"; then
     echo "=== Applying http_output patches ==="

@@ -1,9 +1,9 @@
-# coding-agents-kit
+# Prempti
 
 [![Falco Ecosystem Repository](https://github.com/falcosecurity/evolution/blob/main/repos/badges/falco-ecosystem-blue.svg)](https://github.com/falcosecurity/evolution/blob/main/REPOSITORIES.md#ecosystem-scope)
 [![Sandbox](https://img.shields.io/badge/status-sandbox-red?style=for-the-badge)](https://github.com/falcosecurity/evolution/blob/main/REPOSITORIES.md#sandbox)
 
-[![License](https://img.shields.io/github/license/leogr/coding-agents-kit?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/github/license/falcosecurity/prempti?style=flat-square)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20Windows-blue?style=flat-square)
 ![Architectures](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64-blueviolet?style=flat-square)
 
@@ -13,7 +13,7 @@
 
 [![asciicast](demo.gif)](https://asciinema.org/a/lXqokxXVO4Q3IH3W)
 
-**coding-agents-kit** brings [Falco](https://falco.org) to the world of AI coding agents. It gives you real-time visibility into every tool call your coding agent makes — shell commands, file writes, reads, API calls — and cooperative guardrails that can deny or ask for confirmation on risky actions, evaluated against [Falco rules](https://falco.org/docs/rules/) you can customize.
+**Prempti** brings [Falco](https://falco.org) to the world of AI coding agents. It gives you real-time visibility into every tool call your coding agent makes — shell commands, file writes, reads, API calls — and cooperative guardrails that can deny or ask for confirmation on risky actions, evaluated against [Falco rules](https://falco.org/docs/rules/) you can customize.
 
 By default, the kit runs in **guardrails mode**: rules produce verdicts that shape what the agent does. When a tool call is blocked or flagged, the agent receives an LLM-friendly explanation of why and adapts — the policy guides behavior through feedback. If you prefer pure observation without intervention, switch to **monitor mode**: every tool call proceeds while rules still evaluate and log the activity.
 
@@ -27,7 +27,7 @@ Who is this for? Anyone using a coding agent daily — developers, product manag
 
 ## How It Works
 
-When your coding agent tries to use a tool, **coding-agents-kit** intercepts the call *before* it executes, evaluates it against your rules, and produces a verdict:
+When your coding agent tries to use a tool, **Prempti** intercepts the call *before* it executes, evaluates it against your rules, and produces a verdict:
 
 | Verdict | What Happens |
 |---------|-------------|
@@ -42,7 +42,7 @@ Rules are standard [Falco rules](https://falco.org/docs/rules/) written in YAML.
 - **Guardrails mode** (default) — verdicts are enforced: `deny` blocks, `ask` prompts you, `allow` proceeds.
 - **Monitor mode** — all tool calls proceed; verdicts are still evaluated and logged but never act on the agent. Useful for pure observation, auditing, and rule tuning.
 
-Switch between modes at any time with `coding-agents-kit-ctl mode <guardrails|monitor>`.
+Switch between modes at any time with `premptictl mode <guardrails|monitor>`.
 
 ## When It Makes Sense
 
@@ -56,10 +56,10 @@ Switch between modes at any time with `coding-agents-kit-ctl mode <guardrails|mo
 
 ### macOS
 
-Download the universal `.pkg` installer from the [latest release](https://github.com/leogr/coding-agents-kit/releases/latest) and open it:
+Download the universal `.pkg` installer from the [latest release](https://github.com/falcosecurity/prempti/releases/latest) and open it:
 
 ```bash
-open coding-agents-kit-<version>-darwin-universal.pkg
+open prempti-<version>-darwin-universal.pkg
 ```
 
 The macOS Installer wizard guides you through the setup. The service starts immediately and on every subsequent login.
@@ -67,7 +67,7 @@ The macOS Installer wizard guides you through the setup. The service starts imme
 To install non-interactively (CI, scripted setup, SSH session):
 
 ```bash
-installer -pkg coding-agents-kit-<version>-darwin-universal.pkg \
+installer -pkg prempti-<version>-darwin-universal.pkg \
           -target CurrentUserHomeDirectory
 ```
 
@@ -75,33 +75,33 @@ installer -pkg coding-agents-kit-<version>-darwin-universal.pkg \
 > Since the binaries are not code-signed, macOS Gatekeeper may block them on first run.
 > Go to **System Settings > Privacy & Security** and allow the blocked binary, or clear the quarantine attribute from the whole install tree (executables in `bin/` and the plugin library in `share/` can both be flagged):
 > ```bash
-> xattr -dr com.apple.quarantine ~/.coding-agents-kit
+> xattr -dr com.apple.quarantine ~/.prempti
 > ```
 
 ### Linux
 
-Download the package for your architecture from the [latest release](https://github.com/leogr/coding-agents-kit/releases/latest):
+Download the package for your architecture from the [latest release](https://github.com/falcosecurity/prempti/releases/latest):
 
 ```bash
-tar xzf coding-agents-kit-<version>-linux-x86_64.tar.gz
-cd coding-agents-kit-<version>-linux-x86_64
+tar xzf prempti-<version>-linux-x86_64.tar.gz
+cd prempti-<version>-linux-x86_64
 bash install.sh
 ```
 
-The installer copies all components to `~/.coding-agents-kit/`, starts a systemd user service, and registers the hook automatically.
+The installer copies all components to `~/.prempti/`, starts a systemd user service, and registers the hook automatically.
 
 ### Windows
 
-From the [latest release](https://github.com/leogr/coding-agents-kit/releases/latest), download **both** the `.msi` for your CPU architecture and the `Install-CodingAgentsKit.ps1` helper, then run:
+From the [latest release](https://github.com/falcosecurity/prempti/releases/latest), download **both** the `.msi` for your CPU architecture and the `Install-Prempti.ps1` helper, then run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File Install-CodingAgentsKit.ps1
+powershell -ExecutionPolicy Bypass -File Install-Prempti.ps1
 ```
 
-The helper runs the MSI, deploys all components to `%LOCALAPPDATA%\coding-agents-kit\`, adds `bin\` to your user `PATH`, registers the Claude Code hook, registers an auto-start entry for subsequent logins, and starts the service immediately so Claude Code is protected without any extra step.
+The helper runs the MSI, deploys all components to `%LOCALAPPDATA%\prempti\`, adds `bin\` to your user `PATH`, registers the Claude Code hook, registers an auto-start entry for subsequent logins, and starts the service immediately so Claude Code is protected without any extra step.
 
 > [!NOTE]
-> Pick the MSI that matches your CPU: `coding-agents-kit-<version>-windows-x64.msi` on Intel/AMD64, `coding-agents-kit-<version>-windows-arm64.msi` on Windows ARM64. The x64 MSI can install under emulation on ARM64 hosts but prefer the native ARM64 MSI for best performance. See [`installers/windows/`](installers/windows/) for build prerequisites and details.
+> Pick the MSI that matches your CPU: `prempti-<version>-windows-x64.msi` on Intel/AMD64, `prempti-<version>-windows-arm64.msi` on Windows ARM64. The x64 MSI can install under emulation on ARM64 hosts but prefer the native ARM64 MSI for best performance. See [`installers/windows/`](installers/windows/) for build prerequisites and details.
 
 
 ### Verify
@@ -109,56 +109,56 @@ The helper runs the MSI, deploys all components to `%LOCALAPPDATA%\coding-agents
 **Linux / macOS**
 
 ```bash
-~/.coding-agents-kit/bin/coding-agents-kit-ctl status
-~/.coding-agents-kit/bin/coding-agents-kit-ctl hook status
-~/.coding-agents-kit/bin/coding-agents-kit-ctl health
+~/.prempti/bin/premptictl status
+~/.prempti/bin/premptictl hook status
+~/.prempti/bin/premptictl health
 ```
 
-> **Tip:** Add `export PATH="$HOME/.coding-agents-kit/bin:$PATH"` to your shell profile to use `coding-agents-kit-ctl` without the full path.
+> **Tip:** Add `export PATH="$HOME/.prempti/bin:$PATH"` to your shell profile to use `premptictl` without the full path.
 
 **Windows**
 
 The installer starts the service automatically. Open a **new** terminal (so the updated `PATH` is picked up) and verify:
 
 ```powershell
-coding-agents-kit-ctl status
-coding-agents-kit-ctl hook status
-coding-agents-kit-ctl health
+premptictl status
+premptictl hook status
+premptictl health
 ```
 
 Expected `health` output: `OK: pipeline healthy (synthetic event → allow)`.
 
-If the service is not running (rare — e.g. the post-install timed out), start it manually with `coding-agents-kit-ctl start`. Auto-start on every login is already registered.
+If the service is not running (rare — e.g. the post-install timed out), start it manually with `premptictl start`. Auto-start on every login is already registered.
 
 ## Managing
 
-The installer adds `bin/` to your shell `PATH` on Windows automatically; on Linux/macOS add it to your shell profile (see [Verify](#verify)). Once `coding-agents-kit-ctl` is on your `PATH`, the commands below are the same on every platform:
+The installer adds `bin/` to your shell `PATH` on Windows automatically; on Linux/macOS add it to your shell profile (see [Verify](#verify)). Once `premptictl` is on your `PATH`, the commands below are the same on every platform:
 
 ```bash
 # Check status
-coding-agents-kit-ctl status
+premptictl status
 
 # Check pipeline health (sends a synthetic event through the full stack)
-coding-agents-kit-ctl health
+premptictl health
 
 # Guardrails mode (default) — verdicts are enforced: deny blocks, ask prompts
-coding-agents-kit-ctl mode guardrails
+premptictl mode guardrails
 
 # Monitor mode — all tool calls proceed; verdicts are only logged
-coding-agents-kit-ctl mode monitor
+premptictl mode monitor
 
 # View logs. Defaults to the last 100 lines; pass -f to follow, --tail=N to override.
-coding-agents-kit-ctl logs
+premptictl logs
 
 # Temporarily disable interception (tool calls proceed unmonitored)
-coding-agents-kit-ctl hook remove
+premptictl hook remove
 
 # Re-enable interception
-coding-agents-kit-ctl hook add
+premptictl hook add
 
 # Stop / start the service
-coding-agents-kit-ctl stop
-coding-agents-kit-ctl start
+premptictl stop
+premptictl start
 ```
 
 ### Uninstall
@@ -166,10 +166,10 @@ coding-agents-kit-ctl start
 **Linux / macOS**
 
 ```bash
-~/.coding-agents-kit/bin/coding-agents-kit-ctl uninstall
+~/.prempti/bin/premptictl uninstall
 
 # Keep your custom rules in rules/user/ for a future reinstall:
-~/.coding-agents-kit/bin/coding-agents-kit-ctl uninstall --keep-user-rules
+~/.prempti/bin/premptictl uninstall --keep-user-rules
 ```
 
 **Windows**
@@ -177,7 +177,7 @@ coding-agents-kit-ctl start
 Any of these paths works — they all run the same cleanup custom action:
 
 - ```powershell
-  powershell -ExecutionPolicy Bypass -File Uninstall-CodingAgentsKit.ps1
+  powershell -ExecutionPolicy Bypass -File Uninstall-Prempti.ps1
   ```
   (bundled with the release),
 - Apps & Features,
@@ -204,13 +204,13 @@ See [`rules/default/coding_agents_rules.yaml`](rules/default/coding_agents_rules
 
 The default ruleset is deliberately generic — it catches obviously risky actions that apply to most workflows. For the kit to be genuinely useful, you'll typically want to write your own rules tailored to your specific work: the projects you edit, the remotes you push to, the files you treat as sensitive, the commands you never want your agent to run.
 
-Add your own rules to `~/.coding-agents-kit/rules/user/`. They are preserved across upgrades. You can write them by hand, or use the [rule-authoring skill](#rule-authoring-skill-for-claude-code) to have Claude Code draft and validate them for you interactively.
+Add your own rules to `~/.prempti/rules/user/`. They are preserved across upgrades. You can write them by hand, or use the [rule-authoring skill](#rule-authoring-skill-for-claude-code) to have Claude Code draft and validate them for you interactively.
 
 New or edited rules take effect on the next service start — restart the service with:
 
 ```bash
-coding-agents-kit-ctl stop
-coding-agents-kit-ctl start
+premptictl stop
+premptictl start
 ```
 
 Example — block piping content to shell interpreters:
@@ -239,20 +239,20 @@ A Claude Code [skill](https://github.com/anthropics/skills) is included to help 
 Register this repository as a Claude Code Plugin marketplace:
 
 ```
-/plugin marketplace add leogr/coding-agents-kit
+/plugin marketplace add falcosecurity/prempti
 ```
 
 Then install the skill directly:
 
 ```
-/plugin install coding-agents-falco-rules@coding-agents-kit-skills
+/plugin install prempti-falco-rules@prempti-skills
 ```
 
 Or browse and install interactively:
 
 1. Select `Browse and install plugins`
-2. Select `coding-agents-kit-skills`
-3. Select `coding-agents-falco-rules`
+2. Select `prempti-skills`
+3. Select `prempti-falco-rules`
 4. Select `Install now`
 
 Once installed, ask Claude Code things like:
@@ -286,7 +286,7 @@ make linux-x86_64       # x86_64 only
 make linux-aarch64      # aarch64 only (requires cross toolchain)
 ```
 
-Output: `build/coding-agents-kit-<version>-linux-{arch}.tar.gz`
+Output: `build/prempti-<version>-linux-{arch}.tar.gz`
 
 See [`installers/linux/`](installers/linux/) for details.
 
@@ -310,18 +310,18 @@ make macos-x86_64       # Intel (native on Intel, or Rosetta cross-compile on Ap
 make macos-universal    # Universal binary (requires Rosetta + x86_64 Homebrew)
 ```
 
-Output: `build/coding-agents-kit-<version>-darwin-<arch>.{tar.gz,pkg}`
+Output: `build/prempti-<version>-darwin-<arch>.{tar.gz,pkg}`
 
 Install the locally-built artifact with either:
 
 ```bash
-open build/coding-agents-kit-<version>-darwin-<arch>.pkg           # GUI wizard
+open build/prempti-<version>-darwin-<arch>.pkg           # GUI wizard
 # or, non-interactive:
-installer -pkg build/coding-agents-kit-<version>-darwin-<arch>.pkg \
+installer -pkg build/prempti-<version>-darwin-<arch>.pkg \
           -target CurrentUserHomeDirectory
 # or, from the tarball:
-tar xzf build/coding-agents-kit-<version>-darwin-<arch>.tar.gz -C /tmp
-bash /tmp/coding-agents-kit-<version>-darwin-<arch>/install.sh
+tar xzf build/prempti-<version>-darwin-<arch>.tar.gz -C /tmp
+bash /tmp/prempti-<version>-darwin-<arch>/install.sh
 ```
 
 > Falco does not ship pre-built macOS binaries. The first build compiles Falco from source (~5 min). Subsequent builds use the cached binary.
@@ -339,7 +339,7 @@ Requires: Rust (latest stable), Visual Studio 2022+ with C++ workload, CMake 3.2
 powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1
 ```
 
-Output: `build/out/coding-agents-kit-<version>-windows-<arch>.msi` (plus `Install-CodingAgentsKit.ps1` and `Uninstall-CodingAgentsKit.ps1` helpers).
+Output: `build/out/prempti-<version>-windows-<arch>.msi` (plus `Install-Prempti.ps1` and `Uninstall-Prempti.ps1` helpers).
 
 > Falco is built from source on the first run (~10 min). Subsequent builds use the cached binary.
 
@@ -385,7 +385,7 @@ For design decisions, component specs, and full architectural documentation, see
 
 ### Hook-level interception
 
-**coding-agents-kit** intercepts tool calls at the coding agent's hook API — it sees the commands the agent asks to run, not the side effects those commands produce on the system.
+**Prempti** intercepts tool calls at the coding agent's hook API — it sees the commands the agent asks to run, not the side effects those commands produce on the system.
 
 This means that if a coding agent embeds harmful logic in a source file, compiles it, and then runs the resulting binary, Falco can inspect the compile and run commands but cannot analyze what the compiled program actually does at runtime. The rules see `gcc main.c -o main` and `./main`, not the system calls that `./main` makes.
 
@@ -401,17 +401,17 @@ In practice, guardrails mode can block many unsafe or out-of-policy tool calls, 
 
 Policy and visibility for AI coding agents is new territory — we're learning alongside the community.
 
-If you're using **coding-agents-kit**, we'd love to hear from you:
+If you're using **Prempti**, we'd love to hear from you:
 
 - **What works?** What rules have you written? What did you catch?
 - **What's missing?** What agents or platforms do you need?
 - **What broke?** What didn't work as expected?
 
-Your experience directly shapes where this project goes next. Open an [issue](https://github.com/leogr/coding-agents-kit/issues), or reach out to the maintainers. Every bit of feedback helps.
+Your experience directly shapes where this project goes next. Open an [issue](https://github.com/falcosecurity/prempti/issues), or reach out to the maintainers. Every bit of feedback helps.
 
 ## Credits
 
-**coding-agents-kit** was built with significant assistance from [Claude Code](https://github.com/anthropics/claude-code).
+**Prempti** was built with significant assistance from [Claude Code](https://github.com/anthropics/claude-code).
 
 Initial research and ideation by [Leonardo Grasso](https://github.com/leogr), [Loris Degioanni](https://github.com/ldegio), and [Michael Clark](https://github.com/MikeC-Sysdig).
 

@@ -40,7 +40,7 @@ pub fn bind(path: &Path) -> io::Result<UnixListener> {
             io::ErrorKind::AddrInUse,
             format!(
                 "supervisor socket {} is already in use by another \
-                 coding-agents-kit daemon",
+                 Prempti daemon",
                 path.display()
             ),
         ));
@@ -102,7 +102,7 @@ pub fn start(
 ) -> io::Result<JoinHandle<()>> {
     listener.set_nonblocking(true)?;
     let handle = thread::Builder::new()
-        .name("cak-supervisor-ctrl".to_string())
+        .name("prempti-supervisor-ctrl".to_string())
         .spawn(move || run(listener, state, event_tx, shutdown))?;
     Ok(handle)
 }
@@ -259,7 +259,7 @@ mod tests {
 
     fn temp_socket_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "cak-ctrl-{}-{label}-{}",
+            "prempti-ctrl-{}-{label}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -321,7 +321,7 @@ mod tests {
     fn bind_chmods_socket_and_run_dir() {
         use std::os::unix::fs::PermissionsExt;
         let parent = std::env::temp_dir().join(format!(
-            "cak-bind-perms-{}-{}",
+            "prempti-bind-perms-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

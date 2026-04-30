@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Post-installation setup for coding-agents-kit on Windows.
+    Post-installation setup for Prempti on Windows.
 
 .DESCRIPTION
     Called by the MSI custom action after files are deployed.
@@ -9,7 +9,7 @@
     hook, and sets up auto-start via Registry Run key.
 #>
 param(
-    [string]$Prefix = (Join-Path $env:LOCALAPPDATA 'coding-agents-kit')
+    [string]$Prefix = (Join-Path $env:LOCALAPPDATA 'prempti')
 )
 
 Set-StrictMode -Version Latest
@@ -37,7 +37,7 @@ foreach ($dir in @($ConfigDir, $RunDir, $LogDir)) {
 # ---------------------------------------------------------------------------
 
 $falcoYaml = @"
-# coding-agents-kit Falco configuration (Windows, auto-generated)
+# Prempti Falco configuration (Windows, auto-generated)
 engine:
   kind: nodriver
 
@@ -63,7 +63,7 @@ rule_matching: all
 priority: debug
 
 # Disabled deliberately - Falco's watch_config_files is Linux-only. All
-# config changes go through coding-agents-kit-ctl, which explicitly
+# config changes go through premptictl, which explicitly
 # stops/restarts the service.
 watch_config_files: false
 "@
@@ -78,9 +78,9 @@ Write-Host "Generated falco.yaml"
 $SupervisorYamlPath = Join-Path $ConfigDir 'supervisor.yaml'
 if (-not (Test-Path $SupervisorYamlPath)) {
     $supervisorYaml = @"
-# Supervisor configuration for coding-agents-kit.
-# Read by ``coding-agents-kit-ctl daemon`` at startup.
-# Changes require a manual daemon restart (e.g., ``coding-agents-kit-ctl restart``).
+# Supervisor configuration for Prempti.
+# Read by ``premptictl daemon`` at startup.
+# Changes require a manual daemon restart (e.g., ``premptictl restart``).
 
 log_rotate_bytes: 10485760    # 10 MiB
 log_rotate_keep: 3
@@ -97,7 +97,7 @@ stop_timeout_secs: 20
 # ---------------------------------------------------------------------------
 
 $pluginYaml = @"
-# coding-agents-kit plugin configuration (Windows, auto-generated)
+# Prempti plugin configuration (Windows, auto-generated)
 plugins:
   - name: coding_agent
     library_path: $($ShareDir -replace '\\', '/')/coding_agent.dll
@@ -127,7 +127,7 @@ Write-Host "Generated falco.coding_agents_plugin.yaml"
 # Register Claude Code hook
 # ---------------------------------------------------------------------------
 
-$ctlExe = Join-Path $BinDir 'coding-agents-kit-ctl.exe'
+$ctlExe = Join-Path $BinDir 'premptictl.exe'
 if (Test-Path $ctlExe) {
   try {
     $hookOutput = & $ctlExe hook add 2>&1
@@ -160,20 +160,20 @@ try {
 # Register auto-start via Registry Run key
 # ---------------------------------------------------------------------------
 
-$launcherScript = Join-Path $BinDir 'coding-agents-kit-launcher.ps1'
+$launcherScript = Join-Path $BinDir 'prempti-launcher.ps1'
 $installedFalco = Join-Path $BinDir 'falco.exe'
 if (Test-Path $launcherScript) {
   try {
     # Pass -Prefix so a custom install location picked via WixUI_InstallDir
     # propagates to every login: without it the launcher would fall back to
-    # %LOCALAPPDATA%\coding-agents-kit regardless of where the MSI put the
+    # %LOCALAPPDATA%\prempti regardless of where the MSI put the
     # files.
     $runCmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherScript`" -Prefix `"$Prefix`""
     $regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     if (-not (Test-Path $regPath)) {
       New-Item -Path $regPath -Force | Out-Null
     }
-    Set-ItemProperty -Path $regPath -Name 'CodingAgentsKit' -Value $runCmd
+    Set-ItemProperty -Path $regPath -Name 'Prempti' -Value $runCmd
     Write-Host "Registered auto-start"
   } catch {
     Write-Warning "Auto-start registration failed: $($_.Exception.Message)"
@@ -213,7 +213,7 @@ if (-not $falcoRunning -and (Test-Path $launcherScript)) {
         # Pre-quote the path arguments. Start-Process -ArgumentList joins
         # the array with bare spaces and does NOT quote elements that
         # contain spaces, so a custom INSTALLDIR like "C:\Program
-        # Files\coding-agents-kit" would otherwise be split before
+        # Files\prempti" would otherwise be split before
         # reaching the spawned powershell.
         $quotedLauncher = '"' + $launcherScript + '"'
         $quotedPrefix = '"' + $Prefix + '"'
@@ -237,13 +237,13 @@ if (-not $falcoRunning -and (Test-Path $launcherScript)) {
         if ($started) {
             Write-Host "Service started."
         } else {
-            Write-Warning "Service start kicked off but Falco not detected yet. Check 'coding-agents-kit-ctl status' and the startup log at $LogDir\falco.err."
+            Write-Warning "Service start kicked off but Falco not detected yet. Check 'premptictl status' and the startup log at $LogDir\falco.err."
         }
     } catch {
-        Write-Warning "Could not start the service: $($_.Exception.Message). Run 'coding-agents-kit-ctl start' manually and check $LogDir\falco.err."
+        Write-Warning "Could not start the service: $($_.Exception.Message). Run 'premptictl start' manually and check $LogDir\falco.err."
     }
 } elseif ($falcoRunning) {
     Write-Host "Service already running."
 }
 
-Write-Host "Post-install complete: coding-agents-kit is installed, configured, and running."
+Write-Host "Post-install complete: Prempti is installed, configured, and running."

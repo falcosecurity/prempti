@@ -26,11 +26,11 @@ build-interceptor:
 
 ## Build the plugin
 build-plugin:
-	cd plugins/coding-agent-plugin && cargo build --release
+	cd plugins/coding-agents-plugin && cargo build --release
 
 ## Build the ctl tool
 build-ctl:
-	cd tools/coding-agents-kit-ctl && cargo build --release
+	cd tools/premptictl && cargo build --release
 
 ## Download pre-built Falco binary for the native architecture (Linux only)
 download-falco-linux:
@@ -51,7 +51,7 @@ test: test-plugin-unit test-interceptor test-e2e
 
 ## Run plugin unit tests (event parsing, verdict resolution, broker logic — no Falco needed)
 test-plugin-unit:
-	cargo test -p coding-agent-plugin --lib
+	cargo test -p coding-agents-plugin --lib
 
 ## Run interceptor unit tests (Rust, cross-platform)
 test-interceptor: build-interceptor
@@ -121,8 +121,8 @@ falco-windows-arm64:
 clean:
 	rm -rf build/
 	-cd hooks/claude-code && cargo clean
-	-cd plugins/coding-agent-plugin && cargo clean
-	-cd tools/coding-agents-kit-ctl && cargo clean
+	-cd plugins/coding-agents-plugin && cargo clean
+	-cd tools/premptictl && cargo clean
 	-cd tests && cargo clean
 
 ## Show available targets

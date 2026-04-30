@@ -1,14 +1,14 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# preinstall — Run before .pkg installs files to ~/.coding-agents-kit/
+# preinstall — Run before .pkg installs files to ~/.prempti/
 #
 # Stops any existing service so files can be overwritten safely.
 
 INSTALL_LOCATION="$2"
-PREFIX="${INSTALL_LOCATION}/.coding-agents-kit"
+PREFIX="${INSTALL_LOCATION}/.prempti"
 USER_HOME="${INSTALL_LOCATION}"
-PLIST_FILE="${USER_HOME}/Library/LaunchAgents/dev.falcosecurity.coding-agents-kit.plist"
+PLIST_FILE="${USER_HOME}/Library/LaunchAgents/dev.falcosecurity.prempti.plist"
 OWNER=$(stat -f '%Su' "$USER_HOME" 2>/dev/null || echo "")
 OWNER_UID=$(id -u "$OWNER" 2>/dev/null || echo "")
 

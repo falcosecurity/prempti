@@ -15,7 +15,7 @@
 // limitations under the License.
 
 //! Claude Code interceptor — thin bridge between Claude Code's PreToolUse hook
-//! and the coding-agents-kit plugin broker.
+//! and the Prempti plugin broker.
 //!
 //! The interceptor does NOT interpret tool call content. It reads the hook JSON
 //! from stdin, wraps it in a wire-protocol envelope, sends it to the broker,
@@ -85,7 +85,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 5000;
 const TIMEOUT_MIN_MS: u64 = 100;
 const TIMEOUT_MAX_MS: u64 = 30000;
 #[cfg(unix)]
-const SOCKET_SUFFIX: &str = "/.coding-agents-kit/run/broker.sock";
+const SOCKET_SUFFIX: &str = "/.prempti/run/broker.sock";
 const INPUT_MAX: usize = 64 * 1024;
 const RESPONSE_MAX: u64 = 64 * 1024;
 
@@ -140,7 +140,7 @@ fn verdict_on_error(reason: &str) -> ! {
 // ---------------------------------------------------------------------------
 
 fn get_socket_path() -> String {
-    if let Ok(v) = env::var("CODING_AGENTS_KIT_SOCKET") {
+    if let Ok(v) = env::var("PREMPTI_SOCKET") {
         if !v.is_empty() {
             return v;
         }
@@ -155,21 +155,21 @@ fn get_socket_path() -> String {
     }
     #[cfg(windows)]
     {
-        // MSI installs to %LOCALAPPDATA%\coding-agents-kit (not %USERPROFILE%)
+        // MSI installs to %LOCALAPPDATA%\prempti (not %USERPROFILE%)
         let base = env::var("LOCALAPPDATA").unwrap_or_default();
         if base.is_empty() {
             return String::new();
         }
         // Use forward slashes — YAML configs and AF_UNIX paths must match exactly.
         format!(
-            "{}/coding-agents-kit/run/broker.sock",
+            "{}/prempti/run/broker.sock",
             base.replace('\\', "/")
         )
     }
 }
 
 fn get_timeout() -> Duration {
-    let ms = env::var("CODING_AGENTS_KIT_TIMEOUT_MS")
+    let ms = env::var("PREMPTI_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(|v| v.clamp(TIMEOUT_MIN_MS, TIMEOUT_MAX_MS))

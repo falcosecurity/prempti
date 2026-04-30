@@ -1,12 +1,12 @@
 [Unit]
-Description=coding-agents-kit - Runtime Security for AI Coding Agents with Falco
+Description=Prempti - Runtime Security for AI Coding Agents with Falco
 After=network.target
 
 [Service]
 Type=simple
 # The supervisor (`ctl daemon`) spawns Falco, owns the log files and rotation,
 # and owns the Claude Code hook lifecycle. systemd just tracks the supervisor.
-ExecStart=@PREFIX@/bin/coding-agents-kit-ctl daemon --prefix @PREFIX@
+ExecStart=@PREFIX@/bin/premptictl daemon --prefix @PREFIX@
 Restart=on-failure
 RestartSec=5
 Environment=HOME=%h

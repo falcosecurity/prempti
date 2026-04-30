@@ -23,7 +23,7 @@ use event::EventData;
 /// Default event queue capacity.
 const DEFAULT_QUEUE_CAPACITY: usize = 1024;
 
-/// The coding-agents-kit Falco plugin.
+/// The Prempti Falco plugin.
 ///
 /// Capabilities: sourcing + extraction.
 /// - Sourcing: receives events from interceptors via Unix socket,
@@ -33,7 +33,7 @@ const DEFAULT_QUEUE_CAPACITY: usize = 1024;
 /// Lifecycle: `Plugin::new()` runs exactly once at Falco startup and `Drop`
 /// exactly once at shutdown. Falco's `watch_config_files` is disabled at the
 /// config level (see `configs/falco.yaml`) precisely so this invariant
-/// holds — config changes go through `coding-agents-kit-ctl` as an explicit
+/// holds — config changes go through `premptictl` as an explicit
 /// stop → rewrite → start cycle, not via in-process re-init.
 pub struct CodingAgentPlugin {
     #[allow(dead_code)]
@@ -71,8 +71,8 @@ impl Plugin for CodingAgentPlugin {
     const NAME: &'static CStr = c"coding_agent";
     const PLUGIN_VERSION: &'static CStr = PLUGIN_VERSION_CSTR;
     const DESCRIPTION: &'static CStr =
-        c"coding-agents-kit - Runtime Security for AI Coding Agents with Falco";
-    const CONTACT: &'static CStr = c"https://github.com/falcosecurity/coding-agents-kit";
+        c"premptictl - Runtime Security for AI Coding Agents with Falco";
+    const CONTACT: &'static CStr = c"https://github.com/falcosecurity/prempti";
 
     type ConfigType = Json<CodingAgentConfig>;
 
@@ -137,7 +137,7 @@ impl Plugin for CodingAgentPlugin {
 
     // Note: `set_config()` is defined in the C plugin API and the Rust SDK,
     // but Falco 0.43 never calls it. Config changes come via process restart
-    // (driven by `coding-agents-kit-ctl`), which produces a fresh plugin
+    // (driven by `premptictl`), which produces a fresh plugin
     // instance with the updated config in `Plugin::new()`.
 }
 

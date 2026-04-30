@@ -98,9 +98,9 @@ The following Claude Code hook output fields are not currently used but may be e
 
 - **Socket type**: Unix domain stream socket (`AF_UNIX`, `SOCK_STREAM` — native kernel support on Windows 10+ via the `uds_windows` crate)
 - **Default path**:
-  - Linux / macOS: `$HOME/.coding-agents-kit/run/broker.sock`
-  - Windows: `%LOCALAPPDATA%/coding-agents-kit/run/broker.sock` (forward slashes — Windows `AF_UNIX` treats the path as an opaque address, so both ends must produce identical byte strings)
-- **Override**: `CODING_AGENTS_KIT_SOCKET` environment variable
+  - Linux / macOS: `$HOME/.prempti/run/broker.sock`
+  - Windows: `%LOCALAPPDATA%/prempti/run/broker.sock` (forward slashes — Windows `AF_UNIX` treats the path as an opaque address, so both ends must produce identical byte strings)
+- **Override**: `PREMPTI_SOCKET` environment variable
 - **Framing**: Newline-terminated JSON (one line per request/response)
 - **Shutdown**: On Unix, the interceptor shuts down the write half after sending the request so the broker's `read_line` sees EOF alongside `\n`. **Skipped on Windows** — `shutdown(SD_SEND)` on AF_UNIX resets the connection on some Windows builds and prevents the broker's response from reaching the interceptor.
 
@@ -161,8 +161,8 @@ If JSON serialization fails, the interceptor emits a hardcoded deny JSON literal
 
 | Variable | Default (Unix) | Default (Windows) | Description |
 |----------|----------------|-------------------|-------------|
-| `CODING_AGENTS_KIT_SOCKET` | `$HOME/.coding-agents-kit/run/broker.sock` | `%LOCALAPPDATA%/coding-agents-kit/run/broker.sock` | Broker socket path |
-| `CODING_AGENTS_KIT_TIMEOUT_MS` | `5000` | `5000` | Socket timeout in ms (clamped to 100–30000) |
+| `PREMPTI_SOCKET` | `$HOME/.prempti/run/broker.sock` | `%LOCALAPPDATA%/prempti/run/broker.sock` | Broker socket path |
+| `PREMPTI_TIMEOUT_MS` | `5000` | `5000` | Socket timeout in ms (clamped to 100–30000) |
 
 ## Limits
 
@@ -201,7 +201,7 @@ Register in `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.coding-agents-kit/bin/claude-interceptor"
+            "command": "$HOME/.prempti/bin/claude-interceptor"
           }
         ]
       }

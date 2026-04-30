@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# install.sh — Install coding-agents-kit.
+# install.sh — Install Prempti.
 #
 # Copies binaries, configs, and rules to the install prefix, sets up a
 # systemd user service, and registers the Claude Code hook.
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PREFIX="${HOME}/.coding-agents-kit"
+PREFIX="${HOME}/.prempti"
 DRY_RUN=false
 HAS_DIALOG=false
 
@@ -54,11 +54,11 @@ run() {
 # ---------------------------------------------------------------------------
 
 # Verify we have the package contents.
-for f in bin/falco bin/claude-interceptor bin/coding-agents-kit-ctl \
+for f in bin/falco bin/claude-interceptor bin/premptictl \
          share/libcoding_agent.so \
          config/falco.yaml config/falco.coding_agents_plugin.yaml \
          config/supervisor.yaml \
-         rules/seen.yaml systemd/coding-agents-kit.service; do
+         rules/seen.yaml systemd/prempti.service; do
     [[ -f "$SCRIPT_DIR/$f" ]] || err "Missing package file: $f (are you running from the extracted package?)"
 done
 
@@ -85,7 +85,7 @@ if $HAS_DIALOG && ! $DRY_RUN && [[ -t 0 ]]; then
     clear
 fi
 
-echo "=== Installing coding-agents-kit ==="
+echo "=== Installing Prempti ==="
 echo "  Prefix: $PREFIX"
 $DRY_RUN && echo "  Mode: dry-run (no changes will be made)"
 echo ""
@@ -109,7 +109,7 @@ fi
 info "Installing binaries..."
 run install -m 755 "$SCRIPT_DIR/bin/falco" "$PREFIX/bin/falco"
 run install -m 755 "$SCRIPT_DIR/bin/claude-interceptor" "$PREFIX/bin/claude-interceptor"
-run install -m 755 "$SCRIPT_DIR/bin/coding-agents-kit-ctl" "$PREFIX/bin/coding-agents-kit-ctl"
+run install -m 755 "$SCRIPT_DIR/bin/premptictl" "$PREFIX/bin/premptictl"
 
 info "Installing plugin..."
 run install -m 644 "$SCRIPT_DIR/share/libcoding_agent.so" "$PREFIX/share/libcoding_agent.so"
@@ -136,20 +136,20 @@ run install -m 644 "$SCRIPT_DIR/rules/seen.yaml" "$PREFIX/rules/seen.yaml"
 if ! $SKIP_SYSTEMD; then
     info "Installing systemd user service..."
     SYSTEMD_DIR="${HOME}/.config/systemd/user"
-    SERVICE_FILE="${SYSTEMD_DIR}/coding-agents-kit.service"
+    SERVICE_FILE="${SYSTEMD_DIR}/prempti.service"
 
     # Render the service template with the actual prefix.
     if ! $DRY_RUN; then
         mkdir -p "$SYSTEMD_DIR"
-        sed "s|@PREFIX@|${PREFIX}|g" "$SCRIPT_DIR/systemd/coding-agents-kit.service" \
+        sed "s|@PREFIX@|${PREFIX}|g" "$SCRIPT_DIR/systemd/prempti.service" \
             > "$SERVICE_FILE"
     else
         echo "  [DRY-RUN] sed s|@PREFIX@|${PREFIX}|g → $SERVICE_FILE"
     fi
 
     run systemctl --user daemon-reload
-    run systemctl --user enable coding-agents-kit
-    run systemctl --user start coding-agents-kit
+    run systemctl --user enable prempti
+    run systemctl --user start prempti
 
     # Enable lingering so the service runs even without an active login session.
     if command -v loginctl &>/dev/null; then
@@ -168,13 +168,13 @@ if $SKIP_SYSTEMD; then
     warn "The hook requires the service to be running — registering it"
     warn "without the service would block ALL Claude Code tool calls."
     warn "Start the service manually, then run:"
-    warn "  ${PREFIX}/bin/coding-agents-kit-ctl hook add"
+    warn "  ${PREFIX}/bin/premptictl hook add"
 else
     info "Registering Claude Code hook..."
     if $DRY_RUN; then
-        echo "  [DRY-RUN] ${PREFIX}/bin/coding-agents-kit-ctl hook add"
+        echo "  [DRY-RUN] ${PREFIX}/bin/premptictl hook add"
     else
-        run "$PREFIX/bin/coding-agents-kit-ctl" hook add
+        run "$PREFIX/bin/premptictl" hook add
     fi
 fi
 
@@ -196,18 +196,18 @@ echo ""
 
 if ! $SKIP_SYSTEMD && ! $DRY_RUN; then
     echo "  Service status:"
-    systemctl --user status coding-agents-kit --no-pager 2>&1 | head -5 | sed 's/^/    /'
+    systemctl --user status prempti --no-pager 2>&1 | head -5 | sed 's/^/    /'
     echo ""
 fi
 
-echo "  Management CLI:  $PREFIX/bin/coding-agents-kit-ctl"
+echo "  Management CLI:  $PREFIX/bin/premptictl"
 echo ""
 echo "  To verify:"
-echo "    $PREFIX/bin/coding-agents-kit-ctl status"
-echo "    $PREFIX/bin/coding-agents-kit-ctl hook status"
+echo "    $PREFIX/bin/premptictl status"
+echo "    $PREFIX/bin/premptictl hook status"
 echo ""
 echo "  To uninstall:"
-echo "    $PREFIX/bin/coding-agents-kit-ctl uninstall"
+echo "    $PREFIX/bin/premptictl uninstall"
 echo ""
-echo "  Tip: add to your PATH to use coding-agents-kit-ctl without the full path:"
+echo "  Tip: add to your PATH to use premptictl without the full path:"
 echo "    export PATH=\"$PREFIX/bin:\$PATH\""

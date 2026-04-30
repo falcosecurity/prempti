@@ -1,4 +1,4 @@
-PREFIX ?= $(HOME)/.coding-agents-kit
+PREFIX ?= $(HOME)/.prempti
 
 .PHONY: all linux macos install clean test
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# install.sh — Install coding-agents-kit on macOS.
+# install.sh — Install Prempti on macOS.
 #
 # Copies binaries, configs, and rules to the install prefix, sets up a
 # launchd user agent, and registers the Claude Code hook.
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PREFIX="${HOME}/.coding-agents-kit"
+PREFIX="${HOME}/.prempti"
 DRY_RUN=false
 HAS_DIALOG=false
 
@@ -80,12 +80,12 @@ if [[ -n "$PACKAGE_ARCHS" ]]; then
 fi
 
 # Verify we have the package contents.
-for f in bin/falco bin/claude-interceptor bin/coding-agents-kit-ctl \
+for f in bin/falco bin/claude-interceptor bin/premptictl \
          share/libcoding_agent.dylib \
          config/falco.yaml config/falco.coding_agents_plugin.yaml \
          config/supervisor.yaml \
          rules/default/coding_agents_rules.yaml \
-         rules/seen.yaml launchd/dev.falcosecurity.coding-agents-kit.plist; do
+         rules/seen.yaml launchd/dev.falcosecurity.prempti.plist; do
     [[ -f "$SCRIPT_DIR/$f" ]] || err "Missing package file: $f (are you running from the extracted package?)"
 done
 
@@ -104,7 +104,7 @@ if $HAS_DIALOG && ! $DRY_RUN && [[ -t 0 ]]; then
     clear
 fi
 
-echo "=== Installing coding-agents-kit ==="
+echo "=== Installing Prempti ==="
 echo "  Prefix: $PREFIX"
 $DRY_RUN && echo "  Mode: dry-run (no changes will be made)"
 echo ""
@@ -128,7 +128,7 @@ fi
 info "Installing binaries..."
 run install -m 755 "$SCRIPT_DIR/bin/falco" "$PREFIX/bin/falco"
 run install -m 755 "$SCRIPT_DIR/bin/claude-interceptor" "$PREFIX/bin/claude-interceptor"
-run install -m 755 "$SCRIPT_DIR/bin/coding-agents-kit-ctl" "$PREFIX/bin/coding-agents-kit-ctl"
+run install -m 755 "$SCRIPT_DIR/bin/premptictl" "$PREFIX/bin/premptictl"
 
 info "Installing plugin..."
 run install -m 644 "$SCRIPT_DIR/share/libcoding_agent.dylib" "$PREFIX/share/libcoding_agent.dylib"
@@ -146,8 +146,8 @@ fi
 
 # Remove a stale launcher.sh from a previous install: the supervisor (`ctl
 # daemon`) replaces it, and leaving it behind only causes confusion.
-if [[ -f "$PREFIX/bin/coding-agents-kit-launcher.sh" ]]; then
-    run rm -f "$PREFIX/bin/coding-agents-kit-launcher.sh"
+if [[ -f "$PREFIX/bin/prempti-launcher.sh" ]]; then
+    run rm -f "$PREFIX/bin/prempti-launcher.sh"
 fi
 
 info "Installing rules..."
@@ -160,7 +160,7 @@ run install -m 644 "$SCRIPT_DIR/rules/seen.yaml" "$PREFIX/rules/seen.yaml"
 
 info "Installing launchd user agent..."
 PLIST_DIR="${HOME}/Library/LaunchAgents"
-PLIST_FILE="${PLIST_DIR}/dev.falcosecurity.coding-agents-kit.plist"
+PLIST_FILE="${PLIST_DIR}/dev.falcosecurity.prempti.plist"
 
 if ! $DRY_RUN; then
     mkdir -p "$PLIST_DIR"
@@ -172,7 +172,7 @@ if ! $DRY_RUN; then
     fi
     # Render plist template with actual prefix and HOME.
     sed -e "s|@PREFIX@|${PREFIX}|g" -e "s|@HOME@|${HOME}|g" \
-        "$SCRIPT_DIR/launchd/dev.falcosecurity.coding-agents-kit.plist" \
+        "$SCRIPT_DIR/launchd/dev.falcosecurity.prempti.plist" \
         > "$PLIST_FILE"
     # Load the service.
     launchctl load "$PLIST_FILE"
@@ -201,18 +201,18 @@ echo ""
 
 if ! $DRY_RUN; then
     echo "  Service status:"
-    launchctl list dev.falcosecurity.coding-agents-kit 2>&1 | head -5 | sed 's/^/    /' || true
+    launchctl list dev.falcosecurity.prempti 2>&1 | head -5 | sed 's/^/    /' || true
     echo ""
 fi
 
-echo "  Management CLI:  $PREFIX/bin/coding-agents-kit-ctl"
+echo "  Management CLI:  $PREFIX/bin/premptictl"
 echo ""
 echo "  To verify:"
-echo "    $PREFIX/bin/coding-agents-kit-ctl status"
-echo "    $PREFIX/bin/coding-agents-kit-ctl hook status"
+echo "    $PREFIX/bin/premptictl status"
+echo "    $PREFIX/bin/premptictl hook status"
 echo ""
 echo "  To uninstall:"
-echo "    $PREFIX/bin/coding-agents-kit-ctl uninstall"
+echo "    $PREFIX/bin/premptictl uninstall"
 echo ""
-echo "  Tip: add to your PATH to use coding-agents-kit-ctl without the full path:"
+echo "  Tip: add to your PATH to use premptictl without the full path:"
 echo "    export PATH=\"$PREFIX/bin:\$PATH\""

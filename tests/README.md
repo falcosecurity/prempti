@@ -64,13 +64,13 @@ The harness (`tests/src/e2e.rs`) auto-discovers the Falco binary under `build/fa
 Example (Windows PowerShell):
 
 ```powershell
-$env:FALCO = "C:\Users\me\repos\coding-agents-kit\build\falco-0.43.0-windows-arm64\falco.exe"
+$env:FALCO = "C:\Users\me\repos\prempti\build\falco-0.43.0-windows-arm64\falco.exe"
 make test-e2e
 ```
 
 ## Windows: installed-service smoke test
 
-`test_installed_service_windows.ps1` is a standalone smoke test for a **locally installed** build of coding-agents-kit. It exercises the full user-facing stack: launcher → Falco → plugin → rules → real interceptor — using the binaries already deployed under `%LOCALAPPDATA%\coding-agents-kit\`. It is **not** invoked by `make test` because it depends on a prior MSI install.
+`test_installed_service_windows.ps1` is a standalone smoke test for a **locally installed** build of Prempti. It exercises the full user-facing stack: launcher → Falco → plugin → rules → real interceptor — using the binaries already deployed under `%LOCALAPPDATA%\prempti\`. It is **not** invoked by `make test` because it depends on a prior MSI install.
 
 ```powershell
 # Install first via the MSI + postinstall (see installers/windows/README.md), then:

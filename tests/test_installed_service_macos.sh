@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # test_installed_service_macos.sh — Integration test for the installed
-# coding-agents-kit service on macOS.
+# Prempti service on macOS.
 #
 # Drives the .pkg through `installer -pkg` (matching the GUI Installer.app
 # code path), exercises the launchd-managed service end to end, and verifies
-# the documented `coding-agents-kit-ctl` lifecycle leaves a clean system.
+# the documented `premptictl` lifecycle leaves a clean system.
 #
 # Only the non-elevated install path is exercised here. Our pkg declares
 # `enable_currentUserHome="true"` / `enable_localSystem="false"`, so:
@@ -24,10 +24,10 @@
 # Usage:
 #   bash tests/test_installed_service_macos.sh [PATH_TO_PKG]
 #
-# If no pkg path is given, the most recent build/coding-agents-kit-*-darwin-*.pkg
+# If no pkg path is given, the most recent build/prempti-*-darwin-*.pkg
 # is used. Run `make macos-<arch>` first.
 #
-# Requires: macOS, no other coding-agents-kit install loaded.
+# Requires: macOS, no other Prempti install loaded.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,18 +35,18 @@ ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
 PKG="${1:-}"
 if [[ -z "$PKG" ]]; then
-    PKG=$(ls -t "$ROOT_DIR"/build/coding-agents-kit-*-darwin-*.pkg 2>/dev/null | head -1 || true)
+    PKG=$(ls -t "$ROOT_DIR"/build/prempti-*-darwin-*.pkg 2>/dev/null | head -1 || true)
 fi
 if [[ ! -f "$PKG" ]]; then
     echo "ERROR: no .pkg found. Pass a path as the first argument, or run \`make macos-<arch>\` first." >&2
     exit 1
 fi
 
-PREFIX="$HOME/.coding-agents-kit"
-PLIST="$HOME/Library/LaunchAgents/dev.falcosecurity.coding-agents-kit.plist"
-LABEL="dev.falcosecurity.coding-agents-kit"
+PREFIX="$HOME/.prempti"
+PLIST="$HOME/Library/LaunchAgents/dev.falcosecurity.prempti.plist"
+LABEL="dev.falcosecurity.prempti"
 HOOK="$PREFIX/bin/claude-interceptor"
-CTL="$PREFIX/bin/coding-agents-kit-ctl"
+CTL="$PREFIX/bin/premptictl"
 SOCK="$PREFIX/run/broker.sock"
 PASS=0
 FAIL=0
@@ -73,7 +73,7 @@ cleanup() {
 trap cleanup EXIT
 
 run_hook() {
-    CODING_AGENTS_KIT_TIMEOUT_MS=8000 \
+    PREMPTI_TIMEOUT_MS=8000 \
         printf '%s' "$1" | "$HOOK"
 }
 
@@ -124,7 +124,7 @@ echo
 echo "=== Preflight ==="
 assert "binary: falco"                     "$( [[ -x "$PREFIX/bin/falco" ]] && echo 1 || echo 0 )"
 assert "binary: claude-interceptor"        "$( [[ -x "$PREFIX/bin/claude-interceptor" ]] && echo 1 || echo 0 )"
-assert "binary: coding-agents-kit-ctl"     "$( [[ -x "$PREFIX/bin/coding-agents-kit-ctl" ]] && echo 1 || echo 0 )"
+assert "binary: premptictl"     "$( [[ -x "$PREFIX/bin/premptictl" ]] && echo 1 || echo 0 )"
 assert "plugin: libcoding_agent.dylib"     "$( [[ -f "$PREFIX/share/libcoding_agent.dylib" ]] && echo 1 || echo 0 )"
 assert "config: falco.yaml"                "$( [[ -f "$PREFIX/config/falco.yaml" ]] && echo 1 || echo 0 )"
 assert "rules: default ruleset"            "$( [[ -f "$PREFIX/rules/default/coding_agents_rules.yaml" ]] && echo 1 || echo 0 )"

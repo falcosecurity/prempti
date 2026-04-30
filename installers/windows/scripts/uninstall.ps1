@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Pre-uninstall cleanup for coding-agents-kit on Windows.
+    Pre-uninstall cleanup for Prempti on Windows.
 
 .DESCRIPTION
     Called by the MSI custom action before files are removed.
@@ -9,7 +9,7 @@
     the auto-start Registry key.
 #>
 param(
-    [string]$Prefix = (Join-Path $env:LOCALAPPDATA 'coding-agents-kit')
+    [string]$Prefix = (Join-Path $env:LOCALAPPDATA 'prempti')
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
@@ -22,7 +22,7 @@ $Prefix = $Prefix.TrimEnd([char[]]@('\', '.'))
 # runs the full cleanup chain: graceful Falco stop, drain pipes, hook
 # remove, close logs). Force-kill any leftover falco.exe only as a fallback
 # for legacy installs without the supervisor or for a broken state.
-$ctlExe = Join-Path $Prefix 'bin\coding-agents-kit-ctl.exe'
+$ctlExe = Join-Path $Prefix 'bin\premptictl.exe'
 if (Test-Path $ctlExe) {
     Write-Host "Stopping service..."
     & $ctlExe stop 2>$null | Out-Null
@@ -56,7 +56,7 @@ if (Test-Path $ctlExe) {
 
 # Remove auto-start Registry key
 $regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-Remove-ItemProperty -Path $regPath -Name 'CodingAgentsKit' -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path $regPath -Name 'Prempti' -ErrorAction SilentlyContinue
 
 # Remove bin/ from user PATH
 $BinDir = Join-Path $Prefix 'bin'

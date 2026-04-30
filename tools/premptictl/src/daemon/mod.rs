@@ -274,7 +274,7 @@ fn spawn_drain<R: std::io::Read + Send + 'static>(
     label: &'static str,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
-        .name(format!("cak-supervisor-{label}"))
+        .name(format!("prempti-supervisor-{label}"))
         .spawn(move || {
             if let Err(e) = pipe_drain::drain(source, log_path.clone(), max_bytes, keep, rotated) {
                 eprintln!(
@@ -312,7 +312,7 @@ fn spawn_signal_watcher(
     shutdown: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
-        .name("cak-supervisor-signal".to_string())
+        .name("prempti-supervisor-signal".to_string())
         .spawn(move || {
             run_signal_watcher(
                 &event_tx,

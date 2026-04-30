@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use cak_tests::interceptor::{
+use prempti_tests::interceptor::{
     assert_decision, assert_reason_contains, run_interceptor, run_with_mock,
 };
-use cak_tests::mock_broker::{self, MockMode};
+use prempti_tests::mock_broker::{self, MockMode};
 
 const SAMPLE: &str = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls -la"},"session_id":"test-sess","cwd":"/tmp","tool_use_id":"toolu_test123"}"#;
 
@@ -54,7 +54,7 @@ fn timeout() {
     let r = run_interceptor(
         SAMPLE,
         &sock.to_string_lossy(),
-        &[("CODING_AGENTS_KIT_TIMEOUT_MS", "200")],
+        &[("PREMPTI_TIMEOUT_MS", "200")],
     );
     assert_decision(&r, "deny");
     drop(broker);

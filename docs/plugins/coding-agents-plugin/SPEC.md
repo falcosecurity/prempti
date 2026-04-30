@@ -3,14 +3,14 @@
 | Field    | Value                        |
 |----------|------------------------------|
 | Library  | `libcoding_agent.so` (Linux) / `libcoding_agent.dylib` (macOS) / `coding_agent.dll` (Windows) |
-| Source   | `plugins/coding-agent-plugin/` |
+| Source   | `plugins/coding-agents-plugin/` |
 | Language | Rust (falco_plugin SDK v0.5) |
 
 ## Overview
 
 The coding agent plugin is a Falco source + extraction plugin with an embedded broker. It receives tool call events from interceptors, feeds them to Falco's rule engine, collects alert verdicts via HTTP, and responds to interceptors with allow/deny/ask decisions.
 
-The plugin is the central component of coding-agents-kit — it bridges the interceptor (stateless CLI) with the Falco rule engine (policy evaluation).
+The plugin is the central component of Prempti — it bridges the interceptor (stateless CLI) with the Falco rule engine (policy evaluation).
 
 ## Design Principles
 
@@ -98,7 +98,7 @@ Interceptor          Socket Server       Event Queue       Falco Engine        H
 
 Background thread spawned in `Plugin::new()`. Listens on a Unix domain socket for interceptor connections.
 
-- **Bind**: `config.socket_path` (default `~/.coding-agents-kit/run/broker.sock`)
+- **Bind**: `config.socket_path` (default `~/.prempti/run/broker.sock`)
 - **Protocol**: Newline-terminated JSON, one request per connection
 - **Read timeout**: 5 seconds (prevents slow connections from blocking the accept loop)
 - **Flow**: read request → validate → assign `correlation.id` → register in broker → enqueue event
@@ -201,7 +201,7 @@ Plugin config via `falco.yaml` → `init_config`:
 ```yaml
 init_config:
   mode: guardrails         # "guardrails" or "monitor"
-  socket_path: ${HOME}/.coding-agents-kit/run/broker.sock   # Linux / macOS
+  socket_path: ${HOME}/.prempti/run/broker.sock   # Linux / macOS
   http_port: 2802
   deny_tags: [coding_agent_deny]
   ask_tags: [coding_agent_ask]
@@ -215,13 +215,13 @@ Windows defaults (rendered by `postinstall.ps1` with absolute paths and forward 
 ```yaml
 init_config:
   mode: guardrails
-  socket_path: C:/Users/<user>/AppData/Local/coding-agents-kit/run/broker.sock
+  socket_path: C:/Users/<user>/AppData/Local/prempti/run/broker.sock
   http_port: 2802
 ```
 
-On startup the plugin refuses to clobber a socket already held by another running instance and refuses to bind an HTTP port already in use — both surface as clean plugin init errors, not panics, so a stray `falco.exe -V ...` cannot take down a running coding-agents-kit service.
+On startup the plugin refuses to clobber a socket already held by another running instance and refuses to bind an HTTP port already in use — both surface as clean plugin init errors, not panics, so a stray `falco.exe -V ...` cannot take down a running Prempti service.
 
-Mode switching via `coding-agents-kit-ctl mode <guardrails|monitor>` rewrites this file and then performs an explicit service restart (`stop` → rewrite → `start`) on every platform. Falco's `watch_config_files` is intentionally disabled (it is Linux-only upstream), so config edits — whether made by `ctl` or directly — take effect at the next service start. `ctl mode` re-registers the interceptor hook between stop and start so the restart window stays fail-closed.
+Mode switching via `premptictl mode <guardrails|monitor>` rewrites this file and then performs an explicit service restart (`stop` → rewrite → `start`) on every platform. Falco's `watch_config_files` is intentionally disabled (it is Linux-only upstream), so config edits — whether made by `ctl` or directly — take effect at the next service start. `ctl mode` re-registers the interceptor hook between stop and start so the restart window stays fail-closed.
 
 ## Catch-all Seen Rule
 

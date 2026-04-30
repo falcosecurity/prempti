@@ -1,11 +1,11 @@
-# Smoke test for the log-rotation logic of coding-agents-kit-launcher.ps1.
+# Smoke test for the log-rotation logic of prempti-launcher.ps1.
 # Extracts the real function (and the constants it closes over) out of the
 # launcher via the PowerShell AST, loads them into this session, and runs
 # the behavioral checks against the live code. A body change in the
 # launcher is reflected here without manual resync.
 $ErrorActionPreference = 'Stop'
 
-$launcher = Join-Path $PSScriptRoot '..\installers\windows\coding-agents-kit-launcher.ps1'
+$launcher = Join-Path $PSScriptRoot '..\installers\windows\prempti-launcher.ps1'
 $raw = Get-Content $launcher -Raw
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($raw, [ref]$null, [ref]$null)
 

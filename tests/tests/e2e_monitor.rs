@@ -1,5 +1,5 @@
-use cak_tests::e2e::E2eHarness;
-use cak_tests::interceptor::assert_decision;
+use prempti_tests::e2e::E2eHarness;
+use prempti_tests::interceptor::assert_decision;
 
 macro_rules! require_falco {
     () => {

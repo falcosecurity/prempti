@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>dev.falcosecurity.coding-agents-kit</string>
+	<string>dev.falcosecurity.prempti</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>@PREFIX@/bin/coding-agents-kit-ctl</string>
+		<string>@PREFIX@/bin/premptictl</string>
 		<string>daemon</string>
 		<string>--prefix</string>
 		<string>@PREFIX@</string>

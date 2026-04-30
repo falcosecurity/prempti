@@ -1,5 +1,5 @@
 [package]
-name = "coding-agent-plugin"
+name = "coding-agents-plugin"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,12 +1,12 @@
-# Base Falco configuration for coding-agents-kit.
-# Run with: falco -c ~/.coding-agents-kit/config/falco.yaml
+# Base Falco configuration for Prempti.
+# Run with: falco -c ~/.prempti/config/falco.yaml
 #
 # This config fully isolates Falco from system-wide defaults (/etc/falco/).
 # All paths use ${HOME} expansion (Falco native).
 
 # Load the plugin config fragment (merged with append strategy).
 config_files:
-  - ${HOME}/.coding-agents-kit/config/falco.coding_agents_plugin.yaml
+  - ${HOME}/.prempti/config/falco.coding_agents_plugin.yaml
 
 # No kernel driver — pure plugin mode.
 engine:
@@ -45,7 +45,7 @@ webserver:
 # (the implementation in restart_handler.cpp is hard-wired to inotify with
 # no kqueue/FSEvents/ReadDirectoryChangesW fallback), so relying on it would
 # split behavior across platforms. Instead, all config changes go through
-# coding-agents-kit-ctl, which performs an explicit stop -> rewrite -> start
+# premptictl, which performs an explicit stop -> rewrite -> start
 # cycle on every platform. Edits made directly to this file or any included
 # config file will only take effect on the next service restart.
 watch_config_files: false

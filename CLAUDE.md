@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-**coding-agents-kit** is a policy and visibility layer for AI coding agents. It intercepts tool calls (shell commands, file writes, web requests, etc.) before execution, evaluates them against Falco rules, and produces allow/deny/ask verdicts in real time. It operates entirely in user space with no elevated privileges.
+**Prempti** is a policy and visibility layer for AI coding agents. It intercepts tool calls (shell commands, file writes, web requests, etc.) before execution, evaluates them against Falco rules, and produces allow/deny/ask verdicts in real time. It operates entirely in user space with no elevated privileges.
 
 It is not a sandbox or OS-level security boundary: at the hook level it only sees what the agent declares, not the runtime side effects of the resulting commands. It is a cooperative policy layer — the agent receives LLM-friendly feedback on blocked or flagged actions and adapts — meant to complement containment techniques, not replace them.
 
@@ -38,7 +38,7 @@ The project targets **Claude Code** on **Linux, macOS, and Windows**. The archit
 |-----------|----------|----------|------|
 | **Interceptor** | `hooks/claude-code/` | Rust | Thin passthrough: reads hook JSON from stdin, wraps in envelope, sends to broker, maps verdict to stdout. No content interpretation. |
 | **Plugin** | `plugins/` | Rust (falco_plugin SDK) | Falco source+extract plugin with embedded broker. Parses events, extracts fields, feeds Falco, receives alerts, resolves verdicts. |
-| **Supervisor** | `tools/coding-agents-kit-ctl/src/daemon/` | Rust | `ctl daemon` subcommand. Spawns Falco, captures and rotates its stdout/stderr into the log files, owns the Claude Code hook lifecycle, exposes a control socket for graceful shutdown. The init system (systemd / launchd / Windows Run key) starts the supervisor; the supervisor starts Falco. |
+| **Supervisor** | `tools/premptictl/src/daemon/` | Rust | `ctl daemon` subcommand. Spawns Falco, captures and rotates its stdout/stderr into the log files, owns the Claude Code hook lifecycle, exposes a control socket for graceful shutdown. The init system (systemd / launchd / Windows Run key) starts the supervisor; the supervisor starts Falco. |
 | **Rules** | `rules/` | YAML (Falco rule language) | Vendor and local security policies. |
 | **Installer** | `installers/linux/`, `installers/macos/`, `installers/windows/` | Shell/PowerShell | Platform-specific packaging, installation, hook registration, mode switching. |
 | **Skills** | `skills/` | Claude Code skill format | Coding agent skills for rule authoring, status, etc. |
@@ -158,7 +158,7 @@ Note: Falco's alert delivery is asynchronous — alerts are pushed to an interna
 
 ### Operational modes
 
-Two plugin modes, switchable without reinstallation via `coding-agents-kit-ctl mode <guardrails|monitor>`:
+Two plugin modes, switchable without reinstallation via `premptictl mode <guardrails|monitor>`:
 - **Guardrails** (default) — verdicts enforced (deny/ask/allow).
 - **Monitor** — rules evaluated and logged, but all verdicts resolve to allow.
 
@@ -166,11 +166,11 @@ Mode changes are applied via an explicit service restart driven by `ctl mode`: i
 
 `ctl restart` exposes the same stop → re-add hook → start cycle as a standalone command for users who edit config files directly.
 
-Additionally, the interceptor hook can be unregistered via `coding-agents-kit-ctl hook remove`, which passes all tool calls through unmonitored (neither mode is active because the hook isn't firing). This is effectively a "passthrough" state used when the service is intentionally stopped.
+Additionally, the interceptor hook can be unregistered via `premptictl hook remove`, which passes all tool calls through unmonitored (neither mode is active because the hook isn't firing). This is effectively a "passthrough" state used when the service is intentionally stopped.
 
 ### Supervisor (`ctl daemon`)
 
-The init system (systemd user unit on Linux, launchd user agent on macOS, `HKCU\…\Run` key on Windows) does not spawn Falco directly. It spawns the **supervisor** — a Rust process running `coding-agents-kit-ctl daemon --prefix <prefix>` — which then spawns Falco as a child. The supervisor:
+The init system (systemd user unit on Linux, launchd user agent on macOS, `HKCU\…\Run` key on Windows) does not spawn Falco directly. It spawns the **supervisor** — a Rust process running `premptictl daemon --prefix <prefix>` — which then spawns Falco as a child. The supervisor:
 
 1. **Owns Falco's lifecycle**: spawns it with `-U -c falco.yaml --disable-source syscall`, waits on it, escalates SIGTERM → SIGKILL on shutdown timeout (Unix), or `TerminateProcess` (Windows).
 2. **Owns the log files**: drains Falco's stdout into `log/falco.log` and stderr into `log/falco.err`, line by line. The `-U` (unbuffered) flag ensures Falco flushes after every alert so JSON lines arrive synchronously.
@@ -193,15 +193,15 @@ Advanced users can run the supervisor directly via `ctl daemon --prefix <path>` 
 - **Fail-closed**: if the plugin/Falco is unreachable, tool calls are denied.
 - No timeout-based fail-safety (see batch-completion design above).
 
-**Important**: When the hook is registered and the service is stopped or restarting (e.g., during a `ctl mode` or `ctl restart` cycle), ALL Claude Code tool calls are blocked. This is by design — fail-closed means no policy gap. Use `coding-agents-kit-ctl hook remove` to unblock Claude Code when the service is intentionally down. The supervisor adds the hook on start and removes it on stop on every platform; `ctl mode` and `ctl restart` re-register the hook between stop and start so the restart window itself stays fail-closed.
+**Important**: When the hook is registered and the service is stopped or restarting (e.g., during a `ctl mode` or `ctl restart` cycle), ALL Claude Code tool calls are blocked. This is by design — fail-closed means no policy gap. Use `premptictl hook remove` to unblock Claude Code when the service is intentionally down. The supervisor adds the hook on start and removes it on stop on every platform; `ctl mode` and `ctl restart` re-register the hook between stop and start so the restart window itself stays fail-closed.
 
 ### Installation directory structure
 
-All components are installed under `~/.coding-agents-kit/`:
+All components are installed under `~/.prempti/`:
 
 ```
-~/.coding-agents-kit/
-├── bin/                    # Executables: falco, claude-interceptor, coding-agents-kit-ctl
+~/.prempti/
+├── bin/                    # Executables: falco, claude-interceptor, premptictl
 ├── config/
 │   ├── falco.yaml          # Base Falco config (engine, output, isolation)
 │   ├── falco.coding_agents_plugin.yaml  # Plugin config (plugin def, rules, http_output)
@@ -220,7 +220,7 @@ All components are installed under `~/.coding-agents-kit/`:
 
 Falco runs with a fully isolated configuration — no default files from `/etc/falco/`:
 
-- **`falco -c ~/.coding-agents-kit/config/falco.yaml`** replaces the default config entirely
+- **`falco -c ~/.prempti/config/falco.yaml`** replaces the default config entirely
 - **`config_files: []`** or pointing only to our fragment prevents loading `/etc/falco/config.d/`
 - **`rules_files`** is the authoritative list — no hardcoded default rule paths
 - **`engine.kind: nodriver`** — no kernel driver needed
@@ -231,7 +231,7 @@ Config is split into two files:
 - **`falco.yaml`**: base settings (engine, output, webserver, `config_files` pointing to the plugin fragment)
 - **`falco.coding_agents_plugin.yaml`**: plugin definition, `init_config`, `load_plugins`, `rules_files`, `rule_matching: all`, `http_output`
 
-All paths on Linux/macOS use `${HOME}` expansion (Falco 0.43 supports `${VAR}` syntax in all YAML scalar values), so the same config works across users as long as the install lives at `$HOME/.coding-agents-kit`. Linux and macOS installers only support this default path; the Windows MSI regenerates both config files at install time via `postinstall.ps1`, which is how its `WixUI_InstallDir`-selected `INSTALLDIR` actually flows through to Falco.
+All paths on Linux/macOS use `${HOME}` expansion (Falco 0.43 supports `${VAR}` syntax in all YAML scalar values), so the same config works across users as long as the install lives at `$HOME/.prempti`. Linux and macOS installers only support this default path; the Windows MSI regenerates both config files at install time via `postinstall.ps1`, which is how its `WixUI_InstallDir`-selected `INSTALLDIR` actually flows through to Falco.
 
 ### macOS: Falco build from source
 
@@ -292,12 +292,12 @@ Prerequisites: Rosetta, x86_64 Homebrew at `/usr/local` with cmake and openssl@3
 
 macOS uses launchd instead of systemd. Key differences:
 
-- **Plist**: `~/Library/LaunchAgents/dev.falcosecurity.coding-agents-kit.plist` (label uses `dev.falcosecurity` — the Falco project's registered domain). `ProgramArguments` invokes `coding-agents-kit-ctl daemon --prefix <prefix>` directly; there is no launcher shell script.
+- **Plist**: `~/Library/LaunchAgents/dev.falcosecurity.prempti.plist` (label uses `dev.falcosecurity` — the Falco project's registered domain). `ProgramArguments` invokes `premptictl daemon --prefix <prefix>` directly; there is no launcher shell script.
 - **Hook lifecycle**: handled by the supervisor (see "Supervisor" section above), not by an `ExecStartPost`/`ExecStopPost` equivalent (which launchd lacks).
 - **ctl tool**: Platform-specific via `#[cfg(target_os)]` compile-time branching. Same commands on both platforms (`start/stop/enable/disable/status/restart`), different implementations (systemctl vs launchctl).
 - **Plugin library**: `.dylib` on macOS (vs `.so` on Linux). The macOS packager transforms the plugin config via `sed`.
 
-### macOS: `coding-agents-kit-ctl` service commands
+### macOS: `premptictl` service commands
 
 | Command | Linux (systemctl) | macOS (launchctl) |
 |---------|-------------------|-------------------|
@@ -352,20 +352,20 @@ Several Windows-specific traps worth knowing:
 
 ### Windows: service management
 
-Windows has no user-level systemd or launchd equivalent, so coding-agents-kit uses a **PowerShell launcher script invoked by a Registry Run key**, which in turn invokes the supervisor. The launcher exists solely to provide `WindowStyle Hidden` so the supervisor's console window does not flash at login.
+Windows has no user-level systemd or launchd equivalent, so Prempti uses a **PowerShell launcher script invoked by a Registry Run key**, which in turn invokes the supervisor. The launcher exists solely to provide `WindowStyle Hidden` so the supervisor's console window does not flash at login.
 
-- **Run key**: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CodingAgentsKit` — value points at `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <launcher> -Prefix <prefix>`. Set by `postinstall.ps1` and by `ctl enable`; removed by `uninstall.ps1` and `ctl disable`.
-- **Launcher**: `coding-agents-kit-launcher.ps1` is a ~5-line wrapper that just `& <prefix>\bin\coding-agents-kit-ctl.exe daemon --prefix <prefix>` and propagates the exit code. All real work — Falco lifecycle, log capture, rotation, hook lifecycle — happens inside the supervisor.
+- **Run key**: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Prempti` — value points at `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <launcher> -Prefix <prefix>`. Set by `postinstall.ps1` and by `ctl enable`; removed by `uninstall.ps1` and `ctl disable`.
+- **Launcher**: `prempti-launcher.ps1` is a ~5-line wrapper that just `& <prefix>\bin\premptictl.exe daemon --prefix <prefix>` and propagates the exit code. All real work — Falco lifecycle, log capture, rotation, hook lifecycle — happens inside the supervisor.
 - **Graceful shutdown via `supervisor.sock`**: `ctl stop` connects to `run/supervisor.sock` and sends `STOP\n`. The supervisor calls `Child::kill` (which is `TerminateProcess` on Windows) on Falco, drains the pipes, removes the hook, and exits. `ctl stop` polls for the supervisor's process to disappear and falls back to `taskkill /F /PID <sup-pid>` only if the supervisor itself doesn't exit within 30 seconds. This replaces the old `taskkill /F /IM falco.exe` path which lost the cleanup chain entirely.
 - **No Windows Service**: the installer intentionally does not create a Windows Service. A per-user install cannot register a service without admin, and interception must run under the user's session anyway (it modifies `~/.claude/settings.json` in the user profile, and per-user-socket lifetime follows the user).
 - **Path separators**: all runtime paths (broker socket, library_path, rules_files, http_output URL) are normalized to forward slashes at config-generation time. The plugin also canonicalizes paths to forward slashes for rule matching (stripping the Windows `\\?\` long-path prefix that `std::fs::canonicalize` sometimes adds).
 - **AF_UNIX**: both `broker.sock` and `supervisor.sock` are real Unix domain sockets (Windows 10+ has kernel `AF_UNIX` support). The `uds_windows` crate provides Rust bindings.
-- **Plugin library**: `coding_agent.dll` on Windows (vs `.so` on Linux and `.dylib` on macOS). The Windows packager copies the DLL into `%LOCALAPPDATA%\coding-agents-kit\share\` and the post-install script renders a `library_path` in `falco.coding_agents_plugin.yaml` that points at the absolute path with forward slashes.
+- **Plugin library**: `coding_agent.dll` on Windows (vs `.so` on Linux and `.dylib` on macOS). The Windows packager copies the DLL into `%LOCALAPPDATA%\prempti\share\` and the post-install script renders a `library_path` in `falco.coding_agents_plugin.yaml` that points at the absolute path with forward slashes.
 - **Fail-safety on MSI uninstall**: the MSI declares a deferred `REMOVE=ALL` custom action (`installers/windows/Package.wxs`) that runs `uninstall.ps1` before `RemoveFiles`, so Apps & Features, `msiexec /x` and the bundled helper all stop the service, remove the hook, drop the Run-key entry and clean `bin\` from the user `PATH`. `Return="ignore"` on the CA keeps a user-edited `settings.json` from blocking the uninstall.
 - **`ctl start` detachment**: the launcher is a long-lived descendant (it waits on the supervisor, which waits on Falco), so a direct `CreateProcess` of the launcher is tracked by the caller's PowerShell job object and keeps a captured pipeline (`& ctl start 2>&1`) open until everything exits. To break that chain, `service_start` invokes PowerShell's `Start-Process` (ShellExecute), producing a grandchild that's fully independent of the caller. Caveat: `Start-Process -Wait ctl start` from a script still hangs because `-Wait` follows the whole process tree — the captured form `& ctl start 2>&1` is the one to use.
-- **Post-install auto-start fail-safety**: `postinstall.ps1` starts the service via `Start-Process` after registering the hook, polls up to 5s for Falco, and falls through to a `Write-Warning` if it doesn't see Falco in time. Install still completes; the user recovers with `coding-agents-kit-ctl start` manually. If Falco fails to start at all (port conflict, missing DLL, etc.) the user is not silently left with a registered hook and a dead broker.
+- **Post-install auto-start fail-safety**: `postinstall.ps1` starts the service via `Start-Process` after registering the hook, polls up to 5s for Falco, and falls through to a `Write-Warning` if it doesn't see Falco in time. Install still completes; the user recovers with `premptictl start` manually. If Falco fails to start at all (port conflict, missing DLL, etc.) the user is not silently left with a registered hook and a dead broker.
 
-### Windows: `coding-agents-kit-ctl` service commands
+### Windows: `premptictl` service commands
 
 | Command | Linux (systemctl) | macOS (launchctl) | Windows |
 |---------|-------------------|-------------------|---------|
@@ -397,7 +397,7 @@ make build-ctl              # CTL tool only
 
 Requires latest stable Rust (the falco_plugin SDK tracks latest stable as MSRV).
 
-The repository is a Cargo workspace. The root `Cargo.toml` declares `[workspace.package].version` as the single source of truth — every crate inherits it via `version.workspace = true`, the plugin's reported version is derived from `CARGO_PKG_VERSION` at compile time, and `Makefile` / `package.ps1` read the version from the same file. Bumping a release is a one-line change. Size-sensitive crates (`claude-interceptor`, `coding-agents-kit-ctl`) use `opt-level = "z"`; the plugin (hot path) uses `opt-level = 2`.
+The repository is a Cargo workspace. The root `Cargo.toml` declares `[workspace.package].version` as the single source of truth — every crate inherits it via `version.workspace = true`, the plugin's reported version is derived from `CARGO_PKG_VERSION` at compile time, and `Makefile` / `package.ps1` read the version from the same file. Bumping a release is a one-line change. Size-sensitive crates (`claude-interceptor`, `premptictl`) use `opt-level = "z"`; the plugin (hot path) uses `opt-level = 2`.
 
 ### Tests
 
@@ -434,8 +434,8 @@ make falco-windows          # Build only Falco (convenience target)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CODING_AGENTS_KIT_SOCKET` | `~/.coding-agents-kit/run/broker.sock` | Broker Unix socket path |
-| `CODING_AGENTS_KIT_TIMEOUT_MS` | `5000` | Socket read timeout in milliseconds |
+| `PREMPTI_SOCKET` | `~/.prempti/run/broker.sock` | Broker Unix socket path |
+| `PREMPTI_TIMEOUT_MS` | `5000` | Socket read timeout in milliseconds |
 
 ## Code Style
 

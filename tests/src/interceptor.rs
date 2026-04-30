@@ -55,7 +55,7 @@ pub fn run_interceptor(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("CODING_AGENTS_KIT_SOCKET", socket_path);
+        .env("PREMPTI_SOCKET", socket_path);
     for (k, v) in env_overrides {
         cmd.env(k, v);
     }

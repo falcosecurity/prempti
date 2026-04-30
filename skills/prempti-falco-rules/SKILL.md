@@ -1,15 +1,15 @@
 ---
-name: coding-agents-falco-rules
-description: Author custom Falco rules for coding-agents-kit — the policy and visibility layer for AI coding agents. Use this skill whenever the user asks to create, edit, or debug rules that control what coding agents (Claude Code, etc.) can do. Triggers on phrases like "add a rule", "block this tool", "deny access to", "allow writes to", "create a security policy", "custom Falco rule for coding agent", or any request to modify files under rules/user/. This skill covers the coding_agent plugin source and its specific fields — NOT syscall rules.
+name: prempti-falco-rules
+description: Author custom Falco rules for Prempti — the policy and visibility layer for AI coding agents. Use this skill whenever the user asks to create, edit, or debug rules that control what coding agents (Claude Code, etc.) can do. Triggers on phrases like "add a rule", "block this tool", "deny access to", "allow writes to", "create a security policy", "custom Falco rule for coding agent", or any request to modify files under rules/user/. This skill covers the coding_agent plugin source and its specific fields — NOT syscall rules.
 ---
 
-# Coding Agents Falco Rules Author
+# Prempti Falco Rules Author
 
 Write custom Falco rules that govern what AI coding agents can do at runtime. These rules intercept tool calls (shell commands, file writes/reads, MCP calls) and enforce allow/deny/ask verdicts before execution.
 
 ## Context: How This System Works
 
-coding-agents-kit intercepts every tool call a coding agent makes. Each call becomes a Falco event with structured fields. Your rules evaluate these events and decide the verdict:
+Prempti intercepts every tool call a coding agent makes. Each call becomes a Falco event with structured fields. Your rules evaluate these events and decide the verdict:
 
 - **deny** — block the tool call entirely (the agent sees an explanation)
 - **ask** — prompt the user for confirmation (they see your output message directly)
@@ -210,13 +210,13 @@ Check these locations in order. The "installed" locations are written by the pla
 
 **Linux / macOS**
 
-1. **Installed binary** (most common): `~/.coding-agents-kit/bin/falco`
+1. **Installed binary** (most common): `~/.prempti/bin/falco`
 2. **System PATH**: `falco` (if installed globally)
 3. **Development build**: `build/falco-*-<arch>/usr/bin/falco` (Linux, downloaded) or `build/falco-*-darwin-<arch>/falco` (macOS, source)
 
 **Windows** (PowerShell)
 
-1. **Installed binary**: `$env:LOCALAPPDATA\coding-agents-kit\bin\falco.exe`
+1. **Installed binary**: `$env:LOCALAPPDATA\prempti\bin\falco.exe`
 2. **System PATH**: `falco.exe` (rare on Windows — `PATH` usually points to the installed bin dir via the post-install step)
 3. **Development build**: `build\falco-0.43.0-windows-<arch>\falco.exe` (built via `make falco-windows-x64` / `falco-windows-arm64`)
 
@@ -227,19 +227,19 @@ Use the installed config so the plugin is loaded and all fields are recognized.
 **Linux / macOS**
 
 ```bash
-~/.coding-agents-kit/bin/falco \
-  -c ~/.coding-agents-kit/config/falco.yaml \
+~/.prempti/bin/falco \
+  -c ~/.prempti/config/falco.yaml \
   --disable-source syscall \
-  -V ~/.coding-agents-kit/rules/user/my_rules.yaml
+  -V ~/.prempti/rules/user/my_rules.yaml
 ```
 
 **Windows** (PowerShell)
 
 ```powershell
-& "$env:LOCALAPPDATA\coding-agents-kit\bin\falco.exe" `
-  -c "$env:LOCALAPPDATA\coding-agents-kit\config\falco.yaml" `
+& "$env:LOCALAPPDATA\prempti\bin\falco.exe" `
+  -c "$env:LOCALAPPDATA\prempti\config\falco.yaml" `
   --disable-source syscall `
-  -V "$env:LOCALAPPDATA\coding-agents-kit\rules\user\my_rules.yaml"
+  -V "$env:LOCALAPPDATA\prempti\rules\user\my_rules.yaml"
 ```
 
 This validates:

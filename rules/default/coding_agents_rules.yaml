@@ -1,4 +1,4 @@
-# Default ruleset for coding-agents-kit.
+# Default ruleset for Prempti.
 # Shipped with the project. Overwritten on upgrade.
 # Users should add custom rules in the user/ directory instead of editing this file.
 # Users can extend the lists below using Falco's override mechanism in user/ rules.
@@ -1594,7 +1594,7 @@
 
 # Matches content that registers a hooks block (any lifecycle event).
 # The "hooks" key is Claude Code's mechanism for running external commands
-# before or after tool calls — the exact mechanism coding-agents-kit uses.
+# before or after tool calls — the exact mechanism Prempti uses.
 - macro: is_settings_hooks_content
   condition: tool.input contains "hooks"
 
@@ -1710,7 +1710,7 @@
     settings file (~/.claude/settings.json or .claude/settings.json) with
     content matching the "hooks" keyword. Claude Code's hooks mechanism runs
     arbitrary external commands before or after every tool call — it is the
-    same mechanism coding-agents-kit uses to intercept tool calls. The agent
+    same mechanism Prempti uses to intercept tool calls. The agent
     has no legitimate reason to modify its own hook configuration — hook
     registration is an installer/admin task, not an agent task. Asks rather
     than denies because the "hooks" substring also surfaces in unrelated

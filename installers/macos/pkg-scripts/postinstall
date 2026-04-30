@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# postinstall — Run after .pkg installs files to ~/.coding-agents-kit/
+# postinstall — Run after .pkg installs files to ~/.prempti/
 #
 # Arguments from macOS Installer:
 #   $1 = package path
@@ -19,7 +19,7 @@ fi
 # (preserve a symlinked HOME instead of resolving it).
 INSTALL_LOCATION="${2%/.}"
 INSTALL_LOCATION="${INSTALL_LOCATION%/}"
-PREFIX="${INSTALL_LOCATION}/.coding-agents-kit"
+PREFIX="${INSTALL_LOCATION}/.prempti"
 USER_HOME="${INSTALL_LOCATION}"
 
 # ---------------------------------------------------------------------------
@@ -27,19 +27,19 @@ USER_HOME="${INSTALL_LOCATION}"
 # ---------------------------------------------------------------------------
 
 PLIST_DIR="${USER_HOME}/Library/LaunchAgents"
-PLIST_FILE="${PLIST_DIR}/dev.falcosecurity.coding-agents-kit.plist"
+PLIST_FILE="${PLIST_DIR}/dev.falcosecurity.prempti.plist"
 
 mkdir -p "$PLIST_DIR"
 mkdir -p "$PREFIX/log"
 
 # Render plist with actual prefix and HOME.
 sed -e "s|@PREFIX@|${PREFIX}|g" -e "s|@HOME@|${USER_HOME}|g" \
-    "$PREFIX/launchd/dev.falcosecurity.coding-agents-kit.plist" \
+    "$PREFIX/launchd/dev.falcosecurity.prempti.plist" \
     > "$PLIST_FILE"
 
 # Remove a stale launcher.sh from a previous install: the supervisor (`ctl
 # daemon`) replaces it.
-rm -f "$PREFIX/bin/coding-agents-kit-launcher.sh"
+rm -f "$PREFIX/bin/prempti-launcher.sh"
 
 # supervisor.yaml: ship the default file only on a fresh install. Existing
 # installations may have user edits (the file is meant to be edited).

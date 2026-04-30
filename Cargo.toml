@@ -2,8 +2,8 @@
 resolver = "2"
 members = [
     "hooks/claude-code",
-    "plugins/coding-agent-plugin",
-    "tools/coding-agents-kit-ctl",
+    "plugins/coding-agents-plugin",
+    "tools/premptictl",
     "tests",
 ]
 
@@ -29,10 +29,10 @@ strip = true
 opt-level = "z"
 codegen-units = 1
 
-[profile.release.package.coding-agents-kit-ctl]
+[profile.release.package.premptictl]
 opt-level = "z"
 codegen-units = 1
 
 # Plugin runs inside Falco's hot path; prefer speed over minimum size.
-[profile.release.package.coding-agent-plugin]
+[profile.release.package.coding-agents-plugin]
 opt-level = 2

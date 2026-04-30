@@ -1,6 +1,6 @@
-# Supervisor configuration for coding-agents-kit.
-# Read by `coding-agents-kit-ctl daemon` at startup.
-# Changes require a manual daemon restart (e.g., `coding-agents-kit-ctl restart`).
+# Supervisor configuration for Prempti.
+# Read by `premptictl daemon` at startup.
+# Changes require a manual daemon restart (e.g., `premptictl restart`).
 
 # Log rotation threshold in bytes. When falco.log or falco.err crosses this
 # size, the supervisor rotates it (.1, .2, ..., oldest dropped).

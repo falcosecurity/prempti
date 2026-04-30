@@ -20,9 +20,9 @@ fn interceptor_command(prefix: &Path) -> String {
     #[cfg(unix)]
     {
         let home = env::var("HOME").unwrap_or_default();
-        let default = format!("{home}/.coding-agents-kit");
+        let default = format!("{home}/.prempti");
         if prefix_str == default {
-            "$HOME/.coding-agents-kit/bin/claude-interceptor".to_string()
+            "$HOME/.prempti/bin/claude-interceptor".to_string()
         } else {
             format!("{}/bin/claude-interceptor", prefix_str)
         }
@@ -161,11 +161,11 @@ pub fn print_warning() {
     eprintln!();
     eprintln!("  WARNING: The interceptor runs in fail-closed mode. When the hook is");
     eprintln!("  registered, ALL Claude Code tool calls will be BLOCKED if the");
-    eprintln!("  coding-agents-kit service is not running or is temporarily unavailable");
+    eprintln!("  Prempti service is not running or is temporarily unavailable");
     eprintln!("  (e.g., during a `ctl mode` restart or other service downtime).");
     eprintln!();
     eprintln!("  To unblock Claude Code, remove the hook:");
-    eprintln!("    coding-agents-kit-ctl hook remove");
+    eprintln!("    premptictl hook remove");
 }
 
 pub fn cli_add(prefix: &Path) {
@@ -219,6 +219,6 @@ pub fn warn_if_still_registered() {
         eprintln!("  WARNING: The interceptor hook is still registered in Claude Code.");
         eprintln!("  With the service stopped, ALL tool calls will be BLOCKED.");
         eprintln!("  Remove the hook manually if needed:");
-        eprintln!("    coding-agents-kit-ctl hook remove");
+        eprintln!("    premptictl hook remove");
     }
 }

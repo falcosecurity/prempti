@@ -1,6 +1,6 @@
 # macOS Installer
 
-Packaging and installation scripts for coding-agents-kit on macOS (Apple Silicon and Intel).
+Packaging and installation scripts for Prempti on macOS (Apple Silicon and Intel).
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ bash installers/macos/package.sh --target aarch64      # Apple Silicon
 bash installers/macos/package.sh --target x86_64       # Intel
 ```
 
-Output: `build/coding-agents-kit-<version>-darwin-<arch>.{tar.gz,pkg}`
+Output: `build/prempti-<version>-darwin-<arch>.{tar.gz,pkg}`
 
 The package is self-contained: Falco binary (built from source), interceptor, plugin, ctl tool, configs (`falco.yaml`, `falco.coding_agents_plugin.yaml`, `supervisor.yaml`), rules, launchd plist, and installer.
 
@@ -57,7 +57,7 @@ The build applies a patch (`falco-macos-http-output.patch`) to enable http_outpu
 ### From .pkg (recommended)
 
 ```bash
-open coding-agents-kit-<version>-darwin-universal.pkg
+open prempti-<version>-darwin-universal.pkg
 ```
 
 The macOS Installer wizard guides you through the setup.
@@ -65,8 +65,8 @@ The macOS Installer wizard guides you through the setup.
 ### From tar.gz
 
 ```bash
-tar xzf coding-agents-kit-<version>-darwin-<arch>.tar.gz
-cd coding-agents-kit-<version>-darwin-<arch>
+tar xzf prempti-<version>-darwin-<arch>.tar.gz
+cd prempti-<version>-darwin-<arch>
 bash install.sh
 ```
 
@@ -79,8 +79,8 @@ bash install.sh --dry-run                # Show what would be done
 ### What It Does
 
 1. Verifies macOS and architecture match the package
-2. Copies binaries (`falco`, `claude-interceptor`, `coding-agents-kit-ctl`), plugin, configs, and rules to `~/.coding-agents-kit/`
-3. Installs and loads a launchd user agent (`dev.falcosecurity.coding-agents-kit`) that runs `coding-agents-kit-ctl daemon --prefix <prefix>`
+2. Copies binaries (`falco`, `claude-interceptor`, `premptictl`), plugin, configs, and rules to `~/.prempti/`
+3. Installs and loads a launchd user agent (`dev.falcosecurity.prempti`) that runs `premptictl daemon --prefix <prefix>`
 4. The supervisor (`ctl daemon`) registers the Claude Code hook on start and removes it on stop
 
 ### Gatekeeper
@@ -88,21 +88,21 @@ bash install.sh --dry-run                # Show what would be done
 Since the binaries are not code-signed, macOS Gatekeeper may block them (especially when installing from a tarball downloaded via a browser). Go to **System Settings > Privacy & Security** and allow the blocked binary, or clear the quarantine attribute from the entire install tree — both the executables in `bin/` and the plugin library in `share/` can be flagged:
 
 ```bash
-xattr -dr com.apple.quarantine ~/.coding-agents-kit
+xattr -dr com.apple.quarantine ~/.prempti
 ```
 
 ## Uninstallation
 
 ```bash
-~/.coding-agents-kit/bin/coding-agents-kit-ctl uninstall
-~/.coding-agents-kit/bin/coding-agents-kit-ctl uninstall --keep-user-rules    # Preserve custom rules
+~/.prempti/bin/premptictl uninstall
+~/.prempti/bin/premptictl uninstall --keep-user-rules    # Preserve custom rules
 ```
 
 ## Installation Directory
 
 ```
-~/.coding-agents-kit/
-├── bin/                    # falco, claude-interceptor, coding-agents-kit-ctl
+~/.prempti/
+├── bin/                    # falco, claude-interceptor, premptictl
 ├── config/                 # falco.yaml, falco.coding_agents_plugin.yaml,
 │                           # supervisor.yaml (preserved on upgrade)
 ├── log/                    # falco.log[.1..N], falco.err[.1..N] (rotated by supervisor)
@@ -114,11 +114,11 @@ xattr -dr com.apple.quarantine ~/.coding-agents-kit
     └── seen.yaml           # Catch-all rule (required)
 ```
 
-The launchd plist is installed to `~/Library/LaunchAgents/dev.falcosecurity.coding-agents-kit.plist`.
+The launchd plist is installed to `~/Library/LaunchAgents/dev.falcosecurity.prempti.plist`.
 
 ## Service Management
 
-launchd invokes `coding-agents-kit-ctl daemon --prefix <prefix>` directly — no shell wrapper. The supervisor handles hook registration on start and removal on stop, captures Falco's stdout/stderr into rotating log files, and exposes a control socket at `run/supervisor.sock` for graceful shutdown. SIGTERM from launchd reaches the supervisor, which then orchestrates the cleanup chain.
+launchd invokes `premptictl daemon --prefix <prefix>` directly — no shell wrapper. The supervisor handles hook registration on start and removal on stop, captures Falco's stdout/stderr into rotating log files, and exposes a control socket at `run/supervisor.sock` for graceful shutdown. SIGTERM from launchd reaches the supervisor, which then orchestrates the cleanup chain.
 
 ## Files
 
@@ -128,4 +128,4 @@ launchd invokes `coding-agents-kit-ctl daemon --prefix <prefix>` directly — no
 | `install.sh` | Installer: copies files, sets up launchd, kicks off the supervisor |
 | `build-falco.sh` | Builds Falco from source with http_output patch |
 | `falco-macos-http-output.patch` | CMake patch enabling http_output on macOS |
-| `dev.falcosecurity.coding-agents-kit.plist` | launchd user agent template (invokes `ctl daemon`) |
+| `dev.falcosecurity.prempti.plist` | launchd user agent template (invokes `ctl daemon`) |

@@ -2,7 +2,7 @@
 
 Stateless CLI binary invoked by Claude Code's `PreToolUse` hook on every tool call. It sends the hook event to the plugin broker via Unix socket and maps the verdict back to Claude Code's hook response format.
 
-The interceptor is a thin passthrough — all field extraction, path resolution, and policy evaluation happens in the [plugin broker](../../plugins/coding-agent-plugin/).
+The interceptor is a thin passthrough — all field extraction, path resolution, and policy evaluation happens in the [plugin broker](../../plugins/coding-agents-plugin/).
 
 See [SPEC.md](../../docs/hooks/claude-code/SPEC.md) for the full specification.
 
@@ -27,8 +27,8 @@ The interceptor reads only `tool_use_id` from the input (for the wire protocol r
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CODING_AGENTS_KIT_SOCKET` | `~/.coding-agents-kit/run/broker.sock` | Broker socket path |
-| `CODING_AGENTS_KIT_TIMEOUT_MS` | `5000` | Socket timeout in ms |
+| `PREMPTI_SOCKET` | `~/.prempti/run/broker.sock` | Broker socket path |
+| `PREMPTI_TIMEOUT_MS` | `5000` | Socket timeout in ms |
 
 ## Error Handling
 

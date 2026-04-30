@@ -40,17 +40,17 @@ fn default_socket_path() -> String {
     #[cfg(unix)]
     {
         if let Ok(home) = std::env::var("HOME") {
-            format!("{home}/.coding-agents-kit/run/broker.sock")
+            format!("{home}/.prempti/run/broker.sock")
         } else {
-            "/tmp/coding-agents-kit-broker.sock".to_string()
+            "/tmp/prempti-broker.sock".to_string()
         }
     }
     #[cfg(windows)]
     {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            format!("{}/coding-agents-kit/run/broker.sock", local.replace('\\', "/"))
+            format!("{}/prempti/run/broker.sock", local.replace('\\', "/"))
         } else {
-            "C:/coding-agents-kit-broker.sock".to_string()
+            "C:/prempti-broker.sock".to_string()
         }
     }
 }

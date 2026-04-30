@@ -1,4 +1,4 @@
-// Pretty renderer for `coding-agents-kit-ctl logs`.
+// Pretty renderer for `premptictl logs`.
 //
 // Buffers all alerts for a given correlation.id until the catch-all `seen`
 // alert arrives, then renders one block per event. The seen alert carries
@@ -24,7 +24,7 @@ pub struct PrettyOpts {
     pub show: ShowMask,
     pub term_cols: usize,
     /// Command-line label shown in the status footer
-    /// (e.g. `coding-agents-kit-ctl -f`).
+    /// (e.g. `premptictl -f`).
     pub cmd_label: String,
 }
 
@@ -1210,7 +1210,7 @@ mod tests {
             follow: false,
             show: ShowMask(SHOW_DEFAULT),
             term_cols: 80,
-            cmd_label: "coding-agents-kit-ctl".to_string(),
+            cmd_label: "premptictl".to_string(),
         }
     }
 
@@ -1442,9 +1442,9 @@ mod tests {
         assert!(footer[0].is_empty());
         assert!(footer[1].contains("─"));
         let body = &footer[2];
-        // Form: "coding-agents-kit-ctl: sessions N · events N (● allow N · ⊙ ask N · ⊘ deny N)"
+        // Form: "premptictl: sessions N · events N (● allow N · ⊙ ask N · ⊘ deny N)"
         assert!(
-            body.contains("coding-agents-kit-ctl:"),
+            body.contains("premptictl:"),
             "tool prefix: {body}"
         );
         assert!(body.contains("sessions "));
@@ -1663,11 +1663,11 @@ mod tests {
     #[test]
     fn status_footer_uses_cmd_label_and_since_when_known() {
         let mut opts = opts_no_color();
-        opts.cmd_label = "coding-agents-kit -f".to_string();
+        opts.cmd_label = "premptictl -f".to_string();
         let mut f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
         let _ = f.process_line(&make_seen(1, "s", "/home/u", "Bash", "command", "ls"));
         let body = f.status_footer().last().unwrap().clone();
-        assert!(body.contains("coding-agents-kit -f:"), "body={body}");
+        assert!(body.contains("premptictl -f:"), "body={body}");
         assert!(body.contains(" · since "), "missing since: {body}");
     }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# package.sh — Build and package coding-agents-kit for macOS.
+# package.sh — Build and package Prempti for macOS.
 #
 # Creates a self-contained tar.gz with all binaries, configs, and an installer.
 # Supports: native builds, cross-compilation, and universal (fat) binaries.
@@ -56,10 +56,10 @@ if [[ "$ARCH" == "universal" ]]; then
     echo "--- Building x86_64 components ---"
     bash "$SCRIPT_DIR/package.sh" --target x86_64
 
-    PACKAGE_NAME="coding-agents-kit-${VERSION}-darwin-universal"
+    PACKAGE_NAME="prempti-${VERSION}-darwin-universal"
     BUILD_DIR="${ROOT_DIR}/build/${PACKAGE_NAME}"
-    ARM_DIR="${ROOT_DIR}/build/coding-agents-kit-${VERSION}-darwin-aarch64"
-    X86_DIR="${ROOT_DIR}/build/coding-agents-kit-${VERSION}-darwin-x86_64"
+    ARM_DIR="${ROOT_DIR}/build/prempti-${VERSION}-darwin-aarch64"
+    X86_DIR="${ROOT_DIR}/build/prempti-${VERSION}-darwin-x86_64"
 
     echo ""
     echo "--- Creating universal binaries via lipo ---"
@@ -68,7 +68,7 @@ if [[ "$ARCH" == "universal" ]]; then
     cp -R "$ARM_DIR" "$BUILD_DIR"
 
     # Replace binaries with universal (fat) versions.
-    for bin in bin/falco bin/claude-interceptor bin/coding-agents-kit-ctl; do
+    for bin in bin/falco bin/claude-interceptor bin/premptictl; do
         echo "  lipo: $bin"
         lipo -create "$ARM_DIR/$bin" "$X86_DIR/$bin" -output "$BUILD_DIR/$bin"
     done
@@ -85,7 +85,7 @@ if [[ "$ARCH" == "universal" ]]; then
     # wouldn't work since BUILD_DIR is already assembled). Build it inline.
     echo "Creating .pkg..."
     PKG_DIR="${ROOT_DIR}/build/pkg-work-universal"
-    PKG_ROOT="${PKG_DIR}/root/.coding-agents-kit"
+    PKG_ROOT="${PKG_DIR}/root/.prempti"
     PKG_SCRIPTS="${PKG_DIR}/scripts"
     PKG_RESOURCES="${PKG_DIR}/resources"
     COMPONENT_PKG="${PKG_DIR}/component.pkg"
@@ -99,7 +99,7 @@ if [[ "$ARCH" == "universal" ]]; then
     cp "$SCRIPT_DIR/pkg-scripts/postinstall" "$PKG_SCRIPTS/"
     chmod +x "$PKG_SCRIPTS/preinstall" "$PKG_SCRIPTS/postinstall"
     pkgbuild --root "$PKG_DIR/root" --install-location "." --scripts "$PKG_SCRIPTS" \
-        --identifier "dev.falcosecurity.coding-agents-kit" --version "$VERSION" \
+        --identifier "dev.falcosecurity.prempti" --version "$VERSION" \
         "$COMPONENT_PKG" > /dev/null
     mkdir -p "$PKG_RESOURCES"
     cp "$SCRIPT_DIR/pkg-resources/welcome.html" "$PKG_RESOURCES/"
@@ -142,20 +142,20 @@ if [[ "$ARCH" != "$HOST_ARCH" ]]; then
     CARGO_TARGET_FLAG="--target $RUST_TARGET"
     INTERCEPTOR_BIN="target/$RUST_TARGET/release/claude-interceptor"
     PLUGIN_LIB="target/$RUST_TARGET/release/libcoding_agent.dylib"
-    CTL_BIN="target/$RUST_TARGET/release/coding-agents-kit-ctl"
+    CTL_BIN="target/$RUST_TARGET/release/premptictl"
     # Ensure Rust target is installed.
     rustup target add "$RUST_TARGET" 2>/dev/null || true
 else
     CARGO_TARGET_FLAG=""
     INTERCEPTOR_BIN="target/release/claude-interceptor"
     PLUGIN_LIB="target/release/libcoding_agent.dylib"
-    CTL_BIN="target/release/coding-agents-kit-ctl"
+    CTL_BIN="target/release/premptictl"
 fi
 
-PACKAGE_NAME="coding-agents-kit-${VERSION}-darwin-${ARCH}"
+PACKAGE_NAME="prempti-${VERSION}-darwin-${ARCH}"
 BUILD_DIR="${ROOT_DIR}/build/${PACKAGE_NAME}"
 
-echo "=== Building coding-agents-kit ${VERSION} for darwin/${ARCH} ==="
+echo "=== Building Prempti ${VERSION} for darwin/${ARCH} ==="
 
 # Step 1: Build interceptor.
 echo "Building interceptor..."
@@ -163,11 +163,11 @@ echo "Building interceptor..."
 
 # Step 2: Build plugin.
 echo "Building plugin..."
-(cd "$ROOT_DIR/plugins/coding-agent-plugin" && cargo build --release $CARGO_TARGET_FLAG)
+(cd "$ROOT_DIR/plugins/coding-agents-plugin" && cargo build --release $CARGO_TARGET_FLAG)
 
 # Step 2b: Build ctl tool.
-echo "Building coding-agents-kit-ctl..."
-(cd "$ROOT_DIR/tools/coding-agents-kit-ctl" && cargo build --release $CARGO_TARGET_FLAG)
+echo "Building Premptictl..."
+(cd "$ROOT_DIR/tools/premptictl" && cargo build --release $CARGO_TARGET_FLAG)
 
 # Step 3: Build Falco from source.
 echo "Building Falco..."
@@ -185,7 +185,7 @@ mkdir -p "$BUILD_DIR"/{bin,share,config,rules/default,rules/user,launchd}
 
 # Binaries.
 cp "$ROOT_DIR/$INTERCEPTOR_BIN" "$BUILD_DIR/bin/claude-interceptor"
-cp "$ROOT_DIR/$CTL_BIN" "$BUILD_DIR/bin/coding-agents-kit-ctl"
+cp "$ROOT_DIR/$CTL_BIN" "$BUILD_DIR/bin/premptictl"
 cp "$ROOT_DIR/$PLUGIN_LIB" "$BUILD_DIR/share/libcoding_agent.dylib"
 cp "$FALCO_BIN" "$BUILD_DIR/bin/falco"
 
@@ -201,7 +201,7 @@ cp "$ROOT_DIR/rules/default/coding_agents_rules.yaml" "$BUILD_DIR/rules/default/
 cp "$ROOT_DIR/rules/seen.yaml" "$BUILD_DIR/rules/"
 
 # launchd service template (no launcher.sh — the supervisor replaces it).
-cp "$SCRIPT_DIR/dev.falcosecurity.coding-agents-kit.plist" "$BUILD_DIR/launchd/"
+cp "$SCRIPT_DIR/dev.falcosecurity.prempti.plist" "$BUILD_DIR/launchd/"
 
 # Installer script.
 cp "$SCRIPT_DIR/install.sh" "$BUILD_DIR/"
@@ -214,7 +214,7 @@ echo "Creating tar.gz..."
 # Step 6: Create .pkg installer.
 echo "Creating .pkg..."
 PKG_DIR="${ROOT_DIR}/build/pkg-work-${ARCH}"
-PKG_ROOT="${PKG_DIR}/root/.coding-agents-kit"
+PKG_ROOT="${PKG_DIR}/root/.prempti"
 PKG_SCRIPTS="${PKG_DIR}/scripts"
 PKG_RESOURCES="${PKG_DIR}/resources"
 COMPONENT_PKG="${PKG_DIR}/component.pkg"
@@ -222,11 +222,11 @@ PRODUCT_PKG="${ROOT_DIR}/build/${PACKAGE_NAME}.pkg"
 
 rm -rf "$PKG_DIR"
 
-# Lay out files as they will be installed under ~/.coding-agents-kit/
+# Lay out files as they will be installed under ~/.prempti/
 mkdir -p "$PKG_ROOT"/{bin,share,config,rules/default,rules/user,launchd,log}
 cp "$BUILD_DIR/bin/falco" "$PKG_ROOT/bin/"
 cp "$BUILD_DIR/bin/claude-interceptor" "$PKG_ROOT/bin/"
-cp "$BUILD_DIR/bin/coding-agents-kit-ctl" "$PKG_ROOT/bin/"
+cp "$BUILD_DIR/bin/premptictl" "$PKG_ROOT/bin/"
 cp "$BUILD_DIR/share/libcoding_agent.dylib" "$PKG_ROOT/share/"
 cp "$BUILD_DIR/config/falco.yaml" "$PKG_ROOT/config/"
 cp "$BUILD_DIR/config/falco.coding_agents_plugin.yaml" "$PKG_ROOT/config/"
@@ -236,7 +236,7 @@ cp "$BUILD_DIR/config/falco.coding_agents_plugin.yaml" "$PKG_ROOT/config/"
 cp "$BUILD_DIR/config/supervisor.yaml" "$PKG_ROOT/config/supervisor.yaml.default"
 cp "$BUILD_DIR/rules/default/coding_agents_rules.yaml" "$PKG_ROOT/rules/default/"
 cp "$BUILD_DIR/rules/seen.yaml" "$PKG_ROOT/rules/"
-cp "$BUILD_DIR/launchd/dev.falcosecurity.coding-agents-kit.plist" "$PKG_ROOT/launchd/"
+cp "$BUILD_DIR/launchd/dev.falcosecurity.prempti.plist" "$PKG_ROOT/launchd/"
 
 # Pre/post install scripts.
 mkdir -p "$PKG_SCRIPTS"
@@ -244,12 +244,12 @@ cp "$SCRIPT_DIR/pkg-scripts/preinstall" "$PKG_SCRIPTS/"
 cp "$SCRIPT_DIR/pkg-scripts/postinstall" "$PKG_SCRIPTS/"
 chmod +x "$PKG_SCRIPTS/preinstall" "$PKG_SCRIPTS/postinstall"
 
-# Build component package. Installs to .coding-agents-kit/ relative to
+# Build component package. Installs to .prempti/ relative to
 # the user's home directory (user-domain install via distribution.xml).
 pkgbuild --root "$PKG_DIR/root" \
     --install-location "." \
     --scripts "$PKG_SCRIPTS" \
-    --identifier "dev.falcosecurity.coding-agents-kit" \
+    --identifier "dev.falcosecurity.prempti" \
     --version "$VERSION" \
     "$COMPONENT_PKG" \
     > /dev/null

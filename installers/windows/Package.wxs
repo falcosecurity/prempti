@@ -1,17 +1,17 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
   xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
-  <Package Name="coding-agents-kit"
+  <Package Name="prempti"
            Manufacturer="Falco Authors"
            Version="$(var.ProductVersion)"
            ProductCode="$(var.ProductCode)"
-           UpgradeCode="B2C3D4E5-F6A7-8901-BCDE-F12345678901"
+           UpgradeCode="A9AC2103-193A-4D6F-91D4-847BEC23DAB3"
            Scope="perUser">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of coding-agents-kit is already installed."
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Prempti is already installed."
             AllowSameVersionUpgrades="yes" />
     <MediaTemplate EmbedCab="yes" />
 
-    <Feature Id="Complete" Title="coding-agents-kit" Level="1">
+    <Feature Id="Complete" Title="prempti" Level="1">
       <ComponentGroupRef Id="BinFiles" />
       <ComponentGroupRef Id="ShareFiles" />
       <ComponentGroupRef Id="RulesDefaultFiles" />
@@ -36,7 +36,7 @@
     <Property Id="INSTALLDIR" Secure="yes">
       <RegistrySearch Id="InstallDirSearch"
                       Root="HKCU"
-                      Key="Software\FalcoAuthors\coding-agents-kit"
+                      Key="Software\FalcoAuthors\prempti"
                       Name="InstallDir"
                       Type="directory" />
     </Property>
@@ -88,10 +88,10 @@
     </InstallExecuteSequence>
   </Package>
 
-  <!-- Directory layout under %LOCALAPPDATA%\coding-agents-kit\ -->
+  <!-- Directory layout under %LOCALAPPDATA%\prempti\ -->
   <Fragment>
     <StandardDirectory Id="LocalAppDataFolder">
-      <Directory Id="INSTALLDIR" Name="coding-agents-kit">
+      <Directory Id="INSTALLDIR" Name="prempti">
         <Directory Id="BINDIR" Name="bin" />
         <Directory Id="SHAREDIR" Name="share" />
         <Directory Id="CONFIGDIR" Name="config" />
@@ -116,10 +116,10 @@
         <File Source="$(var.StageDir)\bin\claude-interceptor.exe" />
       </Component>
       <Component>
-        <File Source="$(var.StageDir)\bin\coding-agents-kit-ctl.exe" />
+        <File Source="$(var.StageDir)\bin\premptictl.exe" />
       </Component>
       <Component>
-        <File Source="$(var.StageDir)\bin\coding-agents-kit-launcher.ps1" />
+        <File Source="$(var.StageDir)\bin\prempti-launcher.ps1" />
       </Component>
     </ComponentGroup>
   </Fragment>
@@ -190,7 +190,7 @@
   <Fragment>
     <ComponentGroup Id="InstallDirRegistration" Directory="INSTALLDIR">
       <Component Id="InstallDirRegistrationComp" Guid="A4B5C6D7-E8F9-0123-4567-89ABCDEF0004">
-        <RegistryKey Root="HKCU" Key="Software\FalcoAuthors\coding-agents-kit">
+        <RegistryKey Root="HKCU" Key="Software\FalcoAuthors\prempti">
           <RegistryValue Type="string" Name="InstallDir" Value="[INSTALLDIR]" KeyPath="yes" />
         </RegistryKey>
       </Component>

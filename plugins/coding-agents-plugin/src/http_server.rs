@@ -40,7 +40,7 @@ enum VerdictType {
 /// The plugin lifecycle is `new()` exactly once, `Drop` exactly once: Falco's
 /// `watch_config_files` is disabled at the config level (see
 /// `configs/falco.yaml`), and config changes are driven through
-/// `coding-agents-kit-ctl` as an explicit stop → rewrite → start cycle.
+/// `premptictl` as an explicit stop → rewrite → start cycle.
 pub struct HttpServerHandle {
     pub thread: std::thread::JoinHandle<()>,
     server: Arc<tiny_http::Server>,
@@ -71,7 +71,7 @@ pub fn start(
     let server = Arc::new(tiny_http::Server::http(&bind_addr).map_err(|e| {
         anyhow::anyhow!(
             "failed to bind HTTP alert receiver on {bind_addr}: {e}. \
-             Is another coding-agents-kit Falco instance already running? \
+             Is another Prempti Falco instance already running? \
              Either stop it first or set a different `http_port` in \
              falco.coding_agents_plugin.yaml (plugin init_config)."
         )
@@ -87,7 +87,7 @@ pub fn start(
 
     let server_clone = Arc::clone(&server);
     let thread = std::thread::Builder::new()
-        .name("cak-http-server".to_string())
+        .name("prempti-http-server".to_string())
         .spawn(move || run_server(server_clone, &deny_tags, &ask_tags, &seen_tags, &broker))
         .map_err(|e| anyhow::anyhow!("failed to spawn HTTP server thread: {e}"))?;
 

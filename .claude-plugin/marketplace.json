@@ -1,21 +1,21 @@
 {
-  "name": "coding-agents-kit-skills",
+  "name": "prempti-skills",
   "owner": {
     "name": "Leonardo Grasso",
     "email": "me@leonardograsso.com"
   },
   "metadata": {
-    "description": "Skills for coding-agents-kit — runtime security for AI coding agents powered by Falco",
+    "description": "Skills for Prempti — runtime security for AI coding agents powered by Falco",
     "version": "0.1.0"
   },
   "plugins": [
     {
-      "name": "coding-agents-falco-rules",
-      "description": "Author custom Falco rules for coding-agents-kit to control what AI coding agents can do",
+      "name": "prempti-falco-rules",
+      "description": "Author custom Falco rules for Prempti to control what AI coding agents can do",
       "source": "./",
       "strict": false,
       "skills": [
-        "./skills/coding-agents-falco-rules"
+        "./skills/prempti-falco-rules"
       ]
     }
   ]

@@ -135,7 +135,7 @@ This single command:
 2. Clones and builds Falco 0.43.0 from source with patches (~10 min first time, cached after)
 3. Stages all files and produces the MSI installer
 
-Output: `build/out/coding-agents-kit-<version>-windows-<arch>.msi`
+Output: `build/out/prempti-<version>-windows-<arch>.msi`
 
 ### Step-by-Step Build
 
@@ -144,8 +144,8 @@ $env:VCPKG_ROOT = 'C:\path\to\vcpkg'
 
 # 1. Build Rust crates (auto-detects native target)
 cd hooks\claude-code && cargo build --release && cd ..\..
-cd plugins\coding-agent-plugin && cargo build --release && cd ..\..
-cd tools\coding-agents-kit-ctl && cargo build --release && cd ..\..
+cd plugins\coding-agents-plugin && cargo build --release && cd ..\..
+cd tools\premptictl && cargo build --release && cd ..\..
 
 # 2. Build Falco from source (~10 minutes first time, cached after)
 powershell -ExecutionPolicy Bypass -File installers\windows\build-falco.ps1
@@ -166,18 +166,18 @@ powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1 -SkipRus
 
 ## Installing
 
-### Recommended: `Install-CodingAgentsKit.ps1`
+### Recommended: `Install-Prempti.ps1`
 
-The `Install-CodingAgentsKit.ps1` helper (emitted next to the MSI in `build\out\`) is the recommended path. It runs the MSI silently and, if the product is already installed, opens the MSI maintenance UI instead of forcing a silent reinstall:
+The `Install-Prempti.ps1` helper (emitted next to the MSI in `build\out\`) is the recommended path. It runs the MSI silently and, if the product is already installed, opens the MSI maintenance UI instead of forcing a silent reinstall:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build\out\Install-CodingAgentsKit.ps1
+powershell -ExecutionPolicy Bypass -File build\out\Install-Prempti.ps1
 ```
 
 ### Manual `msiexec`
 
 ```powershell
-msiexec /i build\out\coding-agents-kit-<version>-windows-arm64.msi
+msiexec /i build\out\prempti-<version>-windows-arm64.msi
 ```
 
 The MSI runs `postinstall.ps1` automatically via a deferred custom action. No manual follow-up script is required. The post-install step:
@@ -193,8 +193,8 @@ The MSI runs `postinstall.ps1` automatically via a deferred custom action. No ma
 The installer already started the service. Open a **new** terminal (so the updated `PATH` is picked up) and verify:
 
 ```powershell
-coding-agents-kit-ctl status
-coding-agents-kit-ctl health
+premptictl status
+premptictl health
 ```
 
 Expected output: `OK: pipeline healthy (synthetic event → allow)`.
@@ -202,16 +202,16 @@ Expected output: `OK: pipeline healthy (synthetic event → allow)`.
 If the service did not come up (check `ctl status`), start it manually:
 
 ```powershell
-coding-agents-kit-ctl start
+premptictl start
 ```
 
 ### What the installer does
 
-- Deploys binaries, plugin DLL, rules, and scripts to `%LOCALAPPDATA%\coding-agents-kit\`
+- Deploys binaries, plugin DLL, rules, and scripts to `%LOCALAPPDATA%\prempti\`
 - Generates Falco configuration with resolved Windows paths
 - Registers the Claude Code interceptor hook in `%USERPROFILE%\.claude\settings.json`
-- Adds `bin\` to the user `PATH` (persistent, so `coding-agents-kit-ctl` works without full path)
-- Registers auto-start via `HKCU\…\Run\CodingAgentsKit`
+- Adds `bin\` to the user `PATH` (persistent, so `premptictl` works without full path)
+- Registers auto-start via `HKCU\…\Run\Prempti`
 
 ### Uninstalling
 
@@ -220,10 +220,10 @@ Any of the three paths works — the MSI runs `uninstall.ps1` as a deferred cust
 The bundled helper is still the most convenient:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File Uninstall-CodingAgentsKit.ps1
+powershell -ExecutionPolicy Bypass -File Uninstall-Prempti.ps1
 ```
 
-> **Older 0.1.x builds**: MSI packages from before the uninstall custom action was added required the helper script — without it, Apps & Features would leave the Claude Code hook registered and brick Claude Code until `coding-agents-kit-ctl hook remove` was run manually.
+> **Older 0.1.x builds**: MSI packages from before the uninstall custom action was added required the helper script — without it, Apps & Features would leave the Claude Code hook registered and brick Claude Code until `premptictl hook remove` was run manually.
 
 ## Running Tests
 
@@ -243,12 +243,12 @@ cargo test --manifest-path tests/Cargo.toml --test e2e
 ## Directory Layout (installed)
 
 ```
-%LOCALAPPDATA%\coding-agents-kit\
+%LOCALAPPDATA%\prempti\
 ├── bin\
 │   ├── falco.exe                          # Falco rule engine
 │   ├── claude-interceptor.exe             # Claude Code hook
-│   ├── coding-agents-kit-ctl.exe          # Service management CLI
-│   └── coding-agents-kit-launcher.ps1     # Service launcher
+│   ├── premptictl.exe          # Service management CLI
+│   └── prempti-launcher.ps1     # Service launcher
 ├── share\
 │   └── coding_agent.dll                   # Falco plugin (source + extract)
 ├── config\
@@ -273,7 +273,7 @@ cargo test --manifest-path tests/Cargo.toml --test e2e
 
 - **External tools write to stderr**: `cargo`, `cmd.exe`, and `vswhere.exe` write non-fatal output to stderr. Since the build scripts use `$ErrorActionPreference = 'Stop'`, unguarded external calls fail. The scripts use `2>&1 | ForEach-Object { "$_" }` to merge stderr safely. If you add new external tool calls, follow the same pattern.
 
-- **`broker response timeout` / stale pending requests**: If Claude Code tool calls are denied with a broker timeout and Falco logs show `reaping stale pending request`, the alert round-trip is not completing. The most common cause is a misconfigured `http_output.url` in `falco.yaml` (must match the plugin's `http_port`). Run `coding-agents-kit-ctl health` to confirm the pipeline is healthy after starting the service.
+- **`broker response timeout` / stale pending requests**: If Claude Code tool calls are denied with a broker timeout and Falco logs show `reaping stale pending request`, the alert round-trip is not completing. The most common cause is a misconfigured `http_output.url` in `falco.yaml` (must match the plugin's `http_port`). Run `premptictl health` to confirm the pipeline is healthy after starting the service.
 
 - **`basename()` in rules on Windows**: Falco's `basename()` transformer uses POSIX logic (splits on `/`). Use `basename(tool.real_file_path)` (forward slashes, normalized by the plugin) not `basename(tool.file_path)` (raw, may contain backslashes on Windows).
 

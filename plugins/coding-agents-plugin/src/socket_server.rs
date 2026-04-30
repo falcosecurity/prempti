@@ -47,7 +47,7 @@ fn has_live_peer(socket_path: &str) -> std::io::Result<bool> {
 ///
 /// Plugin lifecycle: `Plugin::new()` runs exactly once per Falco process
 /// (config-driven hot-reload is disabled — see `configs/falco.yaml`). All
-/// config changes go through `coding-agents-kit-ctl` as an explicit stop →
+/// config changes go through `premptictl` as an explicit stop →
 /// rewrite → start cycle, so by the time `prepare_listener` is called the
 /// previous instance has already exited and released its listener.
 ///
@@ -62,7 +62,7 @@ fn prepare_listener(socket_path: &str) -> anyhow::Result<UnixListener> {
     if has_live_peer(socket_path).unwrap_or(false) {
         anyhow::bail!(
             "broker socket {socket_path} is already in use by another \
-             coding-agents-kit Falco instance. Stop it first or set a \
+             Prempti Falco instance. Stop it first or set a \
              different `socket_path` in falco.coding_agents_plugin.yaml \
              (plugin init_config) before starting this one."
         );
@@ -93,7 +93,7 @@ pub fn start(
     log::info!("broker listening on {}", socket_path);
 
     std::thread::Builder::new()
-        .name("cak-socket-server".to_string())
+        .name("prempti-socket-server".to_string())
         .spawn(move || run_server(listener, &socket_path, &event_tx, &broker))
         .map_err(|e| anyhow::anyhow!("failed to spawn socket server thread: {e}"))
 }
@@ -104,7 +104,7 @@ mod tests {
 
     fn temp_socket_path(label: &str) -> String {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("cak-sock-{}-{}.sock", std::process::id(), label));
+        let path = dir.join(format!("prempti-sock-{}-{}.sock", std::process::id(), label));
         path.to_string_lossy().replace('\\', "/")
     }
 

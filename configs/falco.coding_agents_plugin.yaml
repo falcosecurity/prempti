@@ -1,15 +1,15 @@
-# Plugin configuration for coding-agents-kit.
+# Plugin configuration for Prempti.
 # Merged into falco.yaml via config_files (append strategy).
 
 plugins:
   - name: coding_agent
-    library_path: ${HOME}/.coding-agents-kit/share/libcoding_agent.so
+    library_path: ${HOME}/.prempti/share/libcoding_agent.so
     init_config:
       # Operational mode: "guardrails" (default) or "monitor".
       # In monitor mode, rules are evaluated and logged but all verdicts resolve as allow.
-      # Changed via: coding-agents-kit-ctl mode <guardrails|monitor>
+      # Changed via: premptictl mode <guardrails|monitor>
       mode: guardrails
-      socket_path: ${HOME}/.coding-agents-kit/run/broker.sock
+      socket_path: ${HOME}/.prempti/run/broker.sock
       http_port: 2802
 
 load_plugins:
@@ -18,9 +18,9 @@ load_plugins:
 # Rules: default ruleset first, then user overrides, seen rule last.
 # Non-existent paths are silently skipped by Falco.
 rules_files:
-  - ${HOME}/.coding-agents-kit/rules/default/coding_agents_rules.yaml
-  - ${HOME}/.coding-agents-kit/rules/user
-  - ${HOME}/.coding-agents-kit/rules/seen.yaml
+  - ${HOME}/.prempti/rules/default/coding_agents_rules.yaml
+  - ${HOME}/.prempti/rules/user
+  - ${HOME}/.prempti/rules/seen.yaml
 
 # Minimum rule priority. Must be "debug" so that the catch-all seen rule
 # (priority: DEBUG) always fires. Without it, verdict resolution breaks.

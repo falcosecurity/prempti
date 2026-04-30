@@ -2,7 +2,7 @@
 
 Falco source + extraction plugin with an embedded broker. Receives tool call events from [interceptors](../../hooks/claude-code/), feeds them to Falco's rule engine, and resolves verdicts (allow/deny/ask) via HTTP alert feedback.
 
-See [SPEC.md](../../docs/plugins/coding-agent-plugin/SPEC.md) for the full specification, including sequence diagrams.
+See [SPEC.md](../../docs/plugins/coding-agents-plugin/SPEC.md) for the full specification, including sequence diagrams.
 
 ## Build
 
@@ -48,7 +48,7 @@ Plugin config via `falco.yaml` → `init_config`:
 ```yaml
 init_config:
   mode: guardrails           # "guardrails" or "monitor"
-  socket_path: ${HOME}/.coding-agents-kit/run/broker.sock
+  socket_path: ${HOME}/.prempti/run/broker.sock
   http_port: 2802
   deny_tags: [coding_agent_deny]
   ask_tags: [coding_agent_ask]
@@ -60,7 +60,7 @@ init_config:
 - **Guardrails** (default): Rules evaluated, verdicts enforced
 - **Monitor**: Rules evaluated and logged, all verdicts resolve as allow
 
-Switch via `coding-agents-kit-ctl mode <guardrails|monitor>`.
+Switch via `premptictl mode <guardrails|monitor>`.
 
 ## Required Falco Configuration
 

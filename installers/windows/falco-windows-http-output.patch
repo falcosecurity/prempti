@@ -28,7 +28,7 @@ index b678374..bec393f 100644
  	include(cpp-httplib)
  endif()
  
-+# HTTP output on Windows (coding-agents-kit)
++# HTTP output on Windows (Prempti)
 +# Bypass curl.cmake (its unconditional include(openssl) fails on Windows).
 +if(WIN32)
 +	find_package(CURL REQUIRED)
@@ -45,7 +45,7 @@ index 5ae5b83..8428f83 100644
  	)
  endif()
  
-+# HTTP output on Windows (coding-agents-kit)
++# HTTP output on Windows (Prempti)
 +# CURL::libcurl imported target propagates CURL_STATICLIB define and
 +# transitive dependencies (crypt32, secur32, etc.) automatically.
 +if(WIN32)

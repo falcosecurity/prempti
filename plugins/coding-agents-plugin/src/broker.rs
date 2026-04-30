@@ -238,7 +238,7 @@ impl Broker {
         let reap_interval = std::time::Duration::from_secs(REAPER_INTERVAL_SECS);
         let ttl = std::time::Duration::from_secs(PENDING_TTL_SECS);
         std::thread::Builder::new()
-            .name("cak-reaper".to_string())
+            .name("prempti-reaper".to_string())
             .spawn(move || {
                 let mut last_reap = Instant::now();
                 while !broker.is_shutdown() {

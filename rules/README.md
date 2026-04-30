@@ -1,6 +1,6 @@
 # Rules
 
-Falco rules for coding-agents-kit. These rules define security policies that govern what coding agents can do.
+Falco rules for Prempti. These rules define security policies that govern what coding agents can do.
 
 ## Structure
 
@@ -16,7 +16,7 @@ rules/
 
 ### `default/coding_agents_rules.yaml`
 
-The default security policies shipped with coding-agents-kit, organized into six sections: working-directory boundary, sensitive paths, sandbox disable, threats (credentials, dangerous commands, exfiltration, supply chain), MCP and skill content, and persistence vectors. The file also defines reusable lists (`sensitive_paths`, `sensitive_file_names`, `shell_startup_files`, `agent_instruction_files`, `env_file_names`, `registry_config_files`) and macros (`is_sensitive_path`, `is_outside_cwd`, `is_write_tool`, `contains_ioc_domain`, `cmd_contains_ioc_domain`) that user rules can extend via `override: append`.
+The default security policies shipped with Prempti, organized into six sections: working-directory boundary, sensitive paths, sandbox disable, threats (credentials, dangerous commands, exfiltration, supply chain), MCP and skill content, and persistence vectors. The file also defines reusable lists (`sensitive_paths`, `sensitive_file_names`, `shell_startup_files`, `agent_instruction_files`, `env_file_names`, `registry_config_files`) and macros (`is_sensitive_path`, `is_outside_cwd`, `is_write_tool`, `contains_ioc_domain`, `cmd_contains_ioc_domain`) that user rules can extend via `override: append`.
 
 This file is **overwritten on upgrade** — do not edit it directly. To customize behavior, add rules in the `user/` directory instead.
 

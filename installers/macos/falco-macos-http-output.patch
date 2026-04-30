@@ -6,7 +6,7 @@ index b678374..9f358e5 100644
  	include(cpp-httplib)
  endif()
 
-+# HTTP output on macOS (coding-agents-kit)
++# HTTP output on macOS (Prempti)
 +if(APPLE)
 +	include(openssl)
 +	include(curl)
@@ -23,7 +23,7 @@ index 5ae5b83..32b7178 100644
  	)
  endif()
 
-+# HTTP output on macOS (coding-agents-kit)
++# HTTP output on macOS (Prempti)
 +if(APPLE)
 +	target_sources(falco_application PRIVATE outputs_http.cpp)
 +	list(APPEND FALCO_INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}")

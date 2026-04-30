@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Build the coding-agents-kit Windows MSI package.
+    Build the Prempti Windows MSI package.
 
 .DESCRIPTION
     Compiles Rust crates, builds Falco from source (if needed), stages
@@ -82,7 +82,7 @@ $UtilCABinaryRef = switch ($Arch) {
     default { 'Wix4UtilCA_X64' }
 }
 
-Write-Host "coding-agents-kit Windows Package Builder"
+Write-Host "Prempti Windows Package Builder"
 Write-Host "  Version:  $Version"
 Write-Host "  Arch:     $Arch"
 Write-Host "  Target:   $RustTarget"
@@ -119,8 +119,8 @@ if (-not $SkipRustBuild) {
 
     $crates = @(
         @{ Path = 'hooks\claude-code';              Name = 'Interceptor' },
-        @{ Path = 'plugins\coding-agent-plugin';    Name = 'Plugin' },
-        @{ Path = 'tools\coding-agents-kit-ctl';    Name = 'CTL tool' }
+        @{ Path = 'plugins\coding-agents-plugin';    Name = 'Plugin' },
+        @{ Path = 'tools\premptictl';    Name = 'CTL tool' }
     )
     foreach ($crate in $crates) {
         Write-Host "  Building $($crate.Name)..."
@@ -181,10 +181,10 @@ function Find-Artifact([string]$CrateDir, [string]$FileName) {
 }
 
 Copy-Item (Find-Artifact (Join-Path $RootDir 'hooks\claude-code') 'claude-interceptor.exe') (Join-Path $StageDir 'bin\') -Force
-Copy-Item (Find-Artifact (Join-Path $RootDir 'tools\coding-agents-kit-ctl') 'coding-agents-kit-ctl.exe') (Join-Path $StageDir 'bin\') -Force
-Copy-Item (Find-Artifact (Join-Path $RootDir 'plugins\coding-agent-plugin') 'coding_agent.dll') (Join-Path $StageDir 'share\') -Force
+Copy-Item (Find-Artifact (Join-Path $RootDir 'tools\premptictl') 'premptictl.exe') (Join-Path $StageDir 'bin\') -Force
+Copy-Item (Find-Artifact (Join-Path $RootDir 'plugins\coding-agents-plugin') 'coding_agent.dll') (Join-Path $StageDir 'share\') -Force
 
-Copy-Item (Join-Path $ScriptDir 'coding-agents-kit-launcher.ps1') (Join-Path $StageDir 'bin\') -Force
+Copy-Item (Join-Path $ScriptDir 'prempti-launcher.ps1') (Join-Path $StageDir 'bin\') -Force
 
 # ---------------------------------------------------------------------------
 # Stage rules
@@ -206,7 +206,7 @@ Write-Host "  Staged to: $StageDir"
 # Deterministic ProductCode from version
 # ---------------------------------------------------------------------------
 
-$versionBytes = [System.Text.Encoding]::UTF8.GetBytes("coding-agents-kit-ProductCode-$Version")
+$versionBytes = [System.Text.Encoding]::UTF8.GetBytes("prempti-ProductCode-$Version")
 $sha = [System.Security.Cryptography.SHA256]::Create()
 $hashBytes = $sha.ComputeHash($versionBytes)
 $guidBytes = $hashBytes[0..15]
@@ -223,7 +223,7 @@ $WxsFile = Join-Path $ScriptDir 'Package.wxs'
 $LicenseRtf = Join-Path $ScriptDir 'license.rtf'
 $OutputDir = Join-Path $BuildDir 'out'
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
-$MsiName = "coding-agents-kit-$Version-windows-$Arch.msi"
+$MsiName = "prempti-$Version-windows-$Arch.msi"
 
 Write-Host "Building MSI..."
 
@@ -250,11 +250,11 @@ if ($LASTEXITCODE -ne 0) { throw 'WiX build failed.' }
 # Emit companion uninstall script
 # ---------------------------------------------------------------------------
 
-$uninstallScript = Join-Path $OutputDir 'Uninstall-CodingAgentsKit.ps1'
+$uninstallScript = Join-Path $OutputDir 'Uninstall-Prempti.ps1'
 @"
-# Uninstall coding-agents-kit $Version
+# Uninstall Prempti $Version
 # Run cleanup first: remove hook and auto-start registration
-`$prefix = Join-Path `$env:LOCALAPPDATA 'coding-agents-kit'
+`$prefix = Join-Path `$env:LOCALAPPDATA 'prempti'
 `$cleanup = Join-Path `$prefix 'scripts\uninstall.ps1'
 if (Test-Path `$cleanup) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File `$cleanup -Prefix `$prefix
@@ -269,9 +269,9 @@ Write-Host "Uninstall complete"
 # Emit install helper script (runs MSI + postinstall)
 # ---------------------------------------------------------------------------
 
-$installScript = Join-Path $OutputDir 'Install-CodingAgentsKit.ps1'
+$installScript = Join-Path $OutputDir 'Install-Prempti.ps1'
 @"
-# Install coding-agents-kit $Version
+# Install Prempti $Version
 `$msi = Join-Path `$PSScriptRoot '$MsiName'
 `$productCode = '$ProductCode'
 
@@ -288,11 +288,11 @@ if (`$state -eq 5) {
 if (`$p.ExitCode -ne 0) { Write-Error "MSI install failed (exit `$(`$p.ExitCode))"; exit 1 }
 # postinstall.ps1 runs automatically via the MSI deferred custom action
 # (see installers\windows\Package.wxs). No manual follow-up is required.
-Write-Host "coding-agents-kit installation complete"
+Write-Host "Prempti installation complete"
 "@ | Set-Content $installScript -Encoding UTF8
 
 Write-Host ""
 Write-Host "MSI created: $(Join-Path $OutputDir $MsiName)"
 Write-Host ""
-Write-Host "Install:   powershell -ExecutionPolicy Bypass -File Install-CodingAgentsKit.ps1"
-Write-Host "Uninstall: powershell -ExecutionPolicy Bypass -File Uninstall-CodingAgentsKit.ps1"
+Write-Host "Install:   powershell -ExecutionPolicy Bypass -File Install-Prempti.ps1"
+Write-Host "Uninstall: powershell -ExecutionPolicy Bypass -File Uninstall-Prempti.ps1"

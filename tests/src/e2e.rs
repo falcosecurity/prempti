@@ -72,7 +72,7 @@ pub fn find_plugin_lib() -> Option<PathBuf> {
     // fall back to the legacy per-crate target/ for older checkouts.
     let candidates = [
         root.join("target/release").join(&name),
-        root.join("plugins/coding-agent-plugin/target/release")
+        root.join("plugins/coding-agents-plugin/target/release")
             .join(&name),
     ];
     candidates.into_iter().find(|p| p.exists())
