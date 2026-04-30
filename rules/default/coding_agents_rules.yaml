@@ -731,10 +731,45 @@
     tool.input_command contains "rm -rf"
     or tool.input_command contains "rm -fr"
     or tool.input_command contains "rm --recursive"
-    or tool.input_command contains "sudo rm"
-    or tool.input_command contains "shutdown"
-    or tool.input_command contains "reboot"
-    or tool.input_command contains "halt"
+    or tool.input_command contains "sudo rm "
+    or tool.input_command startswith "shutdown -"
+    or tool.input_command startswith "shutdown now"
+    or tool.input_command startswith "shutdown +"
+    or tool.input_command contains "; shutdown -"
+    or tool.input_command contains "&& shutdown -"
+    or tool.input_command contains "| shutdown -"
+    or tool.input_command startswith "reboot"
+    or tool.input_command contains "; reboot"
+    or tool.input_command contains "&& reboot"
+    or tool.input_command startswith "halt"
+    or tool.input_command contains "; halt"
+    or tool.input_command contains "&& halt"
+
+# Pure search/print commands whose substrings often collide with destructive
+# patterns (e.g. `rg 'rm -rf' file`, `echo "shutdown"`). To stay safe under
+# command chaining, the exemption requires the head command to be one of the
+# listed read-only utilities AND the input to contain no `&&`, `||`, `;`,
+# `$(`, or backticks. Pipes are allowed (the destructive substring still
+# matches when piped — `xargs rm -rf` is a known gap, accepted because the
+# common `rg | head` flow is the dominant case).
+- macro: is_pure_search_or_print_command
+  condition: >
+    (tool.input_command startswith "rg "
+     or tool.input_command startswith "grep "
+     or tool.input_command startswith "ag "
+     or tool.input_command startswith "find "
+     or tool.input_command startswith "git grep "
+     or tool.input_command startswith "git log "
+     or tool.input_command startswith "git show "
+     or tool.input_command startswith "git diff"
+     or tool.input_command startswith "echo "
+     or tool.input_command startswith "printf "
+     or tool.input_command startswith "cat ")
+    and not tool.input_command contains "&&"
+    and not tool.input_command contains "||"
+    and not tool.input_command contains ";"
+    and not tool.input_command contains "$("
+    and not tool.input_command contains "`"
 
 - macro: is_tmp_path
   condition: >
@@ -993,7 +1028,7 @@
     (which also appear in prose and unrelated tool names like "graceful
     shutdown" comments). Asks rather than denies because the substring match
     cannot distinguish a build cleanup from a destructive operation.
-  condition: is_bash and is_likely_destructive_command
+  condition: is_bash and is_likely_destructive_command and not is_pure_search_or_print_command
   output: >
     Falco requires confirmation before a potentially destructive shell command (%tool.input_command)
   priority: WARNING
