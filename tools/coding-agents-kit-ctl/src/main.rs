@@ -439,7 +439,7 @@ const RUN_VALUE_NAME: &str = "CodingAgentsKit";
 
 #[cfg(target_os = "windows")]
 fn is_falco_running() -> bool {
-    falco_pids().is_some()
+    installed_falco_pids(&default_prefix()).is_some()
 }
 
 #[cfg(target_os = "windows")]
@@ -447,27 +447,75 @@ fn is_service_running() -> bool {
     is_falco_running()
 }
 
-/// Return the list of running `falco.exe` PIDs, or `None` on error / no match.
-/// Uses CSV output (`/FO CSV /NH`) so the parser is robust against localized
-/// header text in non-English Windows installations.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn installed_falco_path(prefix: &Path) -> PathBuf {
+    prefix.join("bin").join("falco.exe")
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn normalize_windows_path_for_compare(path: &str) -> String {
+    let mut normalized = path.replace('/', "\\");
+    if let Some(rest) = normalized.strip_prefix(r"\\?\UNC\") {
+        normalized = format!(r"\\{rest}");
+    } else if let Some(rest) = normalized.strip_prefix(r"\\?\") {
+        normalized = rest.to_string();
+    }
+    while normalized.ends_with('\\') && normalized.len() > 3 {
+        normalized.pop();
+    }
+    normalized
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn windows_paths_equal(candidate: &str, target: &Path) -> bool {
+    let candidate = normalize_windows_path_for_compare(candidate);
+    let target = normalize_windows_path_for_compare(&target.display().to_string());
+    candidate.eq_ignore_ascii_case(&target)
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn falco_pids_from_process_json(text: &str, target: &Path) -> Vec<u32> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return Vec::new();
+    };
+    match value {
+        serde_json::Value::Array(rows) => rows
+            .iter()
+            .filter_map(|row| falco_pid_from_process_json_value(row, target))
+            .collect(),
+        row => falco_pid_from_process_json_value(&row, target)
+            .into_iter()
+            .collect(),
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn falco_pid_from_process_json_value(row: &serde_json::Value, target: &Path) -> Option<u32> {
+    let pid = row.get("Id")?.as_u64()?;
+    let pid = u32::try_from(pid).ok()?;
+    let path = row.get("Path")?.as_str()?;
+    windows_paths_equal(path, target).then_some(pid)
+}
+
+/// Return PIDs for the Falco binary installed under `prefix`, or `None` on
+/// query error / no match. This deliberately scopes by executable path so the
+/// fallback stop path does not kill unrelated Falco processes.
 #[cfg(target_os = "windows")]
-fn falco_pids() -> Option<Vec<u32>> {
-    let out = Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq falco.exe", "/FO", "CSV", "/NH"])
+fn installed_falco_pids(prefix: &Path) -> Option<Vec<u32>> {
+    let target = installed_falco_path(prefix);
+    let script = r#"$ErrorActionPreference='SilentlyContinue'; @(Get-Process -Name falco -ErrorAction SilentlyContinue | ForEach-Object { try { if ($_.Path) { [pscustomobject]@{Id=$_.Id; Path=$_.Path} } } catch {} }) | ConvertTo-Json -Compress"#;
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-Command", script])
         .output()
         .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    // Each line is: "falco.exe","<pid>","<session>","<session#>","<mem>"
-    let pids: Vec<u32> = text
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split(',').collect();
-            if fields.len() < 2 {
-                return None;
-            }
-            fields[1].trim_matches('"').parse::<u32>().ok()
-        })
-        .collect();
+    if !out.status.success() {
+        return None;
+    }
+    let pids = falco_pids_from_process_json(&String::from_utf8_lossy(&out.stdout), &target);
     if pids.is_empty() {
         None
     } else {
@@ -526,7 +574,7 @@ fn build_run_key_value(launcher: &Path, prefix: &Path) -> String {
 
 #[cfg(target_os = "windows")]
 fn service_start(prefix: &PathBuf) {
-    if is_falco_running() {
+    if installed_falco_pids(prefix).is_some() {
         println!("Service already running.");
         return;
     }
@@ -572,7 +620,7 @@ fn service_start(prefix: &PathBuf) {
     let mut started = false;
     for _ in 0..6 {
         std::thread::sleep(std::time::Duration::from_millis(500));
-        if is_falco_running() {
+        if installed_falco_pids(prefix).is_some() {
             started = true;
             break;
         }
@@ -585,8 +633,8 @@ fn service_start(prefix: &PathBuf) {
 }
 
 #[cfg(target_os = "windows")]
-fn legacy_falco_kill_fallback(warn_hook: bool) {
-    if let Some(pids) = falco_pids() {
+fn installed_falco_kill_fallback(prefix: &Path, warn_hook: bool) {
+    if let Some(pids) = installed_falco_pids(prefix) {
         for pid in &pids {
             let _ = Command::new("taskkill")
                 .args(["/F", "/PID", &pid.to_string()])
@@ -594,7 +642,7 @@ fn legacy_falco_kill_fallback(warn_hook: bool) {
                 .stderr(std::process::Stdio::null())
                 .status();
         }
-        println!("Service stopped (legacy fallback).");
+        println!("Service stopped (fallback).");
     } else {
         println!("Service not running.");
     }
@@ -628,9 +676,9 @@ fn service_stop(warn_hook: bool) {
 
     let Some(pid) = supervisor_pid else {
         // No supervisor (legacy install, or stale socket from a hard
-        // kill). Fall back to the old taskkill path — at least any
-        // stray falco.exe from this install gets cleaned up.
-        legacy_falco_kill_fallback(warn_hook);
+        // kill). Fall back to a path-scoped taskkill for this install's
+        // Falco binary.
+        installed_falco_kill_fallback(&prefix, warn_hook);
         return;
     };
 
@@ -670,7 +718,7 @@ fn service_stop(warn_hook: bool) {
         // sweep up any leftover falco.exe from this install. Without
         // this, `Service stopped.` would be a lie and the next
         // `ctl start` would refuse because Falco is still bound.
-        legacy_falco_kill_fallback(warn_hook);
+        installed_falco_kill_fallback(&prefix, warn_hook);
         return;
     }
 
@@ -741,7 +789,8 @@ fn parse_tasklist_row(row: &str) -> Option<(u32, String, String)> {
 
 #[cfg(target_os = "windows")]
 fn service_status() {
-    match falco_pids() {
+    let prefix = default_prefix();
+    match installed_falco_pids(&prefix) {
         Some(pids) => {
             println!("Service running.");
             for pid in &pids {
@@ -1802,6 +1851,45 @@ mod windows_command_tests {
             ps_single_quote_escape(r#"C:\Users\test\"path\""#),
             r#"C:\Users\test\"path\""#
         );
+    }
+
+    #[test]
+    fn windows_path_compare_handles_case_slashes_and_extended_prefix() {
+        let target = PathBuf::from(r"C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe");
+        assert!(windows_paths_equal(
+            "c:/users/me/appdata/local/coding-agents-kit/bin/falco.exe",
+            &target
+        ));
+        assert!(windows_paths_equal(
+            r"\\?\C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe",
+            &target
+        ));
+        assert!(!windows_paths_equal(r"C:\Other\falco.exe", &target));
+    }
+
+    #[test]
+    fn falco_process_json_filters_to_installed_path() {
+        let target = PathBuf::from(r"C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe");
+        let json = serde_json::json!([
+            {"Id": 101, "Path": r"C:\Other\falco.exe"},
+            {"Id": 202, "Path": r"C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe"},
+            {"Id": 303, "Path": "C:/Users/Me/AppData/Local/coding-agents-kit/bin/falco.exe"},
+            {"Id": 404, "Path": r"\\?\C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe"},
+            {"Id": 505, "Path": serde_json::Value::Null},
+            {"Id": "606", "Path": r"C:\Users\Me\AppData\Local\coding-agents-kit\bin\falco.exe"}
+        ])
+        .to_string();
+        assert_eq!(
+            falco_pids_from_process_json(&json, &target),
+            vec![202, 303, 404]
+        );
+    }
+
+    #[test]
+    fn falco_process_json_accepts_single_object() {
+        let target = PathBuf::from(r"D:\cak\bin\falco.exe");
+        let json = serde_json::json!({"Id": 42, "Path": r"d:\CAK\bin\falco.exe"}).to_string();
+        assert_eq!(falco_pids_from_process_json(&json, &target), vec![42]);
     }
 
     #[test]

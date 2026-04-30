@@ -28,7 +28,19 @@ if (Test-Path $ctlExe) {
     & $ctlExe stop 2>$null | Out-Null
 }
 
-$falcoProcs = Get-Process -Name falco -ErrorAction SilentlyContinue
+# Path-scoped fallback kill: only target falco.exe instances launched from
+# THIS install's bin\. Without the path filter, an unrelated Falco from
+# another project (dev build, separate install, …) could be terminated by
+# our uninstall. Mirrors the path-scoped detection used by ctl and
+# postinstall.ps1.
+$installedFalco = Join-Path $Prefix 'bin\falco.exe'
+$falcoProcs = @(Get-Process -Name falco -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+        if ($_.Path -and ($_.Path -eq $installedFalco)) { $_ }
+    } catch {
+        # Access denied (other-user-owned process): not ours, skip.
+    }
+})
 if ($falcoProcs) {
     Write-Host "Force-stopping leftover Falco..."
     $falcoProcs | Stop-Process -Force
