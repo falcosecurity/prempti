@@ -625,11 +625,16 @@ fn service_stop(warn_hook: bool) {
     // Live supervisor — ask it to shut down and wait for it to exit.
     // Cleanup (graceful Falco stop, drain pipes, hook remove, close
     // logs) runs inside the supervisor before its process exits.
-    if let Err(e) = daemon::control::send_command(&sock, "STOP") {
-        eprintln!("warning: failed to send STOP to supervisor: {e}");
-    }
+    let stop_delivered = match daemon::control::send_command(&sock, "STOP") {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("warning: failed to send STOP to supervisor: {e}");
+            false
+        }
+    };
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut escalated = false;
     while daemon::process_alive(pid) {
         if std::time::Instant::now() >= deadline {
             eprintln!("supervisor did not exit in 30s; force killing pid {pid}");
@@ -638,9 +643,23 @@ fn service_stop(warn_hook: bool) {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status();
+            escalated = true;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    if escalated || !stop_delivered {
+        // The supervisor's graceful shutdown chain (graceful Falco stop,
+        // drain pipes, hook remove) didn't run — either we had to
+        // taskkill it after a 30s wait, or the STOP command never made
+        // it to the listener (supervisor crashed/wedged between the
+        // STATUS probe and the STOP call). Child Falco may be orphaned;
+        // sweep up any leftover falco.exe from this install. Without
+        // this, `Service stopped.` would be a lie and the next
+        // `ctl start` would refuse because Falco is still bound.
+        legacy_falco_kill_fallback(warn_hook);
+        return;
     }
 
     println!("Service stopped.");
