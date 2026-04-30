@@ -376,7 +376,7 @@ Windows has no user-level systemd or launchd equivalent, so coding-agents-kit us
 | `disable` | `systemctl --user disable` | `launchctl unload -w <plist>` | `reg delete <Run key>` |
 | `status` | `systemctl --user status` | `launchctl list <label>` | `tasklist /FI "IMAGENAME eq falco.exe"` |
 
-All three platforms share `ctl health` (synthetic event through the full pipeline), `ctl hook add / remove / status`, `ctl mode`, and `ctl logs` with per-OS tail implementations (`tail -f` vs `Get-Content -Wait -Tail 50`).
+All three platforms share `ctl health` (synthetic event through the full pipeline), `ctl hook add / remove / status`, `ctl mode`, and `ctl logs` with per-OS tail implementations (`tail -n N [-f]` on Linux/macOS vs `Get-Content -Tail N [-Wait]` on Windows). `--tail` defaults to 100 lines; pass an explicit value to override.
 
 ## Technology Stack
 

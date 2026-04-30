@@ -65,14 +65,14 @@ non-managed setups. Only one supervisor at a time per prefix because
 ### Viewing Logs
 
 ```bash
-coding-agents-kit-ctl logs                 # Print Falco stdout log, exit
-coding-agents-kit-ctl logs --tail=100      # Print last 100 lines, exit
-coding-agents-kit-ctl logs -f              # Print full log, then stream new output
-coding-agents-kit-ctl logs -f --tail=100   # Print last 100 lines, then stream
+coding-agents-kit-ctl logs                 # Print last 100 lines of Falco stdout, exit
+coding-agents-kit-ctl logs --tail=500      # Override the default — print last 500 lines
+coding-agents-kit-ctl logs -f              # Print last 100 lines, then stream new output
+coding-agents-kit-ctl logs -f --tail=20    # Print last 20 lines, then stream
 coding-agents-kit-ctl logs --err [flags]   # Same, but against the stderr log
 ```
 
-`logs` defaults to a snapshot-and-exit (like `kubectl logs` / `docker logs`). Pass `-f` / `--follow` to stream. `--tail=N` limits the initial output. The `--err` flag targets `falco.err` instead of `falco.log`.
+`logs` defaults to a snapshot-and-exit (like `kubectl logs` / `docker logs`) of the **last 100 lines**. Pass `-f` / `--follow` to stream new output afterwards. `--tail=N` overrides the line count (use a large value if you want the entire file). The `--err` flag targets `falco.err` instead of `falco.log`.
 
 ## Service Lifecycle
 

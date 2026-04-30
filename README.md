@@ -147,7 +147,7 @@ coding-agents-kit-ctl mode guardrails
 # Monitor mode — all tool calls proceed; verdicts are only logged
 coding-agents-kit-ctl mode monitor
 
-# View logs (snapshot). Add -f to follow, --tail=N to limit.
+# View logs. Defaults to the last 100 lines; pass -f to follow, --tail=N to override.
 coding-agents-kit-ctl logs
 
 # Temporarily disable interception (tool calls proceed unmonitored)

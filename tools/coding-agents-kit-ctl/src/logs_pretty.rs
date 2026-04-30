@@ -1443,7 +1443,10 @@ mod tests {
         assert!(footer[1].contains("─"));
         let body = &footer[2];
         // Form: "coding-agents-kit-ctl: sessions N · events N (● allow N · ⊙ ask N · ⊘ deny N)"
-        assert!(body.contains("coding-agents-kit-ctl:"), "tool prefix: {body}");
+        assert!(
+            body.contains("coding-agents-kit-ctl:"),
+            "tool prefix: {body}"
+        );
         assert!(body.contains("sessions "));
         assert!(body.contains("events "));
         assert!(body.contains("(● allow "));
