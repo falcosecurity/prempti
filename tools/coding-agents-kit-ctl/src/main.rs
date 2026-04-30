@@ -475,6 +475,15 @@ fn falco_pids() -> Option<Vec<u32>> {
     }
 }
 
+/// Escape a string for inclusion in a PowerShell single-quoted literal.
+/// PowerShell's only escape inside `'...'` is doubling the apostrophe:
+/// `O'Brien` becomes `O''Brien`. Backslashes and double quotes are
+/// preserved verbatim, which is what we want for Windows paths.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn ps_single_quote_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 /// Render the PowerShell `-Command` string used by `ctl start` on Windows.
 ///
 /// `-Prefix` must be passed explicitly: the MSI supports a custom install
@@ -484,20 +493,23 @@ fn falco_pids() -> Option<Vec<u32>> {
 /// then fails to find ctl.exe under a non-default prefix.
 ///
 /// Path arguments are pre-wrapped in `"..."` inside the single-quoted
-/// array elements. `Start-Process -ArgumentList` joins the array with
-/// bare spaces and does NOT quote elements that contain spaces, so a
-/// path like `C:\Program Files\Foo\launcher.ps1` would otherwise be
-/// split into `C:\Program` and `Files\Foo\launcher.ps1` by the
-/// receiving powershell. The embedded double quotes survive the
-/// single-quoted PowerShell literal and reach the spawned process intact.
+/// array elements and any embedded `'` is doubled. Two layers of
+/// PowerShell parsing apply: this whole format string is the value of
+/// `powershell -Command`, and `Start-Process -ArgumentList` then joins
+/// the array with bare spaces (it does NOT auto-quote elements
+/// containing spaces). Without the outer single-quote escape, a path
+/// like `C:\Users\O'Brien\bin\launcher.ps1` would terminate the
+/// PowerShell literal early. Without the inner double quotes, a path
+/// like `C:\Program Files\Foo\launcher.ps1` would be split on the
+/// space by the receiving powershell.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn build_start_powershell_command(launcher: &Path, prefix: &Path) -> String {
     format!(
         "Start-Process -FilePath 'powershell.exe' -ArgumentList @(\
 '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',\
 '-File','\"{}\"','-Prefix','\"{}\"') -WindowStyle Hidden",
-        launcher.display(),
-        prefix.display()
+        ps_single_quote_escape(&launcher.display().to_string()),
+        ps_single_quote_escape(&prefix.display().to_string()),
     )
 }
 
@@ -1757,6 +1769,38 @@ mod windows_command_tests {
         assert!(
             cmd.contains("'-Prefix','\"C:/Program Files/Foo\"'"),
             "path-with-spaces -Prefix not quoted: {cmd}"
+        );
+    }
+
+    #[test]
+    fn start_command_escapes_apostrophes_in_paths() {
+        // PowerShell single-quoted strings escape `'` by doubling it.
+        // A user named O'Brien (or an INSTALLDIR path containing `'`)
+        // would otherwise terminate the surrounding `'...'` literal
+        // before Start-Process ever runs.
+        let launcher = PathBuf::from("C:/Users/O'Brien/bin/launcher.ps1");
+        let prefix = PathBuf::from("C:/Users/O'Brien");
+        let cmd = build_start_powershell_command(&launcher, &prefix);
+        assert!(
+            cmd.contains("'-File','\"C:/Users/O''Brien/bin/launcher.ps1\"'"),
+            "apostrophe not escaped in -File: {cmd}"
+        );
+        assert!(
+            cmd.contains("'-Prefix','\"C:/Users/O''Brien\"'"),
+            "apostrophe not escaped in -Prefix: {cmd}"
+        );
+    }
+
+    #[test]
+    fn ps_single_quote_escape_doubles_apostrophes() {
+        assert_eq!(ps_single_quote_escape(""), "");
+        assert_eq!(ps_single_quote_escape("plain"), "plain");
+        assert_eq!(ps_single_quote_escape("O'Brien"), "O''Brien");
+        assert_eq!(ps_single_quote_escape("a'b'c"), "a''b''c");
+        // Backslashes and double quotes are NOT special inside `'...'`.
+        assert_eq!(
+            ps_single_quote_escape(r#"C:\Users\test\"path\""#),
+            r#"C:\Users\test\"path\""#
         );
     }
 
