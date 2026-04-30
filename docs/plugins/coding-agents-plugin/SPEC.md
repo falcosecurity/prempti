@@ -127,6 +127,7 @@ Implements `ExtractPlugin` with per-event caching via `ExtractContext`.
 |-------|------|--------|
 | `correlation.id` | u64 | Broker-assigned monotonic counter (from payload header) |
 | `agent.name` | string | Wire protocol `agent_name` field |
+| `agent.os` | string | Compile-time `cfg!(target_os)` — `linux`, `macos`, `windows`, or `unknown` (static per build, not parsed from the payload) |
 | `agent.hook_event_name` | string | `event.hook_event_name` |
 | `agent.session_id` | string | `event.session_id` |
 | `agent.permission_mode` | string | `event.permission_mode` — session permission mode reported by the agent |

@@ -85,6 +85,7 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 |-------|------|-------------|
 | `correlation.id` | u64 | Broker-assigned unique ID for this event (monotonic counter, always > 0) |
 | `agent.name` | string | Coding agent identifier (e.g., `claude_code`) |
+| `agent.os` | string | Host OS — `linux`, `macos`, `windows`, or `unknown` (static per build, derived from `cfg!(target_os)`) |
 | `agent.hook_event_name` | string | Lifecycle hook type (e.g., `PreToolUse`) |
 | `agent.session_id` | string | Session identifier |
 | `agent.cwd` | string | Working directory, raw from Claude Code JSON |

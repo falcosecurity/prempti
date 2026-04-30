@@ -726,6 +726,12 @@
 # development workflows: rm -rf is common in cleanup scripts and build
 # tooling; "shutdown"/"reboot"/"halt" appear in prose, comments, and
 # unrelated tool names. Ask rather than deny.
+# Likely-destructive commands. shutdown/reboot/halt require care:
+#   - bare 'shutdown' is mostly echo prose — match only with real flags
+#     or via the systemd / sudo / absolute-path wrappers.
+#   - 'reboot' and 'halt' are valid bare commands — match them in
+#     command-position contexts (start of line, after `;`/`&&`) and via
+#     the same wrappers.
 - macro: is_likely_destructive_command
   condition: >
     tool.input_command contains "rm -rf"
@@ -736,14 +742,25 @@
     or tool.input_command startswith "shutdown now"
     or tool.input_command startswith "shutdown +"
     or tool.input_command contains "; shutdown -"
+    or tool.input_command contains "; shutdown now"
     or tool.input_command contains "&& shutdown -"
+    or tool.input_command contains "&& shutdown now"
     or tool.input_command contains "| shutdown -"
+    or tool.input_command contains "/sbin/shutdown"
+    or tool.input_command contains "sudo shutdown"
+    or tool.input_command contains "systemctl poweroff"
     or tool.input_command startswith "reboot"
     or tool.input_command contains "; reboot"
     or tool.input_command contains "&& reboot"
+    or tool.input_command contains "/sbin/reboot"
+    or tool.input_command contains "sudo reboot"
+    or tool.input_command contains "systemctl reboot"
     or tool.input_command startswith "halt"
     or tool.input_command contains "; halt"
     or tool.input_command contains "&& halt"
+    or tool.input_command contains "/sbin/halt"
+    or tool.input_command contains "sudo halt"
+    or tool.input_command contains "systemctl halt"
 
 # Pure search/print commands whose substrings often collide with destructive
 # patterns (e.g. `rg 'rm -rf' file`, `echo "shutdown"`). To stay safe under
@@ -1985,11 +2002,17 @@
 - macro: is_prempti_install_path
   condition: >
     (agent.os in (linux, macos) and tool.real_file_path contains "/.prempti/")
-    or (agent.os = "windows" and tool.real_file_path contains "/prempti/")
+    or (agent.os = "windows"
+        and tool.real_file_path icontains "/AppData/Local/prempti/")
 
+# Claude Code reads both settings.json and settings.local.json from
+# ~/.claude/ (and from project-level .claude/) with equal priority — hooks
+# in either file fire. Match both so the self-protection deny can't be
+# sidestepped by writing to the .local variant.
 - macro: is_claude_settings_path
   condition: >
-    tool.real_file_path contains "/.claude/settings.json"
+    tool.real_file_path endswith "/.claude/settings.json"
+    or tool.real_file_path endswith "/.claude/settings.local.json"
 
 - rule: Deny writes under Prempti install prefix
   desc: >
