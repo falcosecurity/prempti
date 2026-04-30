@@ -565,57 +565,74 @@ fn service_start(prefix: &PathBuf) {
 }
 
 #[cfg(target_os = "windows")]
+fn legacy_falco_kill_fallback(warn_hook: bool) {
+    if let Some(pids) = falco_pids() {
+        for pid in &pids {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        println!("Service stopped (legacy fallback).");
+    } else {
+        println!("Service not running.");
+    }
+    if warn_hook {
+        hook::warn_if_still_registered();
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn service_stop(warn_hook: bool) {
     let prefix = default_prefix();
     let sock = daemon::control::supervisor_socket_path(&prefix);
 
-    if !sock.exists() {
-        // No supervisor running. Fall back to a hard kill on any stray
-        // `falco.exe` from this install (legacy installs without the
-        // supervisor, or a broken state with the daemon already gone).
-        if let Some(pids) = falco_pids() {
-            for pid in &pids {
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string()])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
+    // Treat the supervisor as live only if a STATUS round-trip works.
+    // The socket file alone is not a reliable signal — the supervisor
+    // can be SIGKILLed / TerminateProcess'd without running its Drop
+    // path, leaving a stale `supervisor.sock` behind. Probing for an
+    // actual listener (and parsing its pid out of the STATUS response)
+    // is the only way to know we have something to send STOP to.
+    let supervisor_pid = if sock.exists() {
+        match daemon::control::send_command(&sock, "STATUS") {
+            Ok(r) => daemon::control::parse_supervisor_pid(&r),
+            Err(_) => {
+                let _ = std::fs::remove_file(&sock);
+                None
             }
-            println!("Service stopped (legacy fallback).");
-        } else {
-            println!("Service not running.");
         }
-        if warn_hook {
-            hook::warn_if_still_registered();
-        }
+    } else {
+        None
+    };
+
+    let Some(pid) = supervisor_pid else {
+        // No supervisor (legacy install, or stale socket from a hard
+        // kill). Fall back to the old taskkill path — at least any
+        // stray falco.exe from this install gets cleaned up.
+        legacy_falco_kill_fallback(warn_hook);
         return;
-    }
+    };
 
-    // Identify the supervisor PID before sending STOP so we can poll for
-    // its exit. The supervisor will run its own cleanup (TerminateProcess
-    // on Falco, drain stdout/stderr, hook remove, close logs) before exit.
-    let supervisor_pid = daemon::control::send_command(&sock, "STATUS")
-        .ok()
-        .and_then(|r| daemon::control::parse_supervisor_pid(&r));
-
+    // Live supervisor — ask it to shut down and wait for it to exit.
+    // Cleanup (graceful Falco stop, drain pipes, hook remove, close
+    // logs) runs inside the supervisor before its process exits.
     if let Err(e) = daemon::control::send_command(&sock, "STOP") {
         eprintln!("warning: failed to send STOP to supervisor: {e}");
     }
 
-    if let Some(pid) = supervisor_pid {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while daemon::process_alive(pid) {
-            if std::time::Instant::now() >= deadline {
-                eprintln!("supervisor did not exit in 30s; force killing pid {pid}");
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string()])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while daemon::process_alive(pid) {
+        if std::time::Instant::now() >= deadline {
+            eprintln!("supervisor did not exit in 30s; force killing pid {pid}");
+            let _ = Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            break;
         }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
     println!("Service stopped.");
