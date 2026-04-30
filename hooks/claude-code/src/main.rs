@@ -397,14 +397,39 @@ mod tests {
     /// AF_UNIX connection) before we try to half-close ours. macOS reports
     /// ENOTCONN here; Linux generally accepts the shutdown silently. Either
     /// way, our wrapper returns Ok.
+    ///
+    /// Skips on EPERM: sandboxed test environments (Landlock, restricted
+    /// seccomp) may refuse `socketpair()` or `write()` on AF_UNIX. The
+    /// pure-logic tests above already exercise the wrapper for every
+    /// tolerated `ErrorKind`; this one is just real-OS confirmation.
     #[test]
     fn shutdown_on_disconnected_unix_pair_is_tolerated() {
         use std::io::Write as _;
         use std::os::unix::net::UnixStream;
-        let (a, b) = UnixStream::pair().expect("UnixStream::pair");
+
+        let (a, b) = match UnixStream::pair() {
+            Ok(p) => p,
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                eprintln!(
+                    "[skip shutdown_on_disconnected_unix_pair_is_tolerated] \
+                     AF_UNIX pair denied: {e}"
+                );
+                return;
+            }
+            Err(e) => panic!("UnixStream::pair: {e}"),
+        };
         // Write something so the response is buffered on `a`'s read side
         // even after `b` is gone — mirrors the production race.
-        (&b).write_all(b"hello\n").unwrap();
+        if let Err(e) = (&b).write_all(b"hello\n") {
+            if e.kind() == io::ErrorKind::PermissionDenied {
+                eprintln!(
+                    "[skip shutdown_on_disconnected_unix_pair_is_tolerated] \
+                     AF_UNIX write denied: {e}"
+                );
+                return;
+            }
+            panic!("write_all: {e}");
+        }
         drop(b);
         let r = tolerate_disconnected_shutdown(a.shutdown(Shutdown::Write));
         assert!(r.is_ok(), "expected tolerance, got {r:?}");
