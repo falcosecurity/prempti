@@ -4,24 +4,9 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'output/**'
-      - 'LICENSE'
-      - '.claude-plugin/**'
-      - 'skills/**'
-      - 'TODOs.md'
+
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'output/**'
-      - 'LICENSE'
-      - '.claude-plugin/**'
-      - 'skills/**'
-      - 'TODOs.md'
 
 env:
   CARGO_TERM_COLOR: always
