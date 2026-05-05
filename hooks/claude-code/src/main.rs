@@ -28,7 +28,7 @@ use std::io::{self, BufRead, Read, Write};
 #[cfg(unix)]
 use std::net::Shutdown;
 use std::process;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -181,14 +181,6 @@ fn get_timeout() -> Duration {
 // Socket communication
 // ---------------------------------------------------------------------------
 
-/// Compute remaining time from a deadline. Returns Err if expired.
-fn remaining_timeout(start: Instant, timeout: Duration) -> Result<Duration, String> {
-    timeout
-        .checked_sub(start.elapsed())
-        .filter(|d| !d.is_zero())
-        .ok_or_else(|| "broker response timeout".to_string())
-}
-
 /// Translate a `shutdown(Write)` result into the interceptor's String error.
 /// Tolerates the "peer already disconnected" family because a fast broker
 /// can read the newline-terminated request, write its response, and drop
@@ -213,8 +205,6 @@ fn tolerate_disconnected_shutdown(result: io::Result<()>) -> Result<(), String> 
 
 /// Connect to broker, send request, receive response.
 fn communicate(socket_path: &str, request: &[u8], timeout: Duration) -> Result<Response, String> {
-    let start = Instant::now();
-
     #[cfg(unix)]
     let stream = std::os::unix::net::UnixStream::connect(socket_path)
         .map_err(|e| format!("broker unavailable: {e}"))?;
@@ -222,11 +212,22 @@ fn communicate(socket_path: &str, request: &[u8], timeout: Duration) -> Result<R
     let stream = uds_windows::UnixStream::connect(socket_path)
         .map_err(|e| format!("broker unavailable: {e}"))?;
 
-    // Send request.
-    let remaining = remaining_timeout(start, timeout)?;
+    // Set both timeouts on the freshly-connected socket BEFORE any I/O.
+    // macOS rejects setsockopt(SO_*TIMEO) with EINVAL once the peer has
+    // closed: xnu's unp_disconnect calls soisdisconnected on us, which
+    // sets SS_CANTRCVMORE | SS_CANTSENDMORE, and sosetoptlock then
+    // refuses any further setsockopt. Under load the broker's
+    // resolve → shutdown(Both) → drop sequence can land before the
+    // interceptor reaches a post-write set_read_timeout, which is what
+    // produced the `set timeout: Invalid argument (os error 22)`
+    // failures observed in production.
     stream
-        .set_write_timeout(Some(remaining))
+        .set_write_timeout(Some(timeout))
         .map_err(|e| format!("set timeout: {e}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| format!("set timeout: {e}"))?;
+
     (&stream)
         .write_all(request)
         .map_err(|e| format!("broker write failed: {e}"))?;
@@ -237,12 +238,6 @@ fn communicate(socket_path: &str, request: &[u8], timeout: Duration) -> Result<R
     // from writing the verdict back to the interceptor.
     #[cfg(unix)]
     tolerate_disconnected_shutdown(stream.shutdown(Shutdown::Write))?;
-
-    // Receive response with cumulative timeout and size limit.
-    let remaining = remaining_timeout(start, timeout)?;
-    stream
-        .set_read_timeout(Some(remaining))
-        .map_err(|e| format!("set timeout: {e}"))?;
 
     let mut line = String::new();
     io::BufReader::new((&stream).take(RESPONSE_MAX))
