@@ -173,6 +173,16 @@ fn run_server(
 
         match listener.accept() {
             Ok((stream, _)) => {
+                // macOS (and BSDs) inherit the listener's O_NONBLOCK onto
+                // accepted streams; Linux does not. Without this clear,
+                // `set_read_timeout` below is a no-op against `WouldBlock`
+                // and the first read of any request whose bytes haven't
+                // fully landed in the kernel buffer yet fails immediately,
+                // dropping the connection. This is what surfaced as
+                // "broker closed connection" / EPIPE / ENOTCONN on the
+                // interceptor side under load with payloads larger than
+                // the 8 KB Unix-socket sndbuf default.
+                let _ = stream.set_nonblocking(false);
                 let _ = stream.set_read_timeout(Some(CONNECTION_READ_TIMEOUT));
                 if let Err(e) = handle_connection(stream, event_tx, broker) {
                     log::warn!("connection error: {}", e);
