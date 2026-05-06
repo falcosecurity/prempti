@@ -6,9 +6,13 @@
 // matching deny/ask rule's own output template references only a subset of
 // fields.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -320,6 +324,19 @@ fn short_session_id(session_id: &str) -> String {
 // Formatter
 // ---------------------------------------------------------------------------
 
+/// Metadata for re-rendering a banner at a different terminal width on
+/// resize. The runner pairs these with their position in the most-recent
+/// `process_line` output (see `Formatter::last_banner_meta`) and stores
+/// them in the event buffer; on full repaint, banners are regenerated via
+/// `Formatter::format_banner` so the trailing dashes track the live width
+/// instead of replaying stale padding.
+#[derive(Clone, Debug)]
+pub struct BannerMeta {
+    pub session_id: String,
+    pub color_code: u8,
+    pub name: Option<String>,
+}
+
 pub struct Formatter<R: SessionNameResolver> {
     opts: PrettyOpts,
     home: String,
@@ -332,6 +349,12 @@ pub struct Formatter<R: SessionNameResolver> {
     /// `· since <date>` in the status footer.
     first_event_unix_ms: Option<u64>,
     resolver: R,
+    /// `(line_index, BannerMeta)` pairs for banners emitted by the most
+    /// recent `process_line` call. Indices are positions in the returned
+    /// `Vec<String>`. The runner reads this side-channel to associate
+    /// banner regeneration metadata with each buffered line — without it,
+    /// repainting after a resize would replay the stale-width banner text.
+    last_banner_meta: Vec<(usize, BannerMeta)>,
 }
 
 impl<R: SessionNameResolver> Formatter<R> {
@@ -346,7 +369,22 @@ impl<R: SessionNameResolver> Formatter<R> {
             counters: Counters::default(),
             first_event_unix_ms: None,
             resolver,
+            last_banner_meta: Vec::new(),
         }
+    }
+
+    /// Banner metadata captured during the last `process_line` call.
+    /// Empty when that call emitted no banner.
+    pub fn last_banner_meta(&self) -> &[(usize, BannerMeta)] {
+        &self.last_banner_meta
+    }
+
+    /// Render a banner at the current terminal width. Used on full repaint
+    /// to regenerate buffered banners so their trailing dashes match the
+    /// current viewport instead of replaying the width they were first
+    /// written at.
+    pub fn render_banner(&self, meta: &BannerMeta) -> String {
+        self.format_banner(&meta.session_id, meta.color_code, meta.name.as_deref())
     }
 
     #[cfg(test)]
@@ -356,7 +394,10 @@ impl<R: SessionNameResolver> Formatter<R> {
 
     /// Process one input log line. Returns the lines (without trailing
     /// newlines) that should be written to the terminal as a result.
+    /// Banner metadata for repaint is also captured into
+    /// `self.last_banner_meta` — readable via [`Formatter::last_banner_meta`].
     pub fn process_line(&mut self, line: &str) -> Vec<String> {
+        self.last_banner_meta.clear();
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
             return Vec::new();
@@ -478,6 +519,14 @@ impl<R: SessionNameResolver> Formatter<R> {
         let resolved_title = self.resolver.resolve(&transcript_path);
         if new_session {
             let banner = self.format_banner(&session_id, color_code, resolved_title.as_deref());
+            self.last_banner_meta.push((
+                out.len(),
+                BannerMeta {
+                    session_id: session_id.clone(),
+                    color_code,
+                    name: resolved_title.clone(),
+                },
+            ));
             out.push(banner);
             if let Some(state) = self.sessions.get_mut(&session_id) {
                 state.last_title = resolved_title.clone();
@@ -490,6 +539,14 @@ impl<R: SessionNameResolver> Formatter<R> {
                 .get(&session_id)
                 .and_then(|s| s.last_title.clone());
             if resolved_title != prev && resolved_title.is_some() {
+                self.last_banner_meta.push((
+                    out.len(),
+                    BannerMeta {
+                        session_id: session_id.clone(),
+                        color_code,
+                        name: resolved_title.clone(),
+                    },
+                ));
                 out.push(self.format_banner(&session_id, color_code, resolved_title.as_deref()));
                 if let Some(state) = self.sessions.get_mut(&session_id) {
                     state.last_title = resolved_title.clone();
@@ -773,15 +830,23 @@ impl<R: SessionNameResolver> Formatter<R> {
     /// the counters in grey with verdict bullets in their colors. Three
     /// lines, no trailing newline on the last one (the runner appends it).
     ///
-    /// The rule's width matches the body's visible width — not the terminal
-    /// width — so the footer always looks intentional regardless of
-    /// terminal-size detection or window resizes.
+    /// The rule spans the full terminal width. The runner re-detects the
+    /// terminal size before each redraw and a watcher thread refreshes the
+    /// footer when the window is resized between events, so the rule always
+    /// matches the current viewport.
     pub fn status_footer(&self) -> Vec<String> {
+        let term = self.opts.term_cols.max(40);
         let blank = String::new();
+        let rule = self.paint(&"─".repeat(term), ANSI_GREY);
         let body = self.format_status_body();
-        let rule_len = display_width(&body);
-        let rule = self.paint(&"─".repeat(rule_len), ANSI_GREY);
         vec![blank, rule, body]
+    }
+
+    /// Update the cached terminal width used by the next render. Invoked
+    /// from the runner before each redraw so the banner padding and footer
+    /// rule track the live viewport instead of the size captured at startup.
+    pub fn set_term_cols(&mut self, cols: usize) {
+        self.opts.term_cols = cols;
     }
 
     fn format_status_body(&self) -> String {
@@ -836,75 +901,314 @@ impl<R: SessionNameResolver> Formatter<R> {
 // Top-level runner
 // ---------------------------------------------------------------------------
 
-pub fn run<RD: BufRead, W: Write, RS: SessionNameResolver>(
-    reader: RD,
+/// Number of visual rows reserved for the status footer at the bottom of
+/// the screen: a blank spacer, the rule, and the body line.
+pub const FOOTER_LINES: usize = 3;
+
+/// Polling interval for the resize watcher. Short enough that resizes feel
+/// "live" without burning measurable CPU when idle.
+const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(150);
+
+/// Bottom row (1-indexed, inclusive) of the events scrolling region — i.e.
+/// the row that a `writeln!` will print into and trigger a scroll from.
+/// Always at least 1 so even degenerate "smaller than the footer" terminals
+/// produce a valid `ESC[1;Nr` setup.
+fn events_region_bottom(rows: usize) -> usize {
+    rows.saturating_sub(FOOTER_LINES).max(1)
+}
+
+/// First (top) row of the footer area — i.e. where the footer's blank
+/// spacer line lives. Anchored to the bottom: `rows - FOOTER_LINES + 1`.
+fn footer_top_row(rows: usize) -> usize {
+    rows.saturating_sub(FOOTER_LINES - 1).max(1)
+}
+
+/// Reset the scrolling region to the whole screen and park the cursor at
+/// the bottom — used at exit so the user's shell prompt appears below the
+/// footer instead of overwriting it.
+fn leave_split_layout<W: Write>(writer: &mut W, rows: usize) -> io::Result<()> {
+    write!(writer, "\x1b[r")?;
+    write!(writer, "\x1b[{};1H", rows.max(1))?;
+    Ok(())
+}
+
+/// Render the footer at the absolute bottom of the screen. Erases the entire
+/// footer area first (clear-to-end-of-screen from the footer's top row), so
+/// any leftovers from a previous render at a different size are wiped.
+/// Autowrap is disabled while writing so each line is exactly one visual row.
+/// On return, the cursor is parked at the bottom of the events scrolling
+/// region — ready for the next event-line writeln to scroll naturally.
+fn render_footer_at_bottom<W: Write>(
     writer: &mut W,
-    opts: PrettyOpts,
-    resolver: RS,
-) -> std::io::Result<()> {
-    let with_status = opts.stats && opts.follow && opts.color;
-    let final_summary = opts.stats && !opts.follow;
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
-    let mut formatter = Formatter::new(opts, home, resolver);
-    let mut status_drawn = false;
-
-    for line in reader.lines() {
-        let line = line?;
-        let display = formatter.process_line(&line);
-        if display.is_empty() {
-            continue;
-        }
-        if with_status && status_drawn {
-            erase_footer(writer, 3)?;
-        }
-        for dl in display {
-            writeln!(writer, "{dl}")?;
-        }
-        if with_status {
-            write_footer(writer, &formatter.status_footer())?;
-            writer.flush()?;
-            status_drawn = true;
-        }
-    }
-
-    if with_status && status_drawn {
-        // Park the cursor on a fresh line below the footer.
-        writeln!(writer)?;
-    } else if final_summary {
-        writeln!(writer, "{}", formatter.summary())?;
-    }
-    Ok(())
-}
-
-/// Erase a multi-line trailing status footer from the terminal.
-/// Cursor is assumed to be at the end of the last footer line (the body).
-/// After this call, the cursor sits at the start of the line where the
-/// footer's first line used to be — ready to be overwritten.
-fn erase_footer<W: Write>(writer: &mut W, lines: usize) -> std::io::Result<()> {
-    if lines == 0 {
-        return Ok(());
-    }
-    write!(writer, "\r\x1b[K")?;
-    for _ in 1..lines {
-        write!(writer, "\x1b[1A\r\x1b[K")?;
-    }
-    Ok(())
-}
-
-fn write_footer<W: Write>(writer: &mut W, lines: &[String]) -> std::io::Result<()> {
-    let last = lines.len().saturating_sub(1);
-    for (i, line) in lines.iter().enumerate() {
+    footer: &[String],
+    rows: usize,
+) -> io::Result<()> {
+    let top = footer_top_row(rows);
+    write!(writer, "\x1b[{};1H", top)?;
+    write!(writer, "\x1b[J")?;
+    write!(writer, "\x1b[?7l")?;
+    let last = footer.len().saturating_sub(1);
+    for (i, line) in footer.iter().enumerate() {
         if i == last {
-            // No trailing newline so the cursor parks on the body line —
-            // the next iteration's erase_footer call works against this.
             write!(writer, "{line}")?;
         } else {
             writeln!(writer, "{line}")?;
         }
     }
+    write!(writer, "\x1b[?7h")?;
+    let bottom = events_region_bottom(rows);
+    write!(writer, "\x1b[{};1H", bottom)?;
     Ok(())
+}
+
+/// One line of buffered event output. `Plain` is written verbatim;
+/// `Banner` is regenerated against the live `term_cols` on full repaint
+/// so the trailing dashes track the current viewport.
+#[derive(Clone)]
+enum BufferedLine {
+    Plain(String),
+    Banner(BannerMeta),
+}
+
+/// Maximum number of recent display lines retained for repaint. Sized to
+/// comfortably exceed any reasonable `events_region_bottom`, so the visible
+/// portion of the screen can always be reconstructed from buffer alone.
+const EVENT_BUFFER_CAPACITY: usize = 1024;
+
+/// State shared between the main read loop and the resize watcher.
+/// Both grab the `Mutex` first, then acquire stdout — keeping the lock
+/// order consistent prevents deadlocks against `println!` and friends.
+struct SharedState<RS: SessionNameResolver> {
+    formatter: Formatter<RS>,
+    /// True once any output has been emitted, i.e. the screen has state
+    /// the watcher might need to refresh.
+    status_drawn: bool,
+    /// `(cols, rows)` the layout was last rendered against. `None` until
+    /// the first render; the watcher uses this to decide whether a full
+    /// repaint is needed.
+    footer_size: Option<(usize, usize)>,
+    /// Ring buffer of recent display lines (post-formatter). Used to
+    /// repaint the events region from scratch on resize so reflowed
+    /// orphans from the previous terminal layout don't accumulate.
+    event_buffer: VecDeque<BufferedLine>,
+}
+
+impl<RS: SessionNameResolver> SharedState<RS> {
+    /// Append the lines emitted by a single `process_line` call to the
+    /// buffer, attaching banner regeneration metadata to the lines that
+    /// `Formatter` flagged as banners. Caps at `EVENT_BUFFER_CAPACITY`.
+    fn record_lines(&mut self, lines: &[String]) {
+        let banners: HashMap<usize, BannerMeta> = self
+            .formatter
+            .last_banner_meta()
+            .iter()
+            .cloned()
+            .collect();
+        for (i, line) in lines.iter().enumerate() {
+            let entry = match banners.get(&i) {
+                Some(meta) => BufferedLine::Banner(meta.clone()),
+                None => BufferedLine::Plain(line.clone()),
+            };
+            self.event_buffer.push_back(entry);
+        }
+        while self.event_buffer.len() > EVENT_BUFFER_CAPACITY {
+            self.event_buffer.pop_front();
+        }
+    }
+
+    /// Render a single buffered line at the current terminal width.
+    /// Banners are regenerated; plain lines are written verbatim.
+    fn render_buffered(&self, line: &BufferedLine) -> String {
+        match line {
+            BufferedLine::Plain(s) => s.clone(),
+            BufferedLine::Banner(meta) => self.formatter.render_banner(meta),
+        }
+    }
+
+    /// Full screen repaint: clear, set scroll region, redraw the most
+    /// recent events that fit in the events region, then render the footer
+    /// at the bottom. Used on resize and on the very first render — the
+    /// only time we're guaranteed clean state. Banners are regenerated
+    /// here (via `render_buffered`) at the live `cols` so resize never
+    /// leaves stretched-padding banners behind.
+    fn full_repaint<W: Write>(
+        &mut self,
+        writer: &mut W,
+        cols: usize,
+        rows: usize,
+    ) -> io::Result<()> {
+        self.formatter.set_term_cols(cols);
+        // Clear the whole screen and reset the scroll region — this is the
+        // big hammer that wipes anything reflowed by the terminal during a
+        // resize, including content that drifted out of the footer area.
+        write!(writer, "\x1b[2J")?;
+        let region_bottom = events_region_bottom(rows);
+        write!(writer, "\x1b[1;{}r", region_bottom)?;
+        // Render the most recent N events, anchored to the bottom of the
+        // events region so the latest line sits just above the footer.
+        let n = self.event_buffer.len().min(region_bottom);
+        if n > 0 {
+            let start_row = region_bottom - n + 1;
+            write!(writer, "\x1b[{};1H", start_row)?;
+            // Autowrap off while we lay events down: each buffered line is
+            // exactly one visual row, so events stack predictably and the
+            // events_region_bottom math stays accurate even for lines wider
+            // than the current width.
+            write!(writer, "\x1b[?7l")?;
+            let start_idx = self.event_buffer.len() - n;
+            for (i, entry) in self.event_buffer.iter().enumerate().skip(start_idx) {
+                let rendered = self.render_buffered(entry);
+                if i + 1 == self.event_buffer.len() {
+                    write!(writer, "{rendered}")?;
+                } else {
+                    writeln!(writer, "{rendered}")?;
+                }
+            }
+            write!(writer, "\x1b[?7h")?;
+        }
+        render_footer_at_bottom(writer, &self.formatter.status_footer(), rows)?;
+        writer.flush()?;
+        self.footer_size = Some((cols, rows));
+        self.status_drawn = true;
+        Ok(())
+    }
+}
+
+pub fn run<RD, RS>(reader: RD, opts: PrettyOpts, resolver: RS) -> io::Result<()>
+where
+    RD: BufRead,
+    RS: SessionNameResolver + Send + 'static,
+{
+    let with_status = opts.stats && opts.follow && opts.color;
+    let final_summary = opts.stats && !opts.follow;
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    let formatter = Formatter::new(opts, home, resolver);
+    let state = Arc::new(Mutex::new(SharedState {
+        formatter,
+        status_drawn: false,
+        footer_size: None,
+        event_buffer: VecDeque::new(),
+    }));
+
+    if with_status {
+        let (cols, rows) = detect_term_size();
+        let mut s = state.lock().expect("render state poisoned");
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        // First render goes through full_repaint too — this gives us a
+        // single code path for "set up the layout from scratch" which the
+        // resize watcher reuses on every size change.
+        s.full_repaint(&mut out, cols, rows)?;
+    }
+
+    // Watcher only matters when a footer is being maintained. Snapshot
+    // mode (no `with_status`) renders once and exits — no resize to chase.
+    let stop = Arc::new(AtomicBool::new(false));
+    let watcher_handle = if with_status {
+        let state_w = Arc::clone(&state);
+        let stop_w = Arc::clone(&stop);
+        Some(thread::spawn(move || resize_watcher(state_w, stop_w)))
+    } else {
+        None
+    };
+
+    let mut deferred: io::Result<()> = Ok(());
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                deferred = Err(e);
+                break;
+            }
+        };
+        let (cols, rows) = detect_term_size();
+        let mut s = state.lock().expect("render state poisoned");
+        s.formatter.set_term_cols(cols);
+        let display = s.formatter.process_line(&line);
+        if display.is_empty() {
+            continue;
+        }
+        // Buffer regardless of mode so the watcher always has fresh data
+        // to repaint from. Cheap (a clone per line, capped at 1024).
+        s.record_lines(&display);
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        if with_status {
+            // If the terminal resized since the last render, do a clean
+            // full repaint — the cheaper incremental path can leak
+            // orphans from reflowed previous content (the bug we're
+            // fixing). Otherwise, append the new lines incrementally.
+            if s.footer_size != Some((cols, rows)) {
+                s.full_repaint(&mut out, cols, rows)?;
+            } else {
+                let bottom = events_region_bottom(rows);
+                write!(out, "\x1b[{};1H", bottom)?;
+                for dl in display {
+                    // `\n` at the bottom of the scroll region scrolls the
+                    // events area by one row per line — the only place
+                    // we still rely on terminal-managed scrolling, and
+                    // it's safe because the region is well-defined and
+                    // has just been confirmed unchanged from last render.
+                    write!(out, "{dl}\n")?;
+                }
+                render_footer_at_bottom(&mut out, &s.formatter.status_footer(), rows)?;
+                out.flush()?;
+                s.status_drawn = true;
+            }
+        } else {
+            for dl in display {
+                writeln!(out, "{dl}")?;
+            }
+        }
+    }
+
+    // Stop the watcher before tearing down the layout so it can't race the
+    // final reset.
+    stop.store(true, Ordering::SeqCst);
+    if let Some(h) = watcher_handle {
+        let _ = h.join();
+    }
+
+    let s = state.lock().expect("render state poisoned");
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    if with_status && s.status_drawn {
+        let rows = s.footer_size.map(|(_, r)| r).unwrap_or_else(|| detect_term_size().1);
+        leave_split_layout(&mut out, rows)?;
+        writeln!(out)?;
+    } else if final_summary {
+        writeln!(out, "{}", s.formatter.summary())?;
+    }
+    out.flush()?;
+    deferred
+}
+
+fn resize_watcher<RS: SessionNameResolver>(
+    state: Arc<Mutex<SharedState<RS>>>,
+    stop: Arc<AtomicBool>,
+) {
+    while !stop.load(Ordering::SeqCst) {
+        thread::sleep(RESIZE_POLL_INTERVAL);
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        let (cols, rows) = detect_term_size();
+        let mut s = match state.lock() {
+            Ok(g) => g,
+            Err(_) => break, // poisoned — main thread crashed; bail out.
+        };
+        // Skip if nothing's been drawn yet, or if we already redrew at
+        // this size on the last main-thread render.
+        if !s.status_drawn || s.footer_size == Some((cols, rows)) {
+            continue;
+        }
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        // Drop write errors silently — the main loop will surface its own.
+        let _ = s.full_repaint(&mut out, cols, rows);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1259,38 +1563,72 @@ pub fn enable_vt_mode() {}
 // ---------------------------------------------------------------------------
 
 pub fn detect_term_cols() -> usize {
-    if let Ok(s) = std::env::var("COLUMNS") {
-        if let Ok(n) = s.parse::<usize>() {
-            if n > 20 {
-                return n;
-            }
-        }
-    }
+    detect_term_size().0
+}
+
+/// Best-effort `(cols, rows)` for the controlling terminal. Falls back to
+/// `(80, 24)` when detection fails (e.g. piped output, container with no
+/// real TTY, or a platform we don't have a probe for).
+///
+/// Used by the live `logs -f` renderer to position the footer at an absolute
+/// bottom-of-screen row and to size the DEC scrolling region above it. The
+/// hand-rolled `TIOCGWINSZ = 0x5413` constant that previously lived here
+/// worked on Linux but failed silently on macOS (real value `0x40087468`),
+/// collapsing the width to 80 — which is why the rule used to "stop in the
+/// middle of nowhere" on macOS terminals.
+pub fn detect_term_size() -> (usize, usize) {
+    let mut cols: Option<usize> = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|n: &usize| *n > 20);
+    let mut rows: Option<usize> = std::env::var("LINES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|n: &usize| *n > FOOTER_LINES);
+
     #[cfg(unix)]
     {
-        use std::mem::MaybeUninit;
-        #[repr(C)]
-        struct Winsize {
-            ws_row: u16,
-            ws_col: u16,
-            ws_xpixel: u16,
-            ws_ypixel: u16,
-        }
-        extern "C" {
-            fn ioctl(fd: i32, request: usize, ...) -> i32;
-        }
-        const TIOCGWINSZ: usize = 0x5413;
-        let mut ws: MaybeUninit<Winsize> = MaybeUninit::zeroed();
-        unsafe {
-            if ioctl(1, TIOCGWINSZ, ws.as_mut_ptr()) == 0 {
-                let ws = ws.assume_init();
-                if ws.ws_col > 20 {
-                    return ws.ws_col as usize;
+        if cols.is_none() || rows.is_none() {
+            let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+            let r = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
+            if r == 0 {
+                if cols.is_none() && ws.ws_col > 20 {
+                    cols = Some(ws.ws_col as usize);
+                }
+                if rows.is_none() && ws.ws_row > FOOTER_LINES as u16 {
+                    rows = Some(ws.ws_row as usize);
                 }
             }
         }
     }
-    80
+    #[cfg(windows)]
+    {
+        if cols.is_none() || rows.is_none() {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::Console::{
+                GetConsoleScreenBufferInfo, CONSOLE_SCREEN_BUFFER_INFO,
+            };
+            let h = std::io::stdout().as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+            let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
+            if unsafe { GetConsoleScreenBufferInfo(h, &mut info) } != 0 {
+                // srWindow is the visible viewport — Right/Bottom are
+                // inclusive, so width = Right - Left + 1, height likewise.
+                if cols.is_none() {
+                    let c = info.srWindow.Right as i32 - info.srWindow.Left as i32 + 1;
+                    if c > 20 {
+                        cols = Some(c as usize);
+                    }
+                }
+                if rows.is_none() {
+                    let r = info.srWindow.Bottom as i32 - info.srWindow.Top as i32 + 1;
+                    if r > FOOTER_LINES as i32 {
+                        rows = Some(r as usize);
+                    }
+                }
+            }
+        }
+    }
+    (cols.unwrap_or(80), rows.unwrap_or(24))
 }
 
 // ---------------------------------------------------------------------------
@@ -1786,65 +2124,252 @@ mod tests {
     }
 
     #[test]
-    fn status_footer_rule_matches_body_width() {
-        // Plain text (no color) so display widths are easy to compare.
-        let f = Formatter::new(
-            opts_no_color(),
-            "/home/u".to_string(),
-            StubResolver(HashMap::new()),
-        );
-        let footer = f.status_footer();
-        let rule = &footer[1];
-        let body = &footer[2];
-        assert_eq!(
-            display_width(rule),
-            display_width(body),
-            "rule must match body width.\nrule: {rule:?}\nbody: {body:?}"
-        );
-        // Sanity: the rule is non-empty (would catch a regression where the
-        // rule is computed against an empty/zero-width body).
-        assert!(display_width(rule) > 0);
+    fn status_footer_rule_matches_term_cols() {
+        // The rule is full-width decoration: it spans the terminal so the
+        // resize watcher can keep it flush against the right edge.
+        let mut opts = opts_no_color();
+        opts.term_cols = 120;
+        let f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
+        let rule = f.status_footer()[1].clone();
+        assert_eq!(display_width(&rule), 120, "rule width != term_cols: {rule:?}");
     }
 
     #[test]
-    fn status_footer_rule_independent_of_term_cols() {
-        // Same body, two wildly different term_cols values: rule width must
-        // not change. This is what fixes the "rule aligned to nothing" bug
-        // when terminal width detection misfires (e.g. macOS TIOCGWINSZ).
-        let mut narrow = opts_no_color();
-        narrow.term_cols = 40;
-        let mut wide = opts_no_color();
-        wide.term_cols = 400;
-
-        let fn_ = Formatter::new(narrow, "/home/u".to_string(), StubResolver(HashMap::new()));
-        let fw_ = Formatter::new(wide, "/home/u".to_string(), StubResolver(HashMap::new()));
-
-        let rn = fn_.status_footer()[1].clone();
-        let rw = fw_.status_footer()[1].clone();
-        assert_eq!(
-            display_width(&rn),
-            display_width(&rw),
-            "rule width must not depend on term_cols.\nnarrow: {rn:?}\nwide:   {rw:?}"
-        );
+    fn status_footer_rule_floors_at_40() {
+        // Clamp protects against pathologically narrow terminals (and the
+        // 0-cols edge case when detection fails completely).
+        let mut opts = opts_no_color();
+        opts.term_cols = 10;
+        let f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
+        let rule = f.status_footer()[1].clone();
+        assert_eq!(display_width(&rule), 40);
     }
 
     #[test]
-    fn status_footer_rule_tracks_body_growth() {
-        // As counters grow the body widens; the rule must widen with it.
-        let mut f = Formatter::new(
-            opts_no_color(),
-            "/home/u".to_string(),
-            StubResolver(HashMap::new()),
-        );
+    fn set_term_cols_changes_subsequent_rule_width() {
+        // The runner / watcher both call set_term_cols before redrawing —
+        // it must take effect on the next status_footer() call.
+        let mut opts = opts_no_color();
+        opts.term_cols = 80;
+        let mut f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
         let before = display_width(&f.status_footer()[1]);
-        // Feed enough events to push the digit count up (events 0 → 1234).
-        for cid in 1..=1234u64 {
-            let _ = f.process_line(&make_seen(cid, "s", "/home/u", "Bash", "command", "ls"));
-        }
+        f.set_term_cols(160);
         let after = display_width(&f.status_footer()[1]);
+        assert_eq!(before, 80);
+        assert_eq!(after, 160);
+    }
+
+    #[test]
+    fn footer_top_row_is_three_from_bottom() {
+        assert_eq!(footer_top_row(30), 28); // blank=28, rule=29, body=30
+        assert_eq!(footer_top_row(10), 8);
+    }
+
+    #[test]
+    fn footer_top_row_clamps_at_one() {
+        // Pathologically small terminals (smaller than the footer) still
+        // produce a valid 1-indexed row so `\x1b[<row>;1H` is well-formed.
+        assert_eq!(footer_top_row(2), 1);
+        assert_eq!(footer_top_row(0), 1);
+    }
+
+    #[test]
+    fn events_region_bottom_is_above_footer() {
+        // For 30 rows: events region 1..27 (bottom=27), footer at 28-30.
+        assert_eq!(events_region_bottom(30), 27);
+        assert_eq!(events_region_bottom(10), 7);
+    }
+
+    #[test]
+    fn events_region_bottom_clamps_at_one() {
+        // Tiny terminals still get a valid scroll-region bottom.
+        assert_eq!(events_region_bottom(3), 1);
+        assert_eq!(events_region_bottom(0), 1);
+    }
+
+    #[test]
+    fn leave_split_layout_resets_region() {
+        let mut buf: Vec<u8> = Vec::new();
+        leave_split_layout(&mut buf, 30).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // Reset DECSTBM (`ESC[r`) and park cursor at the bottom row so a
+        // shell prompt appears below the (now-static) footer.
+        assert!(out.contains("\x1b[r"), "missing region reset: {out:?}");
+        assert!(out.contains("\x1b[30;1H"), "missing bottom-row park: {out:?}");
+    }
+
+    #[test]
+    fn render_footer_at_bottom_uses_absolute_position() {
+        // The whole point of this refactor: anchor the footer with absolute
+        // CUP rather than relative cursor motion, so resize-driven scrolls
+        // can't orphan the previous render.
+        let mut buf: Vec<u8> = Vec::new();
+        let footer = vec!["".to_string(), "rule".to_string(), "body".to_string()];
+        render_footer_at_bottom(&mut buf, &footer, 30).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // Cursor jumps to the footer top (rows-2 = 28) and clears to EOS.
         assert!(
-            after > before,
-            "rule should widen as counters grow: before={before} after={after}"
+            out.starts_with("\x1b[28;1H\x1b[J"),
+            "must absolute-position then clear: {out:?}"
+        );
+        // Autowrap is toggled around the lines so each is exactly one row.
+        let off = out.find("\x1b[?7l").expect("autowrap-off present");
+        let on = out.find("\x1b[?7h").expect("autowrap-on present");
+        let body = out.find("body").expect("body present");
+        assert!(off < body && body < on, "toggle must bracket body: {out:?}");
+        // Cursor parks at the events-region bottom (27) so the next event
+        // writeln scrolls naturally.
+        assert!(out.ends_with("\x1b[27;1H"), "must park at events bottom: {out:?}");
+    }
+
+    fn make_state(cols: usize) -> SharedState<StubResolver> {
+        let mut opts = opts_no_color();
+        opts.term_cols = cols;
+        let formatter = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
+        SharedState {
+            formatter,
+            status_drawn: false,
+            footer_size: None,
+            event_buffer: VecDeque::new(),
+        }
+    }
+
+    #[test]
+    fn full_repaint_clears_screen_and_renders_footer() {
+        let mut state = make_state(160);
+        let mut buf: Vec<u8> = Vec::new();
+        state.full_repaint(&mut buf, 160, 50).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // Whole-screen clear is the big hammer that wipes any reflowed
+        // orphans from the previous terminal layout — without it, resize
+        // leaves stripes of stale rules and bodies behind.
+        assert!(out.contains("\x1b[2J"), "missing screen clear: {out:?}");
+        // Scroll region established for the new height.
+        assert!(out.contains("\x1b[1;47r"), "missing scroll region: {out:?}");
+        // Footer absolute-positioned at the new bottom.
+        assert!(out.contains("\x1b[48;1H"), "missing footer top CUP: {out:?}");
+        // Rule sized to the new width.
+        let rule_chars = out.matches('─').count();
+        assert!(rule_chars >= 160, "rule sized to new width: {rule_chars}");
+        assert_eq!(state.footer_size, Some((160, 50)));
+        assert!(state.status_drawn);
+    }
+
+    #[test]
+    fn full_repaint_renders_buffered_events_above_footer() {
+        // Buffered events must show up on screen — that's what makes the
+        // resize repaint preserve the recently-seen log content instead of
+        // wiping it. Anchored to the bottom of the events region so the
+        // most recent line sits just above the footer.
+        let mut state = make_state(120);
+        for i in 0..3 {
+            state
+                .event_buffer
+                .push_back(BufferedLine::Plain(format!("event-{i}")));
+        }
+        let mut buf: Vec<u8> = Vec::new();
+        state.full_repaint(&mut buf, 120, 30).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        for i in 0..3 {
+            assert!(out.contains(&format!("event-{i}")), "missing buffered line {i}: {out:?}");
+        }
+        // Most recent event right above the events region bottom (rows-3 = 27).
+        // 3 events anchored to bottom: rows 25, 26, 27. Cursor jumps to row 25.
+        assert!(out.contains("\x1b[25;1H"), "events should anchor at row 25: {out:?}");
+    }
+
+    #[test]
+    fn full_repaint_caps_buffered_events_to_visible_region() {
+        // If the buffer holds more events than fit, only the most recent
+        // ones are repainted — older ones scroll off (no terminal-managed
+        // scrollback inside a DEC scroll region anyway).
+        let mut state = make_state(120);
+        for i in 0..50 {
+            state
+                .event_buffer
+                .push_back(BufferedLine::Plain(format!("event-{i:03}")));
+        }
+        let mut buf: Vec<u8> = Vec::new();
+        // 10 rows total → events region 1..7, so 7 events fit. Most recent
+        // visible should be event-049; oldest visible event-043; older
+        // events excluded.
+        state.full_repaint(&mut buf, 120, 10).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("event-049"), "most recent must render: {out:?}");
+        assert!(out.contains("event-043"), "oldest visible must render: {out:?}");
+        assert!(!out.contains("event-042"), "off-screen oldest must NOT render: {out:?}");
+    }
+
+    #[test]
+    fn full_repaint_regenerates_banner_at_current_width() {
+        // The whole point of buffering banners as metadata: on resize the
+        // trailing dashes need to track the new width, not replay the width
+        // they were originally written at.
+        let mut state = make_state(120);
+        state.event_buffer.push_back(BufferedLine::Banner(BannerMeta {
+            session_id: "abcdef12".to_string(),
+            color_code: 1,
+            name: None,
+        }));
+        let mut buf: Vec<u8> = Vec::new();
+        state.full_repaint(&mut buf, 200, 30).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // Count consecutive ─ runs — there's a leading `──` and the
+        // trailing pad. Total visible ─ count should be ≥ 200 (the new
+        // width) since the banner extends to the new viewport.
+        let dashes = out.matches('─').count();
+        assert!(dashes >= 200, "banner should regenerate to new width: {dashes}");
+    }
+
+    #[test]
+    fn record_lines_attaches_banner_meta() {
+        // Sanity: when a banner is in the formatter's last_banner_meta,
+        // record_lines stores it as a Banner entry, not Plain — otherwise
+        // resize repaint can't regenerate it.
+        let mut state = make_state(80);
+        let lines = vec!["── abc · banner ──".to_string(), "plain event".to_string()];
+        state.formatter.last_banner_meta.push((
+            0,
+            BannerMeta {
+                session_id: "abc".to_string(),
+                color_code: 1,
+                name: None,
+            },
+        ));
+        state.record_lines(&lines);
+        assert_eq!(state.event_buffer.len(), 2);
+        assert!(matches!(state.event_buffer[0], BufferedLine::Banner(_)));
+        assert!(matches!(state.event_buffer[1], BufferedLine::Plain(_)));
+    }
+
+    #[test]
+    fn record_lines_caps_at_capacity() {
+        let mut state = make_state(80);
+        let burst: Vec<String> = (0..(EVENT_BUFFER_CAPACITY + 100))
+            .map(|i| format!("e{i}"))
+            .collect();
+        state.record_lines(&burst);
+        assert_eq!(state.event_buffer.len(), EVENT_BUFFER_CAPACITY);
+        // Oldest 100 entries should have been evicted; first remaining is e100.
+        match &state.event_buffer[0] {
+            BufferedLine::Plain(s) => assert_eq!(s, "e100"),
+            _ => panic!("expected Plain"),
+        }
+    }
+
+    #[test]
+    fn banner_rule_extends_to_term_cols() {
+        // Pinning the macOS-fix outcome: the banner trailing dashes pad to
+        // the terminal width. Previously the hand-rolled TIOCGWINSZ
+        // collapsed to 80 on macOS, leaving the banner ending mid-screen.
+        let mut opts = opts_no_color();
+        opts.term_cols = 200;
+        let f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
+        let banner = f.format_banner("abcdef12", 1, None);
+        assert_eq!(
+            display_width(&banner),
+            200,
+            "banner should fill the row: {banner:?}"
         );
     }
 

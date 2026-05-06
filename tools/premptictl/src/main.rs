@@ -1305,7 +1305,7 @@ fn run_logs_raw(path: &PathBuf, opts: &LogsOpts) {
 }
 
 fn run_logs_pretty(path: &PathBuf, opts: &LogsOpts) {
-    use std::io::{BufReader, IsTerminal, Write};
+    use std::io::{BufReader, IsTerminal};
     use std::process::Stdio;
 
     let stdout_is_tty = std::io::stdout().is_terminal();
@@ -1349,17 +1349,14 @@ fn run_logs_pretty(path: &PathBuf, opts: &LogsOpts) {
         }
     };
     let reader = BufReader::new(stdout);
-    let stdout_lock = std::io::stdout();
-    let mut writer = stdout_lock.lock();
     let resolver = logs_pretty::FsSessionNameResolver::default();
-    if let Err(e) = logs_pretty::run(reader, &mut writer, pretty_opts, resolver) {
+    if let Err(e) = logs_pretty::run(reader, pretty_opts, resolver) {
         // BrokenPipe is expected when the consumer (e.g., `head`) closes the
         // pipe — exit silently rather than printing an error.
         if e.kind() != std::io::ErrorKind::BrokenPipe {
             eprintln!("logs: {e}");
         }
     }
-    let _ = writer.flush();
     let _ = child.wait();
 }
 
