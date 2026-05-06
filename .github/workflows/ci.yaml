@@ -140,8 +140,6 @@ jobs:
           name: windows-${{ matrix.arch }}-msi
           path: |
             build/out/*.msi
-            build/out/Install-Prempti.ps1
-            build/out/Uninstall-Prempti.ps1
           if-no-files-found: error
 
   build-test-macos:

@@ -168,18 +168,10 @@ powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1 -SkipRus
 
 > **Migrating from `coding-agents-kit`?** Prempti does not migrate or remove existing `coding-agents-kit` installations. Uninstall `coding-agents-kit` first to avoid duplicate services or stale Claude Code hooks.
 
-### Recommended: `Install-Prempti.ps1`
-
-The `Install-Prempti.ps1` helper (emitted next to the MSI in `build\out\`) is the recommended path. It runs the MSI silently and, if the product is already installed, opens the MSI maintenance UI instead of forcing a silent reinstall:
+Double-click the MSI, or run from PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build\out\Install-Prempti.ps1
-```
-
-### Manual `msiexec`
-
-```powershell
-msiexec /i build\out\prempti-<version>-windows-arm64.msi
+msiexec /i build\out\prempti-<version>-windows-<arch>.msi
 ```
 
 The MSI runs `postinstall.ps1` automatically via a deferred custom action. No manual follow-up script is required. The post-install step:
@@ -217,15 +209,19 @@ premptictl start
 
 ### Uninstalling
 
-Any of the three paths works — the MSI runs `uninstall.ps1` as a deferred custom action whenever `REMOVE=ALL`, so Apps & Features, `msiexec /x`, and the bundled helper all stop the service, remove the Claude Code hook, remove the auto-start Run-key entry, and clean `bin\` from the user `PATH` before removing files.
+Any of these paths works — the MSI runs `uninstall.ps1` as a deferred custom action whenever `REMOVE=ALL`, so each one stops the service, removes the Claude Code hook, removes the auto-start Run-key entry, and cleans `bin\` from the user `PATH` before removing files.
 
-The bundled helper is still the most convenient:
+- **Apps & Features** → Prempti → Uninstall (recommended).
+- **By MSI path** (if you still have the file):
 
-```powershell
-powershell -ExecutionPolicy Bypass -File Uninstall-Prempti.ps1
-```
+  ```powershell
+  msiexec /x prempti-<version>-windows-<arch>.msi
+  ```
+- **By product code** (the GUID is in `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\` under the Prempti entry):
 
-> **Older 0.1.x builds**: MSI packages from before the uninstall custom action was added required the helper script — without it, Apps & Features would leave the Claude Code hook registered and brick Claude Code until `premptictl hook remove` was run manually.
+  ```powershell
+  msiexec /x <product-code>
+  ```
 
 ## Running Tests
 

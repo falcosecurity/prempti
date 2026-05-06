@@ -106,13 +106,9 @@ The installer copies all components to `~/.prempti/`, starts a systemd user serv
 
 ### Windows
 
-From the [latest release](https://github.com/falcosecurity/prempti/releases/latest), download **both** the `.msi` for your CPU architecture and the `Install-Prempti.ps1` helper, then run:
+From the [latest release](https://github.com/falcosecurity/prempti/releases/latest), download the `.msi` for your CPU architecture and double-click it (or run `msiexec /i prempti-<version>-windows-<arch>.msi`).
 
-```powershell
-powershell -ExecutionPolicy Bypass -File Install-Prempti.ps1
-```
-
-The helper runs the MSI, deploys all components to `%LOCALAPPDATA%\prempti\`, adds `bin\` to your user `PATH`, registers the Claude Code hook, registers an auto-start entry for subsequent logins, and starts the service immediately so Claude Code is protected without any extra step.
+The MSI deploys all components to `%LOCALAPPDATA%\prempti\`, adds `bin\` to your user `PATH`, registers the Claude Code hook, registers an auto-start entry for subsequent logins, and starts the service immediately so Claude Code is protected without any extra step.
 
 > [!NOTE]
 > Pick the MSI that matches your CPU: `prempti-<version>-windows-x64.msi` on Intel/AMD64, `prempti-<version>-windows-arm64.msi` on Windows ARM64. The x64 MSI can install under emulation on ARM64 hosts but prefer the native ARM64 MSI for best performance. See [`installers/windows/`](installers/windows/) for build prerequisites and details.
@@ -190,12 +186,9 @@ premptictl start
 
 Any of these paths works — they all run the same cleanup custom action:
 
-- ```powershell
-  powershell -ExecutionPolicy Bypass -File Uninstall-Prempti.ps1
-  ```
-  (bundled with the release),
-- Apps & Features,
-- `msiexec /x <product-code>`.
+- Apps & Features (recommended),
+- `msiexec /x prempti-<version>-windows-<arch>.msi` (if you still have the MSI file),
+- `msiexec /x <product-code>` (the GUID is in `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\` under the Prempti entry).
 
 The MSI removes the Claude Code hook, the auto-start entry, and the `bin\` `PATH` entry before removing files, so Claude Code is not left in a fail-closed state.
 
@@ -353,7 +346,7 @@ Requires: Rust (latest stable), Visual Studio 2022+ with C++ workload, CMake 3.2
 powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1
 ```
 
-Output: `build/out/prempti-<version>-windows-<arch>.msi` (plus `Install-Prempti.ps1` and `Uninstall-Prempti.ps1` helpers).
+Output: `build/out/prempti-<version>-windows-<arch>.msi`.
 
 > Falco is built from source on the first run (~10 min). Subsequent builds use the cached binary.
 

@@ -246,53 +246,5 @@ if (-not $wix) { throw 'WiX Toolset not found. Install via: dotnet tool install 
 
 if ($LASTEXITCODE -ne 0) { throw 'WiX build failed.' }
 
-# ---------------------------------------------------------------------------
-# Emit companion uninstall script
-# ---------------------------------------------------------------------------
-
-$uninstallScript = Join-Path $OutputDir 'Uninstall-Prempti.ps1'
-@"
-# Uninstall Prempti $Version
-# Run cleanup first: remove hook and auto-start registration
-`$prefix = Join-Path `$env:LOCALAPPDATA 'prempti'
-`$cleanup = Join-Path `$prefix 'scripts\uninstall.ps1'
-if (Test-Path `$cleanup) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File `$cleanup -Prefix `$prefix
-}
-# Remove files via MSI
-`$p = Start-Process msiexec -ArgumentList '/x', '$ProductCode', '/quiet' -Wait -PassThru
-if (`$p.ExitCode -ne 0 -and `$p.ExitCode -ne 1605) { Write-Error "Uninstall failed (exit `$(`$p.ExitCode))" }
-Write-Host "Uninstall complete"
-"@ | Set-Content $uninstallScript -Encoding UTF8
-
-# ---------------------------------------------------------------------------
-# Emit install helper script (runs MSI + postinstall)
-# ---------------------------------------------------------------------------
-
-$installScript = Join-Path $OutputDir 'Install-Prempti.ps1'
-@"
-# Install Prempti $Version
-`$msi = Join-Path `$PSScriptRoot '$MsiName'
-`$productCode = '$ProductCode'
-
-# If already installed, open normal MSI maintenance UI (Repair/Uninstall)
-# instead of forcing a silent reinstall.
-`$installer = New-Object -ComObject WindowsInstaller.Installer
-`$state = `$installer.ProductState(`$productCode)
-if (`$state -eq 5) {
-    Start-Process msiexec -ArgumentList '/i', `$msi -Wait | Out-Null
-    exit 0
-}
-
-`$p = Start-Process msiexec -ArgumentList '/i', `$msi, '/quiet' -Wait -PassThru
-if (`$p.ExitCode -ne 0) { Write-Error "MSI install failed (exit `$(`$p.ExitCode))"; exit 1 }
-# postinstall.ps1 runs automatically via the MSI deferred custom action
-# (see installers\windows\Package.wxs). No manual follow-up is required.
-Write-Host "Prempti installation complete"
-"@ | Set-Content $installScript -Encoding UTF8
-
 Write-Host ""
 Write-Host "MSI created: $(Join-Path $OutputDir $MsiName)"
-Write-Host ""
-Write-Host "Install:   powershell -ExecutionPolicy Bypass -File Install-Prempti.ps1"
-Write-Host "Uninstall: powershell -ExecutionPolicy Bypass -File Uninstall-Prempti.ps1"

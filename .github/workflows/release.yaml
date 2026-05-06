@@ -143,8 +143,6 @@ jobs:
           name: windows-${{ matrix.arch }}
           path: |
             build/out/*.msi
-            build/out/Install-Prempti.ps1
-            build/out/Uninstall-Prempti.ps1
           if-no-files-found: error
 
   publish:
