@@ -111,6 +111,20 @@
 - macro: is_outside_cwd
   condition: not tool.real_file_path startswith val(agent.real_cwd)
 
+# Claude Code's own data tree (~/.claude/). The agent legitimately writes
+# session bookkeeping here — plans, todos, memories, transcripts, caches,
+# shell snapshots, file history, telemetry — and these writes are routine,
+# not security-sensitive. This macro is intentionally broad: it suppresses
+# the generic "outside working directory" ASK across the whole tree so the
+# agent can manage its own state without prompting.
+#
+# Sensitive subpaths are guarded by independent rules that fire regardless
+# of this suppression (verdict escalation: deny > ask > allow):
+#   DENY   — settings.json, settings.local.json (hooks), policy-limits.json
+#   ASK    — commands/, CLAUDE.md, agents/, skills/, plugins/, backups/
+- macro: is_claude_data_path
+  condition: tool.real_file_path contains "/.claude/"
+
 # IOC hosting domains observed in the ClawHavoc campaign (341 malicious skills,
 # 2024-2025) and similar AI-supply-chain attacks. Inlined into the macros below
 # rather than a Falco list because Falco's condition language has no
@@ -163,12 +177,18 @@
 - rule: Ask before writing outside working directory
   desc: >
     Requires user confirmation when a coding agent writes or edits a file
-    outside the session's working directory.
+    outside the session's working directory. Claude Code's own data tree
+    (~/.claude/) is excluded as routine session bookkeeping — plans,
+    todos, memories, transcripts, caches. Sensitive subpaths under
+    ~/.claude/ (settings.json, policy-limits.json, agents/, skills/,
+    plugins/, backups/, commands/, CLAUDE.md) are still guarded by
+    dedicated deny/ask rules.
   condition: >
     is_write_tool
     and tool.real_file_path != ""
     and is_outside_cwd
     and not is_sensitive_path
+    and not is_claude_data_path
   output: >
     Falco requires confirmation to write to %tool.real_file_path because it is outside the working directory %agent.real_cwd
   priority: WARNING
@@ -1306,7 +1326,11 @@
 #   Rule 7 (DENY):  Skill/command file written with IOC domain in content
 #   Rule 8 (DENY):  Skill/command file written with pipe-to-shell in content
 #   Rule 9 (ASK):   npx -y / bunx -y / yarn dlx / pnpm dlx auto-accept installation
-#   Rule 10 (ASK):  Bash tool writing to .claude/commands/
+#   Rule 10 (ASK): Bash tool writing to .claude/commands/
+#   Rule 11 (ASK): Write to .claude/agents/ — subagent definition, prompt injection
+#   Rule 12 (ASK): Write to .claude/skills/ — skill definition, supply chain
+#   Rule 13 (ASK): Write to .claude/plugins/ — plugin install metadata, hook/MCP/skill bypass
+#   Rule 14 (ASK): Write to .claude/backups/ — staged settings rollback
 
 # Macros
 
@@ -1605,6 +1629,87 @@
   source: coding_agent
   tags: [coding_agent_ask, AML.T0051_llm_prompt_injection,
          AML.T0043_craft_adversarial_data, mitre_t1546_event_triggered_execution]
+
+- rule: Ask before writing to Claude Code subagent definitions directory
+  desc: >
+    Requires user confirmation when the agent writes or edits files under
+    ~/.claude/agents/. This directory holds custom subagent definitions —
+    markdown files with YAML frontmatter that Claude Code reads as system
+    prompt context for spawned subagents. A new or modified definition is
+    a persistent prompt-injection vector: every future invocation of that
+    subagent runs with attacker-controlled instructions. Legitimate
+    subagent setup is user-driven (via the Claude CLI or marketplace);
+    the coding agent has no need to author other agents' instructions.
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.real_file_path != ""
+    and tool.real_file_path contains "/.claude/agents/"
+  output: >
+    Falco requires confirmation before writing a Claude Code subagent definition at %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0051_llm_prompt_injection,
+         AML.T0043_craft_adversarial_data, mitre_t1546_event_triggered_execution]
+
+- rule: Ask before writing to Claude Code skills directory
+  desc: >
+    Requires user confirmation when the agent writes or edits files under
+    ~/.claude/skills/. Skills are markdown definitions that Claude Code
+    pulls into context to extend its behavior — they describe workflows,
+    tool sequences, and reference external resources. Writing or editing
+    a skill is the skill-layer equivalent of editing a slash command and
+    carries the same persistence risk. Legitimate skill installation
+    flows through the Claude CLI or the marketplace; direct file
+    authoring by the agent warrants explicit approval.
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.real_file_path != ""
+    and tool.real_file_path contains "/.claude/skills/"
+  output: >
+    Falco requires confirmation before writing a Claude Code skill at %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0051_llm_prompt_injection,
+         AML.T0010_ml_supply_chain_compromise, mitre_t1546_event_triggered_execution]
+
+- rule: Ask before writing to Claude Code plugins directory
+  desc: >
+    Requires user confirmation when the agent writes or edits files under
+    ~/.claude/plugins/. The plugins tree holds installed-plugin metadata
+    (installed_plugins.json), known marketplaces, the marketplace
+    blocklist, and cached plugin payloads. Plugins can register MCP
+    servers, hooks, skills, and slash commands — modifying this tree
+    directly bypasses the official install flow's review steps.
+    Legitimate installs are user-initiated via the Claude CLI;
+    agent-driven Write/Edit here is a supply-chain attack surface.
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.real_file_path != ""
+    and tool.real_file_path contains "/.claude/plugins/"
+  output: >
+    Falco requires confirmation before writing to Claude Code plugin storage at %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0048_llm_plugin_compromise,
+         AML.T0010_ml_supply_chain_compromise, mitre_t1195_supply_chain_compromise]
+
+- rule: Ask before writing to Claude Code settings backups directory
+  desc: >
+    Requires user confirmation when the agent writes or edits files
+    under ~/.claude/backups/. Claude Code keeps timestamped backups of
+    settings (.claude.json.backup.<epoch>) here. An agent writing into
+    this tree could stage a malicious settings file that the user later
+    restores manually, sidestepping the direct settings.json deny rule.
+    Reads are not flagged — the directory is otherwise routine.
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.real_file_path != ""
+    and tool.real_file_path contains "/.claude/backups/"
+  output: >
+    Falco requires confirmation before writing to Claude Code settings backups at %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, prempti_self_protection]
 
 # ===========================================================================
 # Section 6 — Persistence vectors
@@ -1909,34 +2014,27 @@
 # patterns from the agent does not block legitimate user operations.
 #
 # Three rule families:
-#   - destructive `premptictl` subcommands (stop / restart / disable /
-#     uninstall / daemon / hook remove / mode <arg>)
+#   - any `premptictl` invocation (the CLI is user-facing only)
 #   - platform service-stop alternatives, gated by agent.os
-#   - writes/edits under the install prefix and ~/.claude/settings.json,
-#     plus an ASK on reads of settings.json
+#   - writes/edits under the install prefix (rules, config, binaries) and
+#     ~/.claude/settings.json, plus an ASK on reads of settings.json
 # ===========================================================================
 
-- macro: is_premptictl_destructive
-  condition: >
-    is_bash and (
-      tool.input_command contains "premptictl stop"
-      or tool.input_command contains "premptictl restart"
-      or tool.input_command contains "premptictl disable"
-      or tool.input_command contains "premptictl uninstall"
-      or tool.input_command contains "premptictl daemon"
-      or tool.input_command contains "premptictl hook remove"
-      or tool.input_command contains "premptictl mode "
-    )
+- macro: is_premptictl_invocation
+  condition: is_bash and tool.input_command contains "premptictl"
 
-- rule: Deny premptictl destructive subcommands
+- rule: Deny premptictl invocation
   desc: >
-    Blocks agent invocations of premptictl subcommands that would take
-    Prempti down or reconfigure it: stop / restart / disable / uninstall /
-    daemon / hook remove / mode <arg>. Read-only subcommands (status,
-    health, logs, hook status, mode without arg) are allowed.
-  condition: is_premptictl_destructive
+    Blocks any agent invocation of the premptictl CLI. premptictl is a
+    user-facing tool — the user runs it directly in their own shell and
+    never needs the coding agent to do it on their behalf. Denying every
+    subcommand (stop / restart / disable / uninstall / daemon / hook /
+    mode and the read-only status / health / logs commands) prevents
+    service-disabling, reconfiguration, and reconnaissance through the
+    Prempti control surface.
+  condition: is_premptictl_invocation
   output: >
-    Falco blocked premptictl invocation that would disable or reconfigure Prempti (%tool.input_command)
+    Falco blocked an agent invocation of the premptictl CLI (%tool.input_command)
   priority: CRITICAL
   source: coding_agent
   tags: [coding_agent_deny, prempti_self_protection]
@@ -2017,10 +2115,14 @@
 - rule: Deny writes under Prempti install prefix
   desc: >
     Blocks Write/Edit on any path under the Prempti install prefix
-    (~/.prempti/ on Unix, %LOCALAPPDATA%\\prempti\\ on Windows). Reads
-    are allowed so the agent can still introspect config / logs for
-    debugging. Use the supervisor's CLI to make legitimate config
-    changes.
+    (~/.prempti/ on Unix, %LOCALAPPDATA%\\prempti\\ on Windows). This
+    covers binaries, Falco and plugin config, the supervisor config,
+    and both default and user rule files under rules/ — all of which
+    govern how Prempti enforces policy. Reads are allowed so the agent
+    can still introspect config / logs for debugging. Legitimate edits
+    (custom rules, config changes) are user-driven: edit files under
+    rules/user/ directly outside a coding session, then `premptictl
+    restart` to apply.
   condition: tool.name in ("Write", "Edit") and is_prempti_install_path
   output: >
     Falco blocked writing to %tool.real_file_path under the Prempti install prefix
@@ -2037,6 +2139,25 @@
   condition: tool.name in ("Write", "Edit") and is_claude_settings_path
   output: >
     Falco blocked writing to Claude Code settings at %tool.real_file_path
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, prempti_self_protection]
+
+- rule: Deny writes to Claude Code policy limits file
+  desc: >
+    Blocks Write/Edit on ~/.claude/policy-limits.json. This file declares
+    enforcement restrictions that Claude Code reads to decide which
+    features are blocked or allowed (allow_remote_control,
+    enforce_web_search_mcp_isolation, allow_quick_web_setup, etc.).
+    Modifying it loosens the user's or MDM's intended security posture
+    and could re-enable surfaces Prempti relies on the host to keep
+    closed. Policy limits are configured by the user or an enterprise
+    MDM; the agent has no legitimate reason to write here.
+  condition: >
+    tool.name in ("Write", "Edit")
+    and tool.real_file_path endswith "/.claude/policy-limits.json"
+  output: >
+    Falco blocked writing to Claude Code policy-limits.json at %tool.real_file_path
   priority: CRITICAL
   source: coding_agent
   tags: [coding_agent_deny, prempti_self_protection]
