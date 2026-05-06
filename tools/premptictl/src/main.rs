@@ -1231,11 +1231,20 @@ fn invoked_binary_name() -> String {
 /// Reconstruct the command-line label shown in the status footer. Mirrors
 /// the flags actually applied to the pretty path (snapshot/follow/show/...)
 /// so the user can read off the mode at a glance, e.g.
-/// `premptictl -f`. The binary name is taken from argv[0] (the
+/// `premptictl logs -f`. The binary name is taken from argv[0] (the
 /// way the user actually invoked it), falling back to the on-disk exe name
 /// and finally a hardcoded default — never panics.
 fn build_logs_cmd_label(opts: &LogsOpts) -> String {
-    let mut s = invoked_binary_name();
+    build_logs_cmd_label_with_bin(&invoked_binary_name(), opts)
+}
+
+/// Same as `build_logs_cmd_label` but takes the binary name as a parameter
+/// so the body can be unit-tested deterministically (without depending on
+/// `argv[0]` / `current_exe()`).
+fn build_logs_cmd_label_with_bin(bin: &str, opts: &LogsOpts) -> String {
+    let mut s = String::with_capacity(bin.len() + 16);
+    s.push_str(bin);
+    s.push_str(" logs");
     if opts.follow {
         s.push_str(" -f");
     }
@@ -1478,6 +1487,78 @@ mod logs_tests {
     fn unknown_flag() {
         assert!(parse_logs_args(&["--bogus"]).is_err());
     }
+
+    #[test]
+    fn cmd_label_includes_logs_subcommand() {
+        let opts = parse_logs_args(&[]).unwrap();
+        assert_eq!(
+            build_logs_cmd_label_with_bin("premptictl", &opts),
+            "premptictl logs"
+        );
+    }
+
+    #[test]
+    fn cmd_label_appends_follow() {
+        let opts = parse_logs_args(&["-f"]).unwrap();
+        assert_eq!(
+            build_logs_cmd_label_with_bin("premptictl", &opts),
+            "premptictl logs -f"
+        );
+    }
+
+    #[test]
+    fn cmd_label_appends_tail() {
+        let opts = parse_logs_args(&["--tail=50"]).unwrap();
+        assert_eq!(
+            build_logs_cmd_label_with_bin("premptictl", &opts),
+            "premptictl logs --tail=50"
+        );
+    }
+
+    #[test]
+    fn cmd_label_appends_non_default_show() {
+        let opts = parse_logs_args(&["--show", "deny,ask"]).unwrap();
+        let label = build_logs_cmd_label_with_bin("premptictl", &opts);
+        assert!(label.starts_with("premptictl logs "), "got: {label}");
+        assert!(label.contains("--show=deny,ask"), "got: {label}");
+    }
+
+    #[test]
+    fn cmd_label_omits_show_when_default_mask() {
+        // Explicit but identical-to-default mask should not echo --show, since
+        // the user wouldn't have noticed any change in behavior.
+        let opts = parse_logs_args(&["--show=deny,ask,allow"]).unwrap();
+        let label = build_logs_cmd_label_with_bin("premptictl", &opts);
+        assert!(!label.contains("--show"), "got: {label}");
+    }
+
+    #[test]
+    fn cmd_label_appends_no_color_and_no_stats() {
+        let opts = parse_logs_args(&["--no-color", "--no-stats"]).unwrap();
+        let label = build_logs_cmd_label_with_bin("premptictl", &opts);
+        assert!(label.contains(" --no-color"), "got: {label}");
+        assert!(label.contains(" --no-stats"), "got: {label}");
+    }
+
+    #[test]
+    fn cmd_label_preserves_argv0_binary_name() {
+        // Symlinked / aliased invocations should keep whatever name the user
+        // typed, with `logs` placed immediately after it.
+        let opts = parse_logs_args(&["-f"]).unwrap();
+        assert_eq!(build_logs_cmd_label_with_bin("pctl", &opts), "pctl logs -f");
+    }
+
+    #[test]
+    fn cmd_label_combined_flags_order() {
+        // Flags should appear in this order: -f, --tail, --show, --no-color,
+        // --no-stats. Stable ordering keeps the footer easy to skim.
+        let opts = parse_logs_args(&["-f", "--tail=20", "--show=deny", "--no-color", "--no-stats"])
+            .unwrap();
+        assert_eq!(
+            build_logs_cmd_label_with_bin("premptictl", &opts),
+            "premptictl logs -f --tail=20 --show=deny --no-color --no-stats"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1580,7 +1661,9 @@ fn print_usage() {
     eprintln!("  daemon [flags]   Run the supervisor (spawns Falco, owns logs and rotation,");
     eprintln!("                   owns the hook lifecycle). Normally invoked by the platform");
     eprintln!("                   service; advanced users can run it manually.");
-    eprintln!("                     --prefix PATH              install prefix (default: ~/.prempti)");
+    eprintln!(
+        "                     --prefix PATH              install prefix (default: ~/.prempti)"
+    );
     eprintln!("                     --config PATH              supervisor config (default: <prefix>/config/supervisor.yaml)");
     eprintln!(
         "                     --log-rotate-bytes N       override config: rotation size threshold"
@@ -1938,10 +2021,8 @@ mod uninstall_tests {
     use std::path::{Path, PathBuf};
 
     fn tmpdir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "prempti-uninstall-{}-{label}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("prempti-uninstall-{}-{label}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

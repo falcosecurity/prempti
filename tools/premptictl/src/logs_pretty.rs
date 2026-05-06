@@ -24,7 +24,7 @@ pub struct PrettyOpts {
     pub show: ShowMask,
     pub term_cols: usize,
     /// Command-line label shown in the status footer
-    /// (e.g. `premptictl -f`).
+    /// (e.g. `premptictl logs -f`).
     pub cmd_label: String,
 }
 
@@ -772,11 +772,15 @@ impl<R: SessionNameResolver> Formatter<R> {
     /// Footer shown at the bottom of the output: blank line, grey rule, and
     /// the counters in grey with verdict bullets in their colors. Three
     /// lines, no trailing newline on the last one (the runner appends it).
+    ///
+    /// The rule's width matches the body's visible width — not the terminal
+    /// width — so the footer always looks intentional regardless of
+    /// terminal-size detection or window resizes.
     pub fn status_footer(&self) -> Vec<String> {
-        let term = self.opts.term_cols.max(40);
         let blank = String::new();
-        let rule = self.paint(&"─".repeat(term), ANSI_GREY);
         let body = self.format_status_body();
+        let rule_len = display_width(&body);
+        let rule = self.paint(&"─".repeat(rule_len), ANSI_GREY);
         vec![blank, rule, body]
     }
 
@@ -1552,10 +1556,7 @@ mod tests {
         assert!(footer[1].contains("─"));
         let body = &footer[2];
         // Form: "premptictl: sessions N · events N (● allow N · ⊙ ask N · ⊘ deny N)"
-        assert!(
-            body.contains("premptictl:"),
-            "tool prefix: {body}"
-        );
+        assert!(body.contains("premptictl:"), "tool prefix: {body}");
         assert!(body.contains("sessions "));
         assert!(body.contains("events "));
         assert!(body.contains("(● allow "));
@@ -1776,12 +1777,75 @@ mod tests {
     #[test]
     fn status_footer_uses_cmd_label_and_since_when_known() {
         let mut opts = opts_no_color();
-        opts.cmd_label = "premptictl -f".to_string();
+        opts.cmd_label = "premptictl logs -f".to_string();
         let mut f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
         let _ = f.process_line(&make_seen(1, "s", "/home/u", "Bash", "command", "ls"));
         let body = f.status_footer().last().unwrap().clone();
-        assert!(body.contains("premptictl -f:"), "body={body}");
+        assert!(body.contains("premptictl logs -f:"), "body={body}");
         assert!(body.contains(" · since "), "missing since: {body}");
+    }
+
+    #[test]
+    fn status_footer_rule_matches_body_width() {
+        // Plain text (no color) so display widths are easy to compare.
+        let f = Formatter::new(
+            opts_no_color(),
+            "/home/u".to_string(),
+            StubResolver(HashMap::new()),
+        );
+        let footer = f.status_footer();
+        let rule = &footer[1];
+        let body = &footer[2];
+        assert_eq!(
+            display_width(rule),
+            display_width(body),
+            "rule must match body width.\nrule: {rule:?}\nbody: {body:?}"
+        );
+        // Sanity: the rule is non-empty (would catch a regression where the
+        // rule is computed against an empty/zero-width body).
+        assert!(display_width(rule) > 0);
+    }
+
+    #[test]
+    fn status_footer_rule_independent_of_term_cols() {
+        // Same body, two wildly different term_cols values: rule width must
+        // not change. This is what fixes the "rule aligned to nothing" bug
+        // when terminal width detection misfires (e.g. macOS TIOCGWINSZ).
+        let mut narrow = opts_no_color();
+        narrow.term_cols = 40;
+        let mut wide = opts_no_color();
+        wide.term_cols = 400;
+
+        let fn_ = Formatter::new(narrow, "/home/u".to_string(), StubResolver(HashMap::new()));
+        let fw_ = Formatter::new(wide, "/home/u".to_string(), StubResolver(HashMap::new()));
+
+        let rn = fn_.status_footer()[1].clone();
+        let rw = fw_.status_footer()[1].clone();
+        assert_eq!(
+            display_width(&rn),
+            display_width(&rw),
+            "rule width must not depend on term_cols.\nnarrow: {rn:?}\nwide:   {rw:?}"
+        );
+    }
+
+    #[test]
+    fn status_footer_rule_tracks_body_growth() {
+        // As counters grow the body widens; the rule must widen with it.
+        let mut f = Formatter::new(
+            opts_no_color(),
+            "/home/u".to_string(),
+            StubResolver(HashMap::new()),
+        );
+        let before = display_width(&f.status_footer()[1]);
+        // Feed enough events to push the digit count up (events 0 → 1234).
+        for cid in 1..=1234u64 {
+            let _ = f.process_line(&make_seen(cid, "s", "/home/u", "Bash", "command", "ls"));
+        }
+        let after = display_width(&f.status_footer()[1]);
+        assert!(
+            after > before,
+            "rule should widen as counters grow: before={before} after={after}"
+        );
     }
 
     #[test]
