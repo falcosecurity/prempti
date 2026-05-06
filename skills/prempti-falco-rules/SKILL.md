@@ -181,24 +181,85 @@ The `override` key modifies existing rules, macros, and lists across files — e
 
 ## Where to Put Rules
 
+The Prempti rule layout has three locations:
+
 - **Default rules**: `rules/default/coding_agents_rules.yaml` — shipped with the project, overwritten on upgrade
-- **User rules**: `rules/user/*.yaml` — preserved across upgrades, this is where custom rules go
+- **User rules**: `rules/user/*.yaml` — preserved across upgrades, this is where custom rules belong
 - **Seen rule**: `rules/seen.yaml` — DO NOT modify, required for verdict resolution
 
-When creating rules for the user, always write to `rules/user/`.
+These paths exist in two contexts:
 
-Before writing a new rule, read `rules/default/coding_agents_rules.yaml` to check for overlaps. The default ruleset is organized into six sections covering common AI-agent attack surfaces:
+| Context | `rules/default/` | `rules/user/` |
+|---------|------------------|----------------|
+| Project repo | source-controlled defaults | empty (`.gitkeep`); contributors add new rules here |
+| Installed system | `~/.prempti/rules/default/` (Linux/macOS) or `%LOCALAPPDATA%\prempti\rules\default\` (Windows) | corresponding `rules/user/` under the same prefix |
+
+**Important constraint on the installed system**: Prempti's self-protection rules block Write/Edit on any path under the install prefix while the service is running, and deny **every** `premptictl` invocation. The agent cannot directly install or apply a rule on a running Prempti — the user must perform the manual install workflow described in [Applying Rules to a Running Prempti](#applying-rules-to-a-running-prempti).
+
+In the project repo, drafting into `rules/user/` is fine because those paths aren't under the install prefix.
+
+Before writing a new rule, read `rules/default/coding_agents_rules.yaml` to check for overlaps. The default ruleset is organized into seven sections covering common AI-agent attack surfaces:
 
 1. **Working-directory boundary** — monitor / ask on file access outside the session cwd
 2. **Sensitive paths** — deny reads and writes to `/etc/`, `~/.ssh/`, `~/.aws/`, `.env` files, etc.
 3. **Sandbox disable** — Claude Code / Codex / Gemini CLI sandbox-disable attempts (Write, Edit, and Bash variants)
 4. **Threats** — credential access, destructive shell commands, pipe-to-shell, encoded payloads, curl/wget exfiltration, IMDS access, credential archives, SSH covert tunnels, cron persistence, history wipe, package publish, shell startup files, agent instruction files outside cwd, cross-agent auth file reads, MCP installs from untrusted hosts, MCP execution from temp dirs, credential glob patterns
-5. **MCP and skill content** — MCP config poisoning (`.mcp.json`) and slash-command file injection (`.claude/commands/`)
+5. **MCP and skill content** — MCP config poisoning (`.mcp.json`), slash-command and skill file injection (`.claude/commands/`, `.claude/skills/`), Claude Code subagent and plugin storage (`.claude/agents/`, `.claude/plugins/`), settings backups (`.claude/backups/`)
 6. **Persistence vectors** — settings hooks, settings-level mcpServers, git hooks, package registry redirects, `.env` API base-URL overrides, AI API keys in env files
+7. **Self-protection** — block agent attempts to disable Prempti: every `premptictl` invocation, platform service-stop alternatives (systemctl / launchctl / taskkill / pkill), writes under the install prefix, and writes to Claude Code config files (`~/.claude/settings.json`, `policy-limits.json`)
 
-The file also exposes reusable lists (`sensitive_paths`, `sensitive_file_names`, `shell_startup_files`, `agent_instruction_files`, `env_file_names`, `registry_config_files`) and macros (`is_sensitive_path`, `is_outside_cwd`, `is_write_tool`, `contains_ioc_domain`, `cmd_contains_ioc_domain`) that user rules can extend via `override: append`.
+The file also exposes reusable lists (`sensitive_paths`, `sensitive_file_names`, `shell_startup_files`, `agent_instruction_files`, `env_file_names`, `registry_config_files`) and macros (`is_sensitive_path`, `is_outside_cwd`, `is_claude_data_path`, `is_write_tool`, `contains_ioc_domain`, `cmd_contains_ioc_domain`) that user rules can extend via `override: append`.
 
 If the user's request overlaps with an existing rule, prefer extending it via `override: append` rather than creating a duplicate. If the new rule is more restrictive (e.g., deny where the default only asks), explain the interaction to the user.
+
+## Applying Rules to a Running Prempti
+
+The agent **cannot install or apply a rule on a running Prempti** by itself. Two self-protection rules make this a user-driven operation:
+
+- `Deny writes under Prempti install prefix` blocks Write/Edit on any path under `~/.prempti/` (or `%LOCALAPPDATA%\prempti\` on Windows), including `rules/user/`.
+- `Deny premptictl invocation` blocks every agent-invoked `premptictl` command — even read-only ones like `status`, `health`, `logs`.
+
+This is by design: the agent is the threat model the rules defend against, so it cannot be trusted to author and load its own policy.
+
+### Workflow
+
+1. **Draft the rule to a path the agent can write to** — typically the current working directory (`./<rule-name>.yaml`), the project repo's `rules/user/` if the user is contributing back, or a scratch location like `/tmp/<rule-name>.yaml`. Do **not** attempt to write directly into `~/.prempti/rules/user/` — Prempti will deny it.
+2. **Validate the draft with Falco** (see [Validation](#validation)). Validation works on any path; the rule does not need to be installed.
+3. **Hand the install steps to the user**. The agent cannot run these — the user copies and runs them themselves. Substitute the actual draft path and a descriptive rule filename.
+
+**Linux / macOS**
+
+```bash
+# 1. Stop Prempti — this unregisters the hook, so writes under ~/.prempti/ pass through
+premptictl stop
+
+# 2. Copy the validated rule into the user rules directory
+cp <draft-path> ~/.prempti/rules/user/<rule-name>.yaml
+
+# 3. Start Prempti — the new rule is loaded and the hook is re-registered
+premptictl start
+```
+
+**Windows (PowerShell)**
+
+```powershell
+# 1. Stop Prempti
+premptictl stop
+
+# 2. Copy the validated rule into the user rules directory
+Copy-Item <draft-path> "$env:LOCALAPPDATA\prempti\rules\user\<rule-name>.yaml"
+
+# 3. Start Prempti
+premptictl start
+```
+
+4. **Wait for the user to confirm** `premptictl start` succeeded. The new rule is live only after start completes — between step 1 and step 3, Prempti's interception is off and tool calls pass through unmonitored, so the user knows this window exists.
+
+### Notes
+
+- If the user prefers a single command, `premptictl restart` after the `cp` is equivalent to `stop` → re-add hook → `start`.
+- Removing the rule later follows the same pattern: `premptictl stop`, `rm ~/.prempti/rules/user/<name>.yaml`, `premptictl start`.
+- If the user is running Prempti in **monitor mode** (`premptictl mode monitor`), writes to the install prefix will still produce a deny alert in logs but tool calls succeed — the user can technically skip the stop/start, but the alert is noise and the canonical workflow above is preferred either way.
 
 ## Validation
 
@@ -222,7 +283,7 @@ Check these locations in order. The "installed" locations are written by the pla
 
 ### Running validation
 
-Use the installed config so the plugin is loaded and all fields are recognized.
+Use the installed config so the plugin is loaded and all fields are recognized. Validate the **draft** file at whatever path it currently lives — validation does not require the rule to be installed under the Prempti prefix (and the agent cannot put it there until the user runs the manual install steps).
 
 **Linux / macOS**
 
@@ -230,7 +291,7 @@ Use the installed config so the plugin is loaded and all fields are recognized.
 ~/.prempti/bin/falco \
   -c ~/.prempti/config/falco.yaml \
   --disable-source syscall \
-  -V ~/.prempti/rules/user/my_rules.yaml
+  -V <draft-path>      # e.g. ./my_rules.yaml or /tmp/my_rules.yaml
 ```
 
 **Windows** (PowerShell)
@@ -239,7 +300,7 @@ Use the installed config so the plugin is loaded and all fields are recognized.
 & "$env:LOCALAPPDATA\prempti\bin\falco.exe" `
   -c "$env:LOCALAPPDATA\prempti\config\falco.yaml" `
   --disable-source syscall `
-  -V "$env:LOCALAPPDATA\prempti\rules\user\my_rules.yaml"
+  -V <draft-path>
 ```
 
 This validates:
@@ -286,6 +347,8 @@ Flag to the user that the rule was not machine-validated.
 | `tool.input_command contains "rm"` | Matches `rm`, but also `mkdir`, `chmod`, `arm64` | Use `startswith "rm "` or `startswith "rm -"` for precision |
 | `tags: [deny]` | Wrong tag name — broker won't recognize it | Use `coding_agent_deny` or `coding_agent_ask` |
 | Editing `rules/default/` or `seen.yaml` | Overwritten on upgrade / breaks verdict resolution | Write to `rules/user/`; use `override:` to modify defaults |
+| Writing directly into `~/.prempti/rules/user/` while Prempti is running | Self-protection blocks all Write/Edit under the install prefix | Draft to cwd or a scratch path, validate, then hand the user the manual install steps (see "Applying Rules to a Running Prempti") |
+| Asking the agent to run `premptictl ...` | Self-protection denies every `premptictl` invocation | The user runs `premptictl` commands; the agent presents the steps and waits for confirmation |
 | Using `tool.input_command` without `tool.name = "Bash"` | `tool.input_command` is empty for non-Bash tools — condition silently never matches | Always guard with `tool.name = "Bash" and ...` |
 | Creating a rule that overlaps with defaults | User gets unexpected double verdicts or confusion | Read `rules/default/` first; extend with `override:` or explain the interaction |
 
