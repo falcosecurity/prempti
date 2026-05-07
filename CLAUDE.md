@@ -398,7 +398,7 @@ make build-ctl              # CTL tool only
 
 Requires latest stable Rust (the falco_plugin SDK tracks latest stable as MSRV).
 
-The repository is a Cargo workspace. The root `Cargo.toml` declares `[workspace.package].version` as the single source of truth — every crate inherits it via `version.workspace = true`, the plugin's reported version is derived from `CARGO_PKG_VERSION` at compile time, and `Makefile` / `package.ps1` read the version from the same file. Bumping a release is a one-line change. Size-sensitive crates (`claude-interceptor`, `premptictl`) use `opt-level = "z"`; the plugin (hot path) uses `opt-level = 2`.
+The repository is a Cargo workspace. The root `Cargo.toml` declares `[workspace.package].version` as the single source of truth for the Rust side — every crate inherits it via `version.workspace = true`, the plugin's reported version is derived from `CARGO_PKG_VERSION` at compile time, and `Makefile` / `package.ps1` read the version from the same file. The Claude Code plugin marketplace manifest (`.claude-plugin/marketplace.json`, `metadata.version`) carries an independent version string that must be kept in lockstep with the workspace version — so cutting a release is a two-file edit. Size-sensitive crates (`claude-interceptor`, `premptictl`) use `opt-level = "z"`; the plugin (hot path) uses `opt-level = 2`.
 
 ### Tests
 
