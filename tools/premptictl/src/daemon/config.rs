@@ -36,6 +36,7 @@ impl SupervisorConfig {
     }
 
     fn parse_with_warnings(data: &str, source: &Path) -> Result<Self, String> {
+        let data = data.strip_prefix('\u{FEFF}').unwrap_or(data);
         let mut cfg = Self::default();
         for (idx, raw) in data.lines().enumerate() {
             let line_num = idx + 1;
@@ -164,5 +165,12 @@ log_rotate_bytes: 9999
         let path = PathBuf::from("/nonexistent/supervisor.yaml");
         let cfg = SupervisorConfig::load(&path).unwrap();
         assert_eq!(cfg, SupervisorConfig::default());
+    }
+
+    #[test]
+    fn tolerates_utf8_bom() {
+        let yaml = "\u{FEFF}log_rotate_bytes: 4096\n";
+        let cfg = SupervisorConfig::parse_with_warnings(yaml, &fake_path()).unwrap();
+        assert_eq!(cfg.log_rotate_bytes, 4096);
     }
 }
