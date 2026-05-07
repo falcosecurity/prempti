@@ -708,7 +708,12 @@ impl<R: SessionNameResolver> Formatter<R> {
             _ => ANSI_DIM,
         };
         let prio = self.paint(&prio_token, prio_color);
-        let arrow = self.paint("↳", ANSI_DIM);
+        // `╰` shares the Box Drawing block with the continuation `│`, so
+        // the two glyphs render with identical cell width and font
+        // metrics. Plain arrows like `↳` (Arrows block) drift visually in
+        // some fonts/terminals even when their reported display width is
+        // the same.
+        let arrow = self.paint("╰", ANSI_DIM);
         let pad = " ".repeat(body_col);
         format!("{pad}{arrow} {prio}  {rule_name}")
     }
@@ -1784,7 +1789,7 @@ mod tests {
     fn matched_allow_event_renders_with_circled_bullet() {
         // A rule with no deny/ask tag fires for the event. The verdict is
         // matched-allow: ◉ green bullet, full block (bold tool name +
-        // continuation lines + ↳ rule detail line).
+        // continuation lines + ╰ rule detail line).
         let mut f = Formatter::new(
             opts_no_color(),
             "/home/u".to_string(),
@@ -1863,7 +1868,7 @@ mod tests {
         let out = f.process_line(&make_seen(3, "s", "/home/u", "Bash", "command", "x"));
         let joined = out.join("\n");
         assert!(joined.matches("⊘").count() >= 1);
-        let detail_count = joined.matches("↳").count();
+        let detail_count = joined.matches("╰").count();
         assert_eq!(detail_count, 2, "two deny rules → two detail lines");
         assert_eq!(f.counters().deny, 1);
     }
@@ -2204,13 +2209,42 @@ mod tests {
             .expect("event line missing");
         let detail_line = out
             .iter()
-            .find(|l| l.contains("↳"))
+            .find(|l| l.contains("╰"))
             .expect("detail line missing");
         let event_tool_col = char_col(event_line, 'R').expect("R not found in event");
-        let detail_arrow_col = char_col(detail_line, '↳').expect("↳ not found in detail");
+        let detail_arrow_col = char_col(detail_line, '╰').expect("╰ not found in detail");
         assert_eq!(
             event_tool_col, detail_arrow_col,
-            "tool name and ↳ must share a column.\nevent: {event_line}\ndetail: {detail_line}"
+            "tool name and ╰ must share a column.\nevent: {event_line}\ndetail: {detail_line}"
+        );
+    }
+
+    #[test]
+    fn continuation_and_detail_share_column() {
+        // `│` (continuation) and `╰` (detail) live in the same Box
+        // Drawing block so their visual cell metrics line up. Numerical
+        // equality is the structural invariant: both must sit at body_col.
+        let mut f = Formatter::new(
+            opts_no_color(),
+            "/home/u".to_string(),
+            StubResolver(HashMap::new()),
+        );
+        let _ = f.process_line(&make_deny(7, "Deny dangerous", "blocked", "Critical"));
+        let seen = make_seen(7, "abc", "/home/u/proj", "Bash", "command", "rm -rf /");
+        let out = f.process_line(&seen);
+        let cont_line = out
+            .iter()
+            .find(|l| l.contains("│"))
+            .expect("continuation line missing");
+        let detail_line = out
+            .iter()
+            .find(|l| l.contains("╰"))
+            .expect("detail line missing");
+        let cont_col = char_col(cont_line, '│').expect("│ not found in continuation");
+        let detail_col = char_col(detail_line, '╰').expect("╰ not found in detail");
+        assert_eq!(
+            cont_col, detail_col,
+            "│ and ╰ must share a column.\ncont: {cont_line}\ndetail: {detail_line}"
         );
     }
 
