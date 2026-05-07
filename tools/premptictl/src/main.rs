@@ -1524,7 +1524,7 @@ mod logs_tests {
     fn cmd_label_omits_show_when_default_mask() {
         // Explicit but identical-to-default mask should not echo --show, since
         // the user wouldn't have noticed any change in behavior.
-        let opts = parse_logs_args(&["--show=deny,ask,allow"]).unwrap();
+        let opts = parse_logs_args(&["--show=deny,ask,allow,pass"]).unwrap();
         let label = build_logs_cmd_label_with_bin("premptictl", &opts);
         assert!(!label.contains("--show"), "got: {label}");
     }
@@ -1650,8 +1650,8 @@ fn print_usage() {
     eprintln!("                     --tail=N        print last N lines (default: 100)");
     eprintln!("                     --err           target stderr log instead (forces raw)");
     eprintln!("                     --raw           print raw JSON (disable pretty formatting)");
-    eprintln!("                     --show LIST     verdicts to render: deny,ask,allow,seen,all");
-    eprintln!("                                     default: deny,ask,allow (seen filtered)");
+    eprintln!("                     --show LIST     verdicts to render: pass,allow,ask,deny,all");
+    eprintln!("                                     default: all");
     eprintln!("                     --no-color      pretty layout without ANSI colors");
     eprintln!("                     --no-stats      pretty layout without status line");
     eprintln!();

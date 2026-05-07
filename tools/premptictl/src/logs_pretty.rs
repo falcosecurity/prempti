@@ -35,9 +35,9 @@ pub struct PrettyOpts {
 pub const SHOW_DENY: u8 = 1 << 0;
 pub const SHOW_ASK: u8 = 1 << 1;
 pub const SHOW_ALLOW: u8 = 1 << 2;
-pub const SHOW_SEEN: u8 = 1 << 3;
-pub const SHOW_DEFAULT: u8 = SHOW_DENY | SHOW_ASK | SHOW_ALLOW;
-pub const SHOW_ALL: u8 = SHOW_DENY | SHOW_ASK | SHOW_ALLOW | SHOW_SEEN;
+pub const SHOW_PASS: u8 = 1 << 3;
+pub const SHOW_DEFAULT: u8 = SHOW_DENY | SHOW_ASK | SHOW_ALLOW | SHOW_PASS;
+pub const SHOW_ALL: u8 = SHOW_DEFAULT;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ShowMask(pub u8);
@@ -60,7 +60,11 @@ impl ShowMask {
                 "deny" => SHOW_DENY,
                 "ask" => SHOW_ASK,
                 "allow" => SHOW_ALLOW,
-                "seen" => SHOW_SEEN,
+                "pass" => SHOW_PASS,
+                // `seen` is the protocol-level term for the catch-all
+                // (rule file, tag, plugin config). Accepted as a quiet
+                // alias for `pass` so existing scripts keep working.
+                "seen" => SHOW_PASS,
                 "all" => SHOW_ALL,
                 "none" => 0,
                 _ => return Err(format!("invalid --show value: {}", token)),
@@ -88,8 +92,8 @@ impl ShowMask {
         if self.contains(SHOW_ALLOW) {
             parts.push("allow");
         }
-        if self.contains(SHOW_SEEN) {
-            parts.push("seen");
+        if self.contains(SHOW_PASS) {
+            parts.push("pass");
         }
         parts.join(",")
     }
@@ -229,8 +233,8 @@ fn condense_session_name(text: &str) -> String {
 
 /// Flatten a multi-line tool input to a single line: replace control chars
 /// with spaces, collapse runs of whitespace, and trim. Used for the inline
-/// body of `Allow`/`Seen` events where the column layout requires a single
-/// line per event.
+/// body of `Pass` events where the column layout requires a single line
+/// per event.
 fn flatten_inline(text: &str) -> String {
     let cleaned: String = text
         .chars()
@@ -267,6 +271,11 @@ fn take_chars(s: &str, max: usize) -> String {
 #[derive(Default, Clone, Copy)]
 pub struct Counters {
     pub events: u64,
+    /// Events that triggered only the catch-all rule — no specific rule
+    /// fired. Rendered with `●`.
+    pub pass: u64,
+    /// Events where a rule fired but did not request deny/ask (matched-
+    /// allow). Rendered with `◉`.
     pub allow: u64,
     pub ask: u64,
     pub deny: u64,
@@ -296,7 +305,13 @@ enum VerdictKind {
 enum FinalVerdict {
     Deny,
     Ask,
+    /// A rule fired with no deny/ask tag — matched-allow. Rendered with
+    /// the same full block (tool name + content + detail line) as
+    /// `Deny`/`Ask` but with the `◉` green bullet.
     Allow,
+    /// Only the catch-all `seen` rule fired — no specific rule had
+    /// anything to say. Rendered as a single truncated line with `●`.
+    Pass,
 }
 
 struct SessionState {
@@ -462,16 +477,21 @@ impl<R: SessionNameResolver> Formatter<R> {
 
     fn finalize(&mut self, cid: u64, seen: &Value) -> Vec<String> {
         let buf = self.in_flight.remove(&cid).unwrap_or_default();
+        // Resolution: deny > ask > matched-allow (any non-deny/non-ask
+        // alert) > pass (only the catch-all fired).
         let final_v = if buf.verdicts.iter().any(|x| x.kind == VerdictKind::Deny) {
             FinalVerdict::Deny
         } else if buf.verdicts.iter().any(|x| x.kind == VerdictKind::Ask) {
             FinalVerdict::Ask
-        } else {
+        } else if buf.verdicts.iter().any(|x| x.kind == VerdictKind::Other) {
             FinalVerdict::Allow
+        } else {
+            FinalVerdict::Pass
         };
 
         self.counters.events += 1;
         match final_v {
+            FinalVerdict::Pass => self.counters.pass += 1,
             FinalVerdict::Allow => self.counters.allow += 1,
             FinalVerdict::Ask => self.counters.ask += 1,
             FinalVerdict::Deny => self.counters.deny += 1,
@@ -484,9 +504,9 @@ impl<R: SessionNameResolver> Formatter<R> {
             FinalVerdict::Deny => self.opts.show.contains(SHOW_DENY),
             FinalVerdict::Ask => self.opts.show.contains(SHOW_ASK),
             FinalVerdict::Allow => self.opts.show.contains(SHOW_ALLOW),
+            FinalVerdict::Pass => self.opts.show.contains(SHOW_PASS),
         };
-        let render_seen = self.opts.show.contains(SHOW_SEEN);
-        if !render_verdict && !render_seen {
+        if !render_verdict {
             return Vec::new();
         }
 
@@ -560,21 +580,19 @@ impl<R: SessionNameResolver> Formatter<R> {
             self.last_emitted_cwd = Some(cwd.clone());
         }
 
-        if render_verdict {
-            let (event_lines, body_col) =
-                self.format_event_line(&time_str, &session_id, color_code, final_v, fields);
-            out.extend(event_lines);
-            for va in buf.verdicts.iter() {
-                if (va.kind == VerdictKind::Deny && final_v == FinalVerdict::Deny)
-                    || (va.kind == VerdictKind::Ask && final_v == FinalVerdict::Ask)
-                {
-                    out.push(self.format_detail_line(body_col, &va.priority, &va.rule_name));
-                }
+        let (event_lines, body_col) =
+            self.format_event_line(&time_str, &session_id, color_code, final_v, fields);
+        out.extend(event_lines);
+        for va in buf.verdicts.iter() {
+            let matches = matches!(
+                (va.kind, final_v),
+                (VerdictKind::Deny, FinalVerdict::Deny)
+                    | (VerdictKind::Ask, FinalVerdict::Ask)
+                    | (VerdictKind::Other, FinalVerdict::Allow)
+            );
+            if matches {
+                out.push(self.format_detail_line(body_col, &va.priority, &va.rule_name));
             }
-        }
-
-        if render_seen {
-            out.push(self.format_seen_event_line(&time_str, &session_id, color_code, fields));
         }
 
         self.last_session_id = Some(session_id);
@@ -629,11 +647,12 @@ impl<R: SessionNameResolver> Formatter<R> {
     /// ws`). The caller uses that width as left padding for sub-lines so
     /// the rule name aligns under the tool name.
     ///
-    /// For `Allow` verdicts the result is a single line with a truncated
-    /// body, matching the streaming-friendly default. For `Deny` and `Ask`
-    /// the tool name lands on the event line and the full untruncated
-    /// content is emitted on subsequent lines, indented to the body column
-    /// behind a dim `│` rule so the audit block stays visually distinct.
+    /// For `Pass` verdicts the result is a single line with a truncated
+    /// body, matching the streaming-friendly default. For `Allow`, `Ask`
+    /// and `Deny` (i.e. any event where a specific rule fired) the tool
+    /// name lands on the event line and the full untruncated content is
+    /// emitted on subsequent lines, indented to the body column behind a
+    /// dim `│` rule so the audit block stays visually distinct.
     fn format_event_line(
         &self,
         time_str: &str,
@@ -653,11 +672,11 @@ impl<R: SessionNameResolver> Formatter<R> {
         );
 
         match verdict {
-            FinalVerdict::Allow => {
+            FinalVerdict::Pass => {
                 let body = self.render_tool_body(fields);
                 (vec![format!("{prefix}{body}")], body_col)
             }
-            FinalVerdict::Deny | FinalVerdict::Ask => {
+            FinalVerdict::Allow | FinalVerdict::Deny | FinalVerdict::Ask => {
                 let tool = field_str(fields, "tool.name").unwrap_or_else(|| "?".to_string());
                 let tool_styled = self.paint(&tool, ANSI_BOLD);
                 let mut lines = vec![format!("{prefix}{tool_styled}")];
@@ -676,25 +695,6 @@ impl<R: SessionNameResolver> Formatter<R> {
                 (lines, body_col)
             }
         }
-    }
-
-    fn format_seen_event_line(
-        &self,
-        time_str: &str,
-        session_id: &str,
-        color_code: u8,
-        fields: Option<&Value>,
-    ) -> String {
-        let bullet = self.paint("·", ANSI_DIM);
-        let (label, _) = self.format_session_label(session_id, color_code);
-        let body = self.render_tool_body(fields);
-        format!(
-            "{time}  {label}  {bullet}  {body}",
-            time = self.paint(time_str, ANSI_DIM),
-            label = label,
-            bullet = bullet,
-            body = self.paint(&strip_ansi(&body), ANSI_DIM),
-        )
     }
 
     /// Sub-line under an event line. `body_col` is the visible column where
@@ -859,19 +859,20 @@ impl<R: SessionNameResolver> Formatter<R> {
             .unwrap_or_default();
         if !self.opts.color {
             return format!(
-                " {cmd}: sessions {} · events {} (● allow {} · ⊙ ask {} · ⊘ deny {}){since_suffix}",
-                c.sessions, c.events, c.allow, c.ask, c.deny
+                " {cmd}: sessions {} · events {} (● pass {} · ◉ allow {} · ⊙ ask {} · ⊘ deny {}){since_suffix}",
+                c.sessions, c.events, c.pass, c.allow, c.ask, c.deny
             );
         }
         // Resume grey after each colored bullet so the row stays in the
         // same tone as the rule line above it.
         format!(
-            "{grey} {cmd}: sessions {sessions} · events {events} ({green}●{grey} allow {allow} · {yellow}⊙{grey} ask {ask} · {red}⊘{grey} deny {deny}){since_suffix}{reset}",
+            "{grey} {cmd}: sessions {sessions} · events {events} ({green}●{grey} pass {pass} · {green}◉{grey} allow {allow} · {yellow}⊙{grey} ask {ask} · {red}⊘{grey} deny {deny}){since_suffix}{reset}",
             grey = ANSI_GREY,
             cmd = cmd,
             sessions = c.sessions,
             events = c.events,
             green = ANSI_FG_GREEN,
+            pass = c.pass,
             allow = c.allow,
             yellow = ANSI_FG_YELLOW,
             ask = c.ask,
@@ -1519,7 +1520,8 @@ fn session_color_code(idx: u8) -> String {
 
 fn verdict_bullet(v: FinalVerdict) -> &'static str {
     match v {
-        FinalVerdict::Allow => "●",
+        FinalVerdict::Pass => "●",
+        FinalVerdict::Allow => "◉",
         FinalVerdict::Ask => "⊙",
         FinalVerdict::Deny => "⊘",
     }
@@ -1527,6 +1529,7 @@ fn verdict_bullet(v: FinalVerdict) -> &'static str {
 
 fn verdict_color(v: FinalVerdict) -> &'static str {
     match v {
+        FinalVerdict::Pass => ANSI_FG_GREEN,
         FinalVerdict::Allow => ANSI_FG_GREEN,
         FinalVerdict::Ask => ANSI_FG_YELLOW,
         FinalVerdict::Deny => ANSI_FG_RED,
@@ -1699,11 +1702,26 @@ mod tests {
         )
     }
 
+    /// A rule that fired but carries neither the deny nor the ask tag —
+    /// the matched-allow case (`◉`).
+    fn make_other(cid: u64, rule: &str, message: &str, priority: &str) -> String {
+        format!(
+            "{{\"hostname\":\"x\",\"message\":\"{message}\",\"output_fields\":{{\"correlation.id\":{cid}}},\"priority\":\"{priority}\",\"rule\":\"{rule}\",\"source\":\"coding_agent\",\"tags\":[],\"time\":\"2026-04-29T12:16:25.000000000Z\"}}"
+        )
+    }
+
     #[test]
     fn parses_show_default_and_aliases() {
-        assert_eq!(ShowMask::parse("deny,ask,allow").unwrap().0, SHOW_DEFAULT);
+        assert_eq!(
+            ShowMask::parse("deny,ask,allow,pass").unwrap().0,
+            SHOW_DEFAULT
+        );
         assert_eq!(ShowMask::parse("all").unwrap().0, SHOW_ALL);
-        assert_eq!(ShowMask::parse("seen").unwrap().0, SHOW_SEEN);
+        // `seen` is a backward-compat alias for `pass` (the user-facing
+        // category label), since the protocol-level term is `seen` but the
+        // log category renamed to `pass`.
+        assert_eq!(ShowMask::parse("seen").unwrap().0, SHOW_PASS);
+        assert_eq!(ShowMask::parse("pass").unwrap().0, SHOW_PASS);
         assert_eq!(
             ShowMask::parse("deny, ask").unwrap().0,
             SHOW_DENY | SHOW_ASK
@@ -1712,7 +1730,7 @@ mod tests {
     }
 
     #[test]
-    fn allow_event_renders_after_seen() {
+    fn pass_event_renders_after_seen() {
         let mut f = Formatter::new(
             opts_no_color(),
             "/home/u".to_string(),
@@ -1723,11 +1741,13 @@ mod tests {
         let joined = out.join("\n");
         assert!(joined.contains("[abc123]"));
         assert!(joined.contains("●"));
+        assert!(!joined.contains("◉"), "pass must not use the allow bullet: {joined}");
         assert!(joined.contains("Bash(ls -la)"));
         assert!(joined.contains("~/proj"));
         let c = f.counters();
         assert_eq!(c.events, 1);
-        assert_eq!(c.allow, 1);
+        assert_eq!(c.pass, 1);
+        assert_eq!(c.allow, 0);
         assert_eq!(c.deny, 0);
         assert_eq!(c.ask, 0);
         assert_eq!(c.sessions, 1);
@@ -1755,8 +1775,80 @@ mod tests {
         assert!(joined.contains("CRITICAL  Deny dangerous"));
         let c = f.counters();
         assert_eq!(c.deny, 1);
+        assert_eq!(c.pass, 0);
         assert_eq!(c.allow, 0);
         assert_eq!(c.events, 1);
+    }
+
+    #[test]
+    fn matched_allow_event_renders_with_circled_bullet() {
+        // A rule with no deny/ask tag fires for the event. The verdict is
+        // matched-allow: ◉ green bullet, full block (bold tool name +
+        // continuation lines + ↳ rule detail line).
+        let mut f = Formatter::new(
+            opts_no_color(),
+            "/home/u".to_string(),
+            StubResolver(HashMap::new()),
+        );
+        let other = make_other(
+            5,
+            "Monitor activity outside working directory",
+            "Falco detected access outside cwd",
+            "Notice",
+        );
+        let out_pre = f.process_line(&other);
+        assert!(
+            out_pre.is_empty(),
+            "non-seen alert must not render before seen"
+        );
+        let seen = make_seen(5, "abc", "/home/u/proj", "Read", "file", "/etc/hosts");
+        let out = f.process_line(&seen);
+        let joined = out.join("\n");
+        assert!(joined.contains("◉"), "matched-allow bullet expected: {joined}");
+        assert!(!joined.contains("●"), "must not use the pass bullet: {joined}");
+        assert!(joined.contains("Read"), "tool name on event line: {joined}");
+        assert!(
+            joined.contains("│ /etc/hosts"),
+            "path on continuation line: {joined}"
+        );
+        assert!(
+            joined.contains("NOTICE  Monitor activity outside working directory"),
+            "rule name on detail line: {joined}"
+        );
+        let c = f.counters();
+        assert_eq!(c.events, 1);
+        assert_eq!(c.allow, 1);
+        assert_eq!(c.pass, 0);
+        assert_eq!(c.deny, 0);
+        assert_eq!(c.ask, 0);
+    }
+
+    #[test]
+    fn deny_wins_over_other() {
+        // When a deny rule and a non-deny/non-ask rule both match the
+        // same event, the final verdict is deny and only the deny detail
+        // line shows up (the other rule's detail is suppressed because
+        // its kind doesn't match the final verdict).
+        let mut f = Formatter::new(
+            opts_no_color(),
+            "/home/u".to_string(),
+            StubResolver(HashMap::new()),
+        );
+        f.process_line(&make_other(9, "Audit something", "noted", "Notice"));
+        f.process_line(&make_deny(9, "Deny dangerous", "blocked", "Critical"));
+        let out = f.process_line(&make_seen(9, "s", "/home/u", "Bash", "command", "x"));
+        let joined = out.join("\n");
+        assert!(joined.contains("⊘"), "deny bullet: {joined}");
+        assert!(!joined.contains("◉"), "no allow bullet: {joined}");
+        assert!(joined.contains("CRITICAL  Deny dangerous"));
+        assert!(
+            !joined.contains("Audit something"),
+            "matched-allow detail must be hidden on deny: {joined}"
+        );
+        let c = f.counters();
+        assert_eq!(c.deny, 1);
+        assert_eq!(c.allow, 0);
+        assert_eq!(c.pass, 0);
     }
 
     #[test]
@@ -1893,21 +1985,24 @@ mod tests {
         assert!(footer[0].is_empty());
         assert!(footer[1].contains("─"));
         let body = &footer[2];
-        // Form: "premptictl: sessions N · events N (● allow N · ⊙ ask N · ⊘ deny N)"
+        // Form: "premptictl: sessions N · events N (● pass N · ◉ allow N · ⊙ ask N · ⊘ deny N)"
         assert!(body.contains("premptictl:"), "tool prefix: {body}");
         assert!(body.contains("sessions "));
         assert!(body.contains("events "));
-        assert!(body.contains("(● allow "));
+        assert!(body.contains("(● pass "));
+        assert!(body.contains("◉ allow "));
         assert!(body.contains("⊙ ask "));
         assert!(body.contains("⊘ deny "));
         assert!(body.trim_end().ends_with(')'));
         let s_pos = body.find("sessions").unwrap();
         let e_pos = body.find("events").unwrap();
+        let p_pos = body.find("pass").unwrap();
         let a_pos = body.find("allow").unwrap();
         let k_pos = body.find("ask").unwrap();
         let d_pos = body.find("deny").unwrap();
         assert!(s_pos < e_pos);
-        assert!(e_pos < a_pos);
+        assert!(e_pos < p_pos);
+        assert!(p_pos < a_pos);
         assert!(a_pos < k_pos);
         assert!(k_pos < d_pos);
     }
@@ -1949,8 +2044,8 @@ mod tests {
     }
 
     #[test]
-    fn seen_filtered_by_default() {
-        // With default mask, allow events render, seen lines do not.
+    fn pass_rendered_by_default() {
+        // With default mask, pass events render with the green ● bullet.
         let mut f = Formatter::new(
             opts_no_color(),
             "/home/u".to_string(),
@@ -1958,27 +2053,34 @@ mod tests {
         );
         let out = f.process_line(&make_seen(1, "s", "/home/u", "Bash", "command", "ls"));
         let joined = out.join("\n");
-        // Must contain allow bullet exactly once (from the allow render),
-        // not two (one allow + one seen).
+        // Exactly one bullet — the pass render. There is no separate
+        // dim audit line in the new design.
         assert_eq!(joined.matches("●").count(), 1);
-        assert!(!joined.contains("·  Bash"), "no seen audit line by default");
     }
 
     #[test]
-    fn show_seen_renders_audit_line() {
+    fn pass_filtered_when_pass_bit_unset() {
+        // With pass off (only deny/ask/allow shown), a catch-all-only
+        // event produces no output but still counts.
         let mut opts = opts_no_color();
-        opts.show = ShowMask(SHOW_SEEN);
+        opts.show = ShowMask(SHOW_DENY | SHOW_ASK | SHOW_ALLOW);
+        let mut f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
+        let out = f.process_line(&make_seen(1, "s", "/home/u", "Bash", "command", "ls"));
+        assert!(out.is_empty(), "no rendering when pass is suppressed");
+        assert_eq!(f.counters().events, 1);
+        assert_eq!(f.counters().pass, 1);
+    }
+
+    #[test]
+    fn seen_token_is_alias_for_pass() {
+        // `--show seen` keeps working as an alias for `--show pass`.
+        let mut opts = opts_no_color();
+        opts.show = ShowMask::parse("seen").unwrap();
         let mut f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
         let out = f.process_line(&make_seen(1, "s", "/home/u", "Bash", "command", "ls"));
         let joined = out.join("\n");
-        assert!(
-            !joined.contains("●"),
-            "no allow bullet when SHOW_ALLOW unset"
-        );
-        assert!(joined.contains("·"), "seen audit bullet expected");
-        // Counter still increments.
-        assert_eq!(f.counters().events, 1);
-        assert_eq!(f.counters().allow, 1);
+        assert!(joined.contains("●"), "pass bullet expected via seen alias: {joined}");
+        assert_eq!(f.counters().pass, 1);
     }
 
     #[test]
@@ -2070,7 +2172,7 @@ mod tests {
         let after = joined.split_once("[ea56c92a]").unwrap().1;
         let next_char = after.chars().find(|c| !c.is_whitespace()).unwrap_or(' ');
         assert!(
-            "❯●⊙⊘".contains(next_char),
+            "❯●◉⊙⊘".contains(next_char),
             "first non-space after [id] should be a marker, got {next_char:?}: {joined}"
         );
     }
