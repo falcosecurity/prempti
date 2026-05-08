@@ -32,6 +32,12 @@ foreach ($dir in @($ConfigDir, $RunDir, $LogDir)) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
 }
 
+# PS 5.1's `Set-Content -Encoding UTF8` writes a UTF-8 BOM. The supervisor
+# YAML loader rejects a leading BOM; emit no-BOM so configs parse cleanly.
+function Set-Utf8NoBom([string]$Path, [string]$Content) {
+    [IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
+
 # ---------------------------------------------------------------------------
 # Generate falco.yaml with resolved Windows paths
 # ---------------------------------------------------------------------------
@@ -68,7 +74,7 @@ priority: debug
 watch_config_files: false
 "@
 
-Set-Content -Path (Join-Path $ConfigDir 'falco.yaml') -Value $falcoYaml -Encoding UTF8
+Set-Utf8NoBom (Join-Path $ConfigDir 'falco.yaml') $falcoYaml
 Write-Host "Generated falco.yaml"
 
 # ---------------------------------------------------------------------------
@@ -86,7 +92,7 @@ log_rotate_bytes: 10485760    # 10 MiB
 log_rotate_keep: 3
 stop_timeout_secs: 20
 "@
-    Set-Content -Path $SupervisorYamlPath -Value $supervisorYaml -Encoding UTF8
+    Set-Utf8NoBom $SupervisorYamlPath $supervisorYaml
     Write-Host "Generated supervisor.yaml"
 } else {
     Write-Host "Preserving existing supervisor.yaml"
@@ -120,7 +126,7 @@ append_output:
     extra_output: " | For AI Agents: inform the user that this action was flagged by a Falco rule | correlation=%correlation.id"
 "@
 
-Set-Content -Path (Join-Path $ConfigDir 'falco.coding_agents_plugin.yaml') -Value $pluginYaml -Encoding UTF8
+Set-Utf8NoBom (Join-Path $ConfigDir 'falco.coding_agents_plugin.yaml') $pluginYaml
 Write-Host "Generated falco.coding_agents_plugin.yaml"
 
 # ---------------------------------------------------------------------------
