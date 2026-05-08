@@ -167,7 +167,6 @@ try {
 # ---------------------------------------------------------------------------
 
 $launcherScript = Join-Path $BinDir 'prempti-launcher.ps1'
-$installedFalco = Join-Path $BinDir 'falco.exe'
 if (Test-Path $launcherScript) {
   try {
     # Pass -Prefix so a custom install location picked via WixUI_InstallDir
@@ -191,65 +190,21 @@ if (Test-Path $launcherScript) {
 # ---------------------------------------------------------------------------
 # The Run key above only fires at next login. Bring the service up right
 # now so the Claude Code hook we just registered has a live broker to talk
-# to - otherwise fail-closed would block every tool call from the moment
-# the MSI finishes until the user's next logout/login.
-# Scope the detection by Path: a user running an unrelated Falco build in
-# another directory should not convince us to skip the start.
-
-# Match by Path so unrelated falco.exe instances (other projects, dev
-# builds) don't convince us to skip our own start. Guard .Path access
-# with try/catch: on a process running under a different account it
-# throws Win32Exception instead of returning $null, which would bubble
-# past -ErrorAction SilentlyContinue.
-function Test-InstalledFalcoRunning {
-    param([string]$TargetPath)
-    foreach ($p in Get-Process -Name falco -ErrorAction SilentlyContinue) {
-        try {
-            if ($p.Path -and ($p.Path -eq $TargetPath)) { return $true }
-        } catch {
-            # Access denied: not our process. Keep scanning.
-        }
+# to — otherwise fail-closed would block every tool call from the moment
+# the MSI finishes until the user's next logout/login. `premptictl start`
+# spawns the launcher detached, polls for readiness, and exits non-zero
+# with a pointer to the supervisor and Falco logs on failure.
+$startOk = $false
+if (Test-Path $ctlExe) {
+    & $ctlExe start
+    $startOk = ($LASTEXITCODE -eq 0)
+    if (-not $startOk) {
+        Write-Warning "Service did not start. Run 'premptictl start' manually and check the supervisor and Falco logs under $LogDir."
     }
-    return $false
 }
 
-$falcoRunning = Test-InstalledFalcoRunning -TargetPath $installedFalco
-if (-not $falcoRunning -and (Test-Path $launcherScript)) {
-    try {
-        # Pre-quote the path arguments. Start-Process -ArgumentList joins
-        # the array with bare spaces and does NOT quote elements that
-        # contain spaces, so a custom INSTALLDIR like "C:\Program
-        # Files\prempti" would otherwise be split before
-        # reaching the spawned powershell.
-        $quotedLauncher = '"' + $launcherScript + '"'
-        $quotedPrefix = '"' + $Prefix + '"'
-        $startArgs = @(
-            '-NoProfile',
-            '-ExecutionPolicy', 'Bypass',
-            '-WindowStyle', 'Hidden',
-            '-File', $quotedLauncher,
-            '-Prefix', $quotedPrefix
-        )
-        Start-Process -FilePath 'powershell.exe' -ArgumentList $startArgs -WindowStyle Hidden | Out-Null
-        # Wait up to 5s for Falco to appear before declaring success.
-        $started = $false
-        for ($i = 0; $i -lt 20; $i++) {
-            Start-Sleep -Milliseconds 250
-            if (Test-InstalledFalcoRunning -TargetPath $installedFalco) {
-                $started = $true
-                break
-            }
-        }
-        if ($started) {
-            Write-Host "Service started."
-        } else {
-            Write-Warning "Service start kicked off but Falco not detected yet. Check 'premptictl status' and the startup log at $LogDir\falco.err."
-        }
-    } catch {
-        Write-Warning "Could not start the service: $($_.Exception.Message). Run 'premptictl start' manually and check $LogDir\falco.err."
-    }
-} elseif ($falcoRunning) {
-    Write-Host "Service already running."
+if ($startOk) {
+    Write-Host "Post-install complete: Prempti is installed, configured, and running."
+} else {
+    Write-Host "Post-install complete: Prempti is installed and configured. The service is not running yet."
 }
-
-Write-Host "Post-install complete: Prempti is installed, configured, and running."
