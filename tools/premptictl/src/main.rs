@@ -616,9 +616,9 @@ fn service_start(prefix: &PathBuf) {
         eprintln!("Failed to start service.");
         process::exit(1);
     }
-    // Poll briefly to verify Falco actually started.
+    // Poll up to 10s to verify Falco actually started.
     let mut started = false;
-    for _ in 0..6 {
+    for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_millis(500));
         if installed_falco_pids(prefix).is_some() {
             started = true;
@@ -628,7 +628,11 @@ fn service_start(prefix: &PathBuf) {
     if started {
         println!("Service started.");
     } else {
-        println!("Service starting (Falco not yet detected \u{2014} check logs).");
+        eprintln!("Service did not start within 10 seconds.");
+        eprintln!("Check logs:");
+        eprintln!("  {}", prefix.join("log").join("supervisor.err").display());
+        eprintln!("  {}", prefix.join("log").join("falco.err").display());
+        process::exit(1);
     }
 }
 
