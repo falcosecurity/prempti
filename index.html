@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Prempti, powered by Falco</title>
+    <meta
+      name="description"
+      content="Prempti brings Falco to AI coding agents: guardrails and monitor mode, allow/deny/ask verdicts, and a full audit trail of tool calls, driven by Falco rules you can customize."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,400;0,600;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container nav-wrap">
+        <div class="brand">
+          <span class="brand-mark">P</span>
+          <span class="brand-name">Prempti, powered by Falco</span>
+        </div>
+        <div class="nav-actions">
+          <a class="button button-ghost" href="https://github.com/falcosecurity/prempti">GitHub</a>
+          <a class="button button-ghost" href="https://falco.org/">Falco.org</a>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="container hero-grid">
+          <div>
+            <p class="eyebrow">Guardrails and Observability for AI Coding Agents</p>
+            <h1>Stop guessing what your coding agent just did</h1>
+            <p class="hero-copy">
+              Prempti intercepts coding-agent tool calls before they run, evaluates them with
+              Falco rules, and returns allow, deny, or ask verdicts, with a structured audit trail
+              for every shell command, file read/write, web fetch, and MCP call.
+            </p>
+            <div class="cta-row">
+              <a
+                class="button button-primary"
+                href="https://github.com/falcosecurity/prempti/releases/latest"
+                >Get Started in 3 Minutes</a
+              >
+              <a class="button button-secondary" href="#demo">Watch Demo</a>
+            </div>
+            <p class="note">
+              Experimental preview.
+              <br />
+              Pair Prempti with sandboxing and system hardening for defense in depth.
+            </p>
+          </div>
+          <aside class="signal-card">
+            <p class="card-title">AI coding agents move faster than your audit trail.</p>
+            <ul class="problem-list">
+              <li>What did the agent read before it changed this file?</li>
+              <li>Which shell commands ran outside expected workflow?</li>
+              <li>Did it attempt writes outside the project boundary?</li>
+              <li>What sequence of actions led to this outcome?</li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section" id="demo">
+        <div class="container">
+          <h2>Watch the demo</h2>
+          <p class="section-note demo-intro">
+            See guardrails, verdicts, and logging in a real session, not a slide deck.
+          </p>
+          <div class="demo-glow">
+            <div class="demo-frame-wrap">
+              <iframe
+                class="demo-frame"
+                src="https://asciinema.org/a/lXqokxXVO4Q3IH3W/iframe"
+                title="Prempti demo"
+                loading="lazy"
+                scrolling="no"
+                allowfullscreen
+              ></iframe>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="why-prempti">
+        <div class="container">
+          <h2>Why Prempti</h2>
+          <p class="section-lede">
+            Most teams do not need another black box. They need the same things that made Falco
+            work for infrastructure: clear rules, honest signals, and the option to enforce or just
+            watch.
+          </p>
+          <div class="hook-grid">
+            <article class="hook-card">
+              <h3>A story of the session, not just the diff</h3>
+              <p>
+                Reconstruct what happened in order: which tools ran, which rules fired, and how
+                verdicts were decided, without inferring intent from the final tree of files.
+              </p>
+            </article>
+            <article class="hook-card">
+              <h3>Policies your team can review</h3>
+              <p>
+                Write and share standard Falco YAML. No proprietary scoring, no mystery model. If
+                it is in the rule, the agent can see why something was blocked or flagged.
+              </p>
+            </article>
+            <article class="hook-card">
+              <h3>Enforce when you are ready</h3>
+              <p>
+                Start in monitor mode to build confidence, then turn on guardrails so deny and ask
+                verdicts actually shape what the agent is allowed to do.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-alt" id="how-it-works">
+        <div class="container">
+          <h2>How it works</h2>
+          <ol class="steps">
+            <li>Prempti’s hook fires before each tool call.</li>
+            <li>An interceptor sends the event to Falco via a Unix socket.</li>
+            <li>Falco’s rule engine evaluates the event against your policies.</li>
+            <li>Matching rules produce verdicts (deny / ask / allow).</li>
+            <li>The interceptor delivers the verdict back to the agent.</li>
+          </ol>
+          <p class="section-note">
+            <strong>Guardrails</strong> (default) enforces verdicts: <code>deny</code> blocks risky
+            tool calls, <code>ask</code> prompts you for confirmation, and everything else proceeds.
+            Use <code>premptictl mode guardrails</code>.
+          </p>
+          <p class="section-note">
+            <strong>Monitor</strong> mode still evaluates rules and writes the same audit trail, but every
+            tool call is allowed, which fits tuning rules and observing without blocking. Use
+            <code>premptictl mode monitor</code>.
+          </p>
+          <p class="section-note">
+            Coverage is at the <strong>hook level</strong>: Prempti sees the tool request (strongest for
+            structured tools like Read/Write/Edit), not syscall-level behavior inside executed binaries.
+            For kernel visibility on Linux, use Falco with eBPF alongside this layer.
+          </p>
+        </div>
+      </section>
+
+      <section class="section section-alt">
+        <div class="container">
+          <div class="compact-grid">
+            <article class="compact-card">
+              <h2>Built for real development environments</h2>
+              <p class="section-note">
+                <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a> today on Linux,
+                macOS, and Windows (x86_64 and ARM/Apple Silicon).
+                <a href="https://openai.com/index/codex/">Codex</a> next. Draft custom rules interactively with
+                the optional Claude Code skill:
+                <code>/plugin marketplace add falcosecurity/prempti</code>.
+              </p>
+            </article>
+
+            <article class="compact-card">
+              <h2>Data handling and privacy</h2>
+              <p class="section-note">
+                Prempti runs locally under your user account. Custom rules live in
+                <code>~/.prempti/rules/user/</code> on Linux and macOS (
+                <code>%LOCALAPPDATA%\prempti\rules\user\</code> on Windows), preserved across upgrades;
+                vendor defaults ship under <code>rules/default/</code> in the install prefix.
+              </p>
+              <ul class="privacy-list">
+                <li>Falco runs in <code>nodriver</code> mode: no kernel driver required for this use case</li>
+                <li>Default rules cover boundaries, sensitive paths, sandbox tampering, threats, MCP/skill content, and persistence patterns</li>
+                <li>Alerts and logs stay on your machine unless you forward them with your own tooling</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <article class="compact-card compact-card-wide">
+            <h2>Install and verify</h2>
+            <p class="section-note">
+              Install from the
+              <a href="https://github.com/falcosecurity/prempti/releases/latest">latest release</a>
+              (.pkg on macOS, tarball + <code>install.sh</code> on Linux, MSI + helper on Windows). Then
+              check the service, hook, and pipeline:
+            </p>
+            <div class="command-lines" role="figure" aria-label="Commands to verify install">
+              <span>premptictl status</span>
+              <span>premptictl hook status</span>
+              <span>premptictl health</span>
+            </div>
+            <p class="section-note">
+              On Linux and macOS, binaries are under <code>~/.prempti/bin/</code> until you add that
+              directory to your <code>PATH</code>. Expected health output:
+              <code>OK: pipeline healthy (synthetic event → allow)</code>. For observe-only tuning, run
+              <code>premptictl mode monitor</code>; default enforcement is
+              <code>premptictl mode guardrails</code>.
+            </p>
+            <h3 class="compact-subhead">Example custom rule (YAML)</h3>
+            <p class="section-note">
+              Add rules under <code>~/.prempti/rules/user/</code>, then <code>premptictl stop</code> and
+              <code>premptictl start</code>. From the project docs: block piping into a shell:
+            </p>
+            <pre class="command-block-pre"><code>- rule: Deny pipe to shell
+  desc: Block piping content to shell interpreters
+  condition: >
+    tool.name = "Bash"
+    and (tool.input_command contains "| sh"
+         or tool.input_command contains "| bash"
+         or tool.input_command contains "| zsh")
+  output: >
+    Falco blocked piping to a shell interpreter (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container cta-panel">
+          <div>
+            <h2>Try Prempti on your machine</h2>
+            <p>Grab the latest release and confirm the pipeline with <code>premptictl health</code>.</p>
+          </div>
+          <a class="button button-primary" href="https://github.com/falcosecurity/prempti/releases/latest"
+            >Get Started</a
+          >
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-wrap">
+        <p>
+          <a href="https://github.com/falcosecurity/prempti">Prempti</a>:
+          Guardrails and Observability for AI Coding Agents.
+        </p>
+        <p>Open source under Apache 2.0. Built for secure, observable agent workflows.</p>
+      </div>
+    </footer>
+  </body>
+</html>
