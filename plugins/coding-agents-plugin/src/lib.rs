@@ -106,6 +106,7 @@ impl Plugin for CodingAgentPlugin {
             bounded(DEFAULT_QUEUE_CAPACITY);
         let broker = Arc::new(Broker::new());
         broker.set_monitor_mode(config.mode == "monitor");
+        broker.set_passthrough(config.passthrough);
 
         // Bring up the socket server first so its bind-time check cleanly
         // rejects a second Falco trying to share the same socket *before*

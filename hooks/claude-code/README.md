@@ -29,9 +29,10 @@ The interceptor reads only `tool_use_id` from the input (for the wire protocol r
 |----------|---------|-------------|
 | `PREMPTI_SOCKET` | `~/.prempti/run/broker.sock` | Broker socket path |
 | `PREMPTI_TIMEOUT_MS` | `5000` | Socket timeout in ms |
+| `PREMPTI_FAIL_OPEN` | `0` | When set to `1`/`true`, broker communication failures allow the tool call instead of denying it |
 
 ## Error Handling
 
-- **Fail-closed**: All broker communication failures result in deny.
+- **Fail-closed by default**: Broker communication failures deny unless `PREMPTI_FAIL_OPEN=1` is set.
 - **Exit code 2**: For malformed input (empty stdin, invalid JSON). Claude Code blocks the tool call.
 - **Stdout safety**: If JSON serialization fails, emits a hardcoded deny literal. No path produces empty stdout with exit 0.

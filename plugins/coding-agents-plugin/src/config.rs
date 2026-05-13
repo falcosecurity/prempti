@@ -19,6 +19,13 @@ pub struct CodingAgentConfig {
     #[serde(default = "default_http_port")]
     pub http_port: u16,
 
+    /// When true, resolve all interceptor requests as "allow" immediately,
+    /// without waiting for rule evaluation. Events are still enqueued for
+    /// processing. Useful when embedded in a host agent that handles alerts
+    /// through its own pipeline instead of Falco's http_output.
+    #[serde(default)]
+    pub passthrough: bool,
+
     /// Tags that indicate a deny verdict.
     #[serde(default = "default_deny_tags")]
     pub deny_tags: Vec<String>,

@@ -46,6 +46,8 @@ pub struct Broker {
     pending: DashMap<u64, PendingRequest>,
     /// When true, all verdicts resolve as allow (monitor mode).
     monitor_mode: AtomicBool,
+    /// When true, resolve all requests as allow immediately on register.
+    passthrough: AtomicBool,
     /// Shutdown signal for background threads.
     shutdown: AtomicBool,
 }
@@ -67,6 +69,7 @@ impl Broker {
         Broker {
             pending: DashMap::new(),
             monitor_mode: AtomicBool::new(false),
+            passthrough: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
         }
     }
@@ -99,6 +102,22 @@ impl Broker {
         );
     }
 
+    /// Set passthrough mode. When enabled, all interceptor requests are resolved
+    /// as "allow" immediately upon registration, without waiting for rule evaluation.
+    /// Events are still enqueued for the Falco engine to process.
+    pub fn set_passthrough(&self, enabled: bool) {
+        self.passthrough.store(enabled, Ordering::Relaxed);
+        log::info!(
+            "broker passthrough: {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+    }
+
+    /// Returns true if passthrough mode is active.
+    pub fn is_passthrough(&self) -> bool {
+        self.passthrough.load(Ordering::Relaxed)
+    }
+
     /// Returns true if monitor mode is active.
     fn is_monitor(&self) -> bool {
         self.monitor_mode.load(Ordering::Relaxed)
@@ -107,7 +126,18 @@ impl Broker {
     /// Register a new pending request. `correlation_id` is the broker-assigned ID
     /// used for Falco alert correlation. `wire_id` is the interceptor's request ID
     /// used in the verdict response.
+    ///
+    /// In passthrough mode, the request is resolved as "allow" immediately without
+    /// being added to the pending map.
     pub fn register(&self, correlation_id: u64, wire_id: String, stream: BrokerStream) {
+        if self.is_passthrough() {
+            let response = Verdict::Allow.to_response_json(&wire_id);
+            let mut s = stream;
+            let _ = write!(s, "{}\n", response);
+            let _ = s.flush();
+            let _ = s.shutdown(Shutdown::Both);
+            return;
+        }
         self.pending.insert(
             correlation_id,
             PendingRequest {

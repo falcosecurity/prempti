@@ -140,14 +140,43 @@ fn verdict_deny(reason: &str) -> ! {
     process::exit(0);
 }
 
-/// Broker communication failure — always deny (fail-closed).
+/// Broker communication failure — deny by default (fail-closed).
+///
+/// Upstream interceptor semantics remain fail-closed unless an integration
+/// explicitly opts into fail-open via PREMPTI_FAIL_OPEN=1.
+///
+/// This keeps the standalone/default behavior unchanged while allowing
+/// embedding environments to continue operating when the broker is
+/// unavailable, at the cost of losing observability for that interval.
 fn verdict_on_error(reason: &str) -> ! {
-    verdict_deny(reason);
+    if env_bool("PREMPTI_FAIL_OPEN") {
+        write_verdict("allow", reason);
+        process::exit(0);
+    } else {
+        verdict_deny(reason);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
+
+/// Parse a project env var as boolean. Returns true when the var is set to one
+/// of: 1, true, yes, on (case-insensitive, surrounding whitespace ignored).
+/// Returns false otherwise, including when the var is unset or set to an empty
+/// string.
+fn env_bool(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .map(|v| {
+            let s = v.trim();
+            s.eq_ignore_ascii_case("1")
+                || s.eq_ignore_ascii_case("true")
+                || s.eq_ignore_ascii_case("yes")
+                || s.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false)
+}
 
 fn get_socket_path() -> String {
     if let Ok(v) = env::var("PREMPTI_SOCKET") {

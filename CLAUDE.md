@@ -439,6 +439,13 @@ make falco-windows          # Build only Falco (convenience target)
 | `PREMPTI_SOCKET` | `~/.prempti/run/broker.sock` | Broker Unix socket path |
 | `PREMPTI_TIMEOUT_MS` | `5000` | Socket read timeout in milliseconds |
 
+Boolean Prempti env vars are parsed by the `env_bool` helper in
+`hooks/claude-code/src/main.rs`: it accepts `1`, `true`, `yes`, `on`
+(case-insensitive, surrounding whitespace ignored) as truthy; everything
+else — including unset and empty — is falsy. `PREMPTI_TIMEOUT_MS` is
+numeric and `NO_COLOR` follows the external "any non-empty = true"
+convention; `env_bool` is the convention for new Prempti booleans only.
+
 ## Code Style
 
 ### License headers

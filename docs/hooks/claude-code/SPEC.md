@@ -16,7 +16,7 @@ The interceptor is a **thin passthrough** — it does not interpret tool call co
 
 1. **No content interpretation**: The interceptor treats the stdin JSON as an opaque payload. The only field it reads is `tool_use_id` (for the wire protocol request ID).
 2. **Fail-safe output**: Every code path either produces valid JSON on stdout (exit 0) or blocks the tool call (exit 2). Empty stdout with exit 0 is prevented by design.
-3. **Fail-closed**: If the broker is unreachable, the tool call is denied. There is no fail-open mode.
+3. **Fail-closed by default**: If the broker is unreachable, the tool call is denied. Embedding integrations may opt into fail-open via `PREMPTI_FAIL_OPEN=1`.
 4. **Minimal dependencies**: Only `serde`/`serde_json` and the Rust standard library. No async runtime.
 
 ## Execution Model
@@ -140,7 +140,7 @@ The `event` field contains the entire Claude Code hook input verbatim. The broke
 - `id` matches the request's correlation ID
 - `decision` is one of `allow`, `deny`, `ask`
 
-Failures trigger `verdict_on_error` (always fail-closed: deny).
+Failures trigger `verdict_on_error` (fail-closed by default: deny).
 
 ## Error Handling
 
@@ -149,11 +149,11 @@ Failures trigger `verdict_on_error` (always fail-closed: deny).
 | Category | Trigger | Behavior |
 |----------|---------|----------|
 | **Input error** | Empty stdin, invalid JSON, invalid UTF-8, oversized input (>64KB) | Exit code 2, stderr message |
-| **Broker error** | Socket unavailable, write/read failure, timeout, malformed response, ID mismatch, invalid decision | Deny (fail-closed) |
+| **Broker error** | Socket unavailable, write/read failure, timeout, malformed response, ID mismatch, invalid decision | Deny by default; allow if `PREMPTI_FAIL_OPEN=1` |
 
-### Fail-closed
+### Fail-closed by default
 
-All broker errors result in deny. There is no fail-open mode. The hook lifecycle is tied to the systemd service — when the service stops, the hook is removed, so fail-closed cannot brick Claude Code during intentional downtime.
+All broker errors result in deny unless `PREMPTI_FAIL_OPEN=1` is set. This preserves standalone/default behavior while letting embedding integrations opt into fail-open operation when broker unavailability should not block tool execution.
 
 ### Stdout safety
 
@@ -165,6 +165,7 @@ If JSON serialization fails, the interceptor emits a hardcoded deny JSON literal
 |----------|----------------|-------------------|-------------|
 | `PREMPTI_SOCKET` | `$HOME/.prempti/run/broker.sock` | `%LOCALAPPDATA%/prempti/run/broker.sock` | Broker socket path |
 | `PREMPTI_TIMEOUT_MS` | `5000` | `5000` | Socket timeout in ms (clamped to 100–30000) |
+| `PREMPTI_FAIL_OPEN` | `0` | `0` | When set to `1`/`true`, broker communication failures allow the tool call instead of denying it |
 
 ## Limits
 
