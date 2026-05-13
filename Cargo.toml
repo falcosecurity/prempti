@@ -11,7 +11,7 @@ members = [
 # release — crates, the plugin-reported version, the Makefile and the platform
 # packaging scripts all derive from here.
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 

@@ -114,7 +114,7 @@ checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
 name = "claude-interceptor"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "coding-agents-plugin"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -573,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "prempti-tests"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "premptictl"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "libc",
  "serde",
