@@ -7,7 +7,8 @@
   condition: correlation.id > 0
   output: >
     Event seen |
-    correlation=%correlation.id agent=%agent.name session=%agent.session_id
+    correlation=%correlation.id agent=%agent.name agent_pid=%agent.pid
+    session=%agent.session_id
     permission_mode=%agent.permission_mode transcript=%agent.transcript_path
     hook=%agent.hook_event_name tool=%tool.name tool_use_id=%tool.use_id
     cwd=%agent.real_cwd raw_cwd=%agent.cwd
