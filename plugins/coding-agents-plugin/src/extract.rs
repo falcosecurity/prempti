@@ -54,6 +54,14 @@ impl CodingAgentPlugin {
         Ok(req.context.correlation_id(payload).unwrap_or(0))
     }
 
+    fn extract_agent_pid(
+        &mut self,
+        mut req: ExtractRequest<Self>,
+    ) -> Result<u64, Error> {
+        let payload = self.get_payload(&mut req)?;
+        Ok(req.context.agent_pid(payload).unwrap_or(0))
+    }
+
     fn extract_tool_use_id(
         &mut self,
         mut req: ExtractRequest<Self>,
@@ -179,6 +187,10 @@ impl ExtractPlugin for CodingAgentPlugin {
         field("agent.os", &Self::extract_agent_os)
             .with_display("Operating System")
             .with_description("OS the plugin was compiled for: linux, macos, windows, or unknown"),
+        field("agent.pid", &Self::extract_agent_pid)
+            .with_display("Agent PID")
+            .with_description("PID of the coding agent process that invoked the hook (0 when lookup fails)")
+            .add_output(),
         field("tool.use_id", &Self::extract_tool_use_id)
             .with_display("Tool Use ID")
             .with_description("Tool call identifier from Claude Code (tool_use_id, raw value)"),

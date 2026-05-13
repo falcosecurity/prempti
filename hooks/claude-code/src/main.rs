@@ -30,6 +30,8 @@ use std::net::Shutdown;
 use std::process;
 use std::time::Duration;
 
+mod proc_lineage;
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -48,6 +50,12 @@ struct Request<'a> {
     version: u32,
     id: &'a str,
     agent_name: &'static str,
+    /// PID of the agent process that invoked the hook (the interceptor's
+    /// immediate parent). `None` when the platform lookup fails; serde
+    /// omits the field rather than writing `null`, keeping older brokers
+    /// happy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_pid: Option<u32>,
     event: &'a serde_json::value::RawValue,
 }
 
@@ -302,6 +310,7 @@ fn run() -> Result<(), Error> {
         version: 1,
         id: correlation_id,
         agent_name: "claude_code",
+        agent_pid: proc_lineage::agent_pid(),
         event: &raw_event,
     };
 

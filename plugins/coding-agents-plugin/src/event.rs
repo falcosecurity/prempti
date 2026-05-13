@@ -40,6 +40,10 @@ pub struct InterceptorRequest {
     pub version: u32,
     pub id: String,
     pub agent_name: String,
+    /// PID of the agent process that invoked the hook. Optional on the
+    /// wire so older interceptors (without this field) keep working.
+    #[serde(default)]
+    pub agent_pid: Option<u32>,
     pub event: serde_json::Value,
 }
 
@@ -49,6 +53,8 @@ pub struct EventData {
     pub correlation_id: u64,
     /// Agent name (e.g., "claude_code").
     pub agent_name: String,
+    /// PID of the agent process that invoked the hook. `0` = unknown.
+    pub agent_pid: u64,
     /// Raw event JSON bytes (the Claude Code hook input).
     pub raw_event: Vec<u8>,
 }
@@ -62,6 +68,7 @@ pub struct ParsedEvent {
 struct ParsedFields {
     agent_name: String,
     correlation_id: u64,
+    agent_pid: u64,
     tool_use_id: String,
     hook_event_name: String,
     session_id: String,
@@ -79,33 +86,44 @@ struct ParsedFields {
     tool_input_command: String,
 }
 
-/// The event payload stored in Falco events. Contains the correlation ID, agent name,
-/// and the raw Claude Code hook JSON separated by newlines.
+/// The event payload stored in Falco events. Contains the correlation ID,
+/// agent name, agent PID, and the raw Claude Code hook JSON separated by
+/// newlines.
 ///
-/// Format: `<correlation_id>\n<agent_name>\n<raw_event_json>`
+/// Format: `<correlation_id>\n<agent_name>\n<agent_pid>\n<raw_event_json>`
 pub fn encode_payload(data: &EventData) -> Vec<u8> {
     let id_str = data.correlation_id.to_string();
+    let pid_str = data.agent_pid.to_string();
     let mut payload = Vec::with_capacity(
-        id_str.len() + data.agent_name.len() + data.raw_event.len() + 2,
+        id_str.len()
+            + data.agent_name.len()
+            + pid_str.len()
+            + data.raw_event.len()
+            + 3,
     );
     payload.extend_from_slice(id_str.as_bytes());
     payload.push(b'\n');
     payload.extend_from_slice(data.agent_name.as_bytes());
+    payload.push(b'\n');
+    payload.extend_from_slice(pid_str.as_bytes());
     payload.push(b'\n');
     payload.extend_from_slice(&data.raw_event);
     payload
 }
 
 /// Decode the payload back into parts.
-fn decode_payload(payload: &[u8]) -> Option<(&str, &str, &[u8])> {
+fn decode_payload(payload: &[u8]) -> Option<(&str, &str, &str, &[u8])> {
     let first_nl = payload.iter().position(|&b| b == b'\n')?;
-    let rest = &payload[first_nl + 1..];
-    let second_nl = rest.iter().position(|&b| b == b'\n')?;
+    let after_first = &payload[first_nl + 1..];
+    let second_nl = after_first.iter().position(|&b| b == b'\n')?;
+    let after_second = &after_first[second_nl + 1..];
+    let third_nl = after_second.iter().position(|&b| b == b'\n')?;
 
     let correlation_id = std::str::from_utf8(&payload[..first_nl]).ok()?;
-    let agent_name = std::str::from_utf8(&rest[..second_nl]).ok()?;
-    let raw_event = &rest[second_nl + 1..];
-    Some((correlation_id, agent_name, raw_event))
+    let agent_name = std::str::from_utf8(&after_first[..second_nl]).ok()?;
+    let agent_pid = std::str::from_utf8(&after_second[..third_nl]).ok()?;
+    let raw_event = &after_second[third_nl + 1..];
+    Some((correlation_id, agent_name, agent_pid, raw_event))
 }
 
 impl ParsedEvent {
@@ -118,8 +136,10 @@ impl ParsedEvent {
     }
 
     fn parse(payload: &[u8]) -> Option<ParsedFields> {
-        let (correlation_id_str, agent_name, raw_event) = decode_payload(payload)?;
+        let (correlation_id_str, agent_name, agent_pid_str, raw_event) =
+            decode_payload(payload)?;
         let correlation_id: u64 = correlation_id_str.parse().ok()?;
+        let agent_pid: u64 = agent_pid_str.parse().ok()?;
         let event: serde_json::Value = serde_json::from_slice(raw_event).ok()?;
 
         let tool_use_id = event
@@ -174,6 +194,7 @@ impl ParsedEvent {
         Some(ParsedFields {
             agent_name: agent_name.to_string(),
             correlation_id,
+            agent_pid,
             tool_use_id,
             hook_event_name,
             session_id,
@@ -195,6 +216,10 @@ impl ParsedEvent {
 
     pub fn correlation_id(&mut self, payload: &[u8]) -> Option<u64> {
         self.ensure_parsed(payload).map(|f| f.correlation_id)
+    }
+
+    pub fn agent_pid(&mut self, payload: &[u8]) -> Option<u64> {
+        self.ensure_parsed(payload).map(|f| f.agent_pid)
     }
 
     pub fn tool_use_id(&mut self, payload: &[u8]) -> Option<&str> {
@@ -427,7 +452,11 @@ mod tests {
     }
 
     fn payload_with(event_json: &str) -> Vec<u8> {
-        format!("1\nclaude_code\n{}", event_json).into_bytes()
+        payload_with_pid(event_json, 0)
+    }
+
+    fn payload_with_pid(event_json: &str, agent_pid: u64) -> Vec<u8> {
+        format!("1\nclaude_code\n{}\n{}", agent_pid, event_json).into_bytes()
     }
 
     #[test]
@@ -607,6 +636,7 @@ mod tests {
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.agent_name(&p), Some("claude_code"));
         assert_eq!(pe.correlation_id(&p), Some(1));
+        assert_eq!(pe.agent_pid(&p), Some(0));
         assert_eq!(pe.tool_use_id(&p), Some("call-1"));
         assert_eq!(pe.hook_event_name(&p), Some("PreToolUse"));
         assert_eq!(pe.session_id(&p), Some("sess-1"));
@@ -634,6 +664,7 @@ mod tests {
     fn parsed_event_fields_default_to_empty_when_missing() {
         let p = payload_with(r#"{}"#);
         let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_pid(&p), Some(0));
         assert_eq!(pe.tool_use_id(&p), Some(""));
         assert_eq!(pe.hook_event_name(&p), Some(""));
         assert_eq!(pe.session_id(&p), Some(""));
@@ -683,9 +714,56 @@ mod tests {
     }
 
     #[test]
-    fn parsed_event_invalid_event_json_returns_none() {
-        let bad = b"1\nclaude_code\n{this is not json".to_vec();
+    fn parsed_event_missing_agent_pid_section_returns_none() {
+        // Old wire format (correlation_id\nagent_name\nevent) without the
+        // agent_pid section. decode_payload requires three newlines now.
+        let bad = b"1\nclaude_code\n{}".to_vec();
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.agent_name(&bad), None);
+    }
+
+    #[test]
+    fn parsed_event_invalid_event_json_returns_none() {
+        let bad = b"1\nclaude_code\n0\n{this is not json".to_vec();
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_name(&bad), None);
+    }
+
+    #[test]
+    fn parsed_event_agent_pid_round_trips() {
+        let p = payload_with_pid(r#"{"tool_name":"Bash"}"#, 12345);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_pid(&p), Some(12345));
+    }
+
+    #[test]
+    fn parsed_event_agent_pid_zero_means_unknown() {
+        let p = payload_with(r#"{"tool_name":"Bash"}"#);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_pid(&p), Some(0));
+    }
+
+    #[test]
+    fn parsed_event_agent_pid_invalid_number_returns_none() {
+        // Non-numeric agent_pid section should fail the parse.
+        let bad = b"1\nclaude_code\nnotanumber\n{}".to_vec();
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_pid(&bad), None);
+    }
+
+    #[test]
+    fn encode_decode_payload_round_trip() {
+        let data = EventData {
+            correlation_id: 42,
+            agent_name: "claude_code".to_string(),
+            agent_pid: 9999,
+            raw_event: br#"{"tool_name":"Bash"}"#.to_vec(),
+        };
+        let encoded = encode_payload(&data);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.correlation_id(&encoded), Some(42));
+        assert_eq!(pe.agent_name(&encoded), Some("claude_code"));
+        assert_eq!(pe.agent_pid(&encoded), Some(9999));
+        assert_eq!(pe.tool_name(&encoded), Some("Bash"));
     }
 }
