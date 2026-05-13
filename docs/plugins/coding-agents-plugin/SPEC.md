@@ -117,7 +117,7 @@ Bounded channel (capacity 1024) connecting the socket server thread to Falco's `
 Implements `SourcePlugin` + `SourcePluginInstance`.
 
 - **`next_batch`**: Blocks on `recv_timeout(100ms)` for the first event, then drains up to 31 more via `try_recv`. Returns `Timeout` if no events, `Eof` if channel disconnected.
-- **Event encoding**: `<correlation_id>\n<agent_name>\n<raw_event_json>` as raw bytes in the plugin event payload.
+- **Event encoding**: `<correlation_id>\n<agent_name>\n<agent_pid>\n<raw_event_json>` as raw bytes in the plugin event payload. `agent_pid` is the decimal u64 captured by the interceptor (`0` = unknown).
 
 ### Extract Plugin (`extract.rs`)
 
@@ -128,6 +128,7 @@ Implements `ExtractPlugin` with per-event caching via `ExtractContext`.
 | `correlation.id` | u64 | Broker-assigned monotonic counter (from payload header) |
 | `agent.name` | string | Wire protocol `agent_name` field |
 | `agent.os` | string | Compile-time `cfg!(target_os)` — `linux`, `macos`, `windows`, or `unknown` (static per build, not parsed from the payload) |
+| `agent.pid` | u64 | PID of the agent process that invoked the hook (the interceptor's immediate parent). `0` when the platform lookup fails. |
 | `agent.hook_event_name` | string | `event.hook_event_name` |
 | `agent.session_id` | string | `event.session_id` |
 | `agent.permission_mode` | string | `event.permission_mode` — session permission mode reported by the agent |

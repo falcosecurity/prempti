@@ -111,6 +111,7 @@ The following Claude Code hook output fields are not currently used but may be e
   "version": 1,
   "id": "<tool_use_id>",
   "agent_name": "claude_code",
+  "agent_pid": 12345,
   "event": { <raw stdin JSON> }
 }
 ```
@@ -120,6 +121,7 @@ The following Claude Code hook output fields are not currently used but may be e
 | `version` | Hardcoded `1` | Protocol version |
 | `id` | `tool_use_id` from stdin | Wire protocol request ID. `"unknown"` if missing. Broker uses this to send the verdict response back. |
 | `agent_name` | Hardcoded `"claude_code"` | Identifies the coding agent |
+| `agent_pid` | Platform PID lookup | PID of the interceptor's immediate parent (the agent process). Omitted from JSON when the platform lookup fails; the broker treats absence as `0`. Lets a side-by-side vanilla Falco correlate hook events with syscall events via `proc.apid[]`. |
 | `event` | Raw stdin JSON | Complete hook input, passed through as-is using `serde_json::RawValue` (zero-copy, no re-serialization) |
 
 The `event` field contains the entire Claude Code hook input verbatim. The broker is responsible for parsing it and extracting any fields it needs (tool_name, tool_input, cwd, etc.).

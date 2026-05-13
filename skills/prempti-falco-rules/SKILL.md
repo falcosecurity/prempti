@@ -25,6 +25,7 @@ Every tool call event exposes these fields for conditions and output:
 |-------|------|-------------|
 | `correlation.id` | u64 | Unique event ID (always > 0, auto-included in output_fields) |
 | `agent.name` | string | Agent identifier (e.g., `claude_code`) |
+| `agent.pid` | u64 | PID of the agent process that invoked the hook (auto-included in output_fields). `0` when the platform lookup fails. |
 | `agent.session_id` | string | Session identifier |
 | `agent.cwd` | string | Working directory as reported by the agent |
 | `agent.real_cwd` | string | Working directory resolved to absolute canonical path |

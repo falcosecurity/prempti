@@ -29,6 +29,7 @@ The plugin runs inside Falco and manages three background responsibilities:
 | `correlation.id` | u64 | Broker-assigned unique ID (always > 0) |
 | `agent.name` | string | Coding agent identifier |
 | `agent.os` | string | Host OS — `linux`, `macos`, `windows`, or `unknown` (static per build) |
+| `agent.pid` | u64 | PID of the agent process that invoked the hook; `0` when the platform lookup fails |
 | `agent.hook_event_name` | string | Hook lifecycle point |
 | `agent.session_id` | string | Session identifier |
 | `agent.permission_mode` | string | Session permission mode (e.g. `default`, `acceptEdits`, `bypassPermissions`) |

@@ -86,6 +86,7 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 | `correlation.id` | u64 | Broker-assigned unique ID for this event (monotonic counter, always > 0) |
 | `agent.name` | string | Coding agent identifier (e.g., `claude_code`) |
 | `agent.os` | string | Host OS — `linux`, `macos`, `windows`, or `unknown` (static per build, derived from `cfg!(target_os)`) |
+| `agent.pid` | u64 | PID of the agent process that invoked the hook (the interceptor's immediate parent). `0` when the platform lookup fails. Lets a side-by-side vanilla Falco correlate hook events with syscall events emitted by the same agent instance via `proc.apid[]`. |
 | `agent.hook_event_name` | string | Lifecycle hook type (e.g., `PreToolUse`) |
 | `agent.session_id` | string | Session identifier |
 | `agent.cwd` | string | Working directory, raw from Claude Code JSON |
