@@ -305,7 +305,7 @@ fn write_rules(rules_dir: &Path) {
         r#"- rule: Deny rm -rf
   desc: Block dangerous rm -rf commands
   condition: tool.name = "Bash" and tool.input_command contains "rm -rf"
-  output: "Falco blocked rm -rf: %tool.input_command | correlation=%correlation.id"
+  output: "Falco blocked rm -rf: %tool.input_command | correlation=%correlation.id agent_pid=%agent.pid"
   priority: CRITICAL
   source: coding_agent
   tags: [coding_agent_deny]

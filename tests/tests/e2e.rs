@@ -33,6 +33,30 @@ fn deny_rm_rf() {
 }
 
 #[test]
+fn agent_pid_matches_test_process() {
+    // The interceptor is spawned by this test process (cargo test binary),
+    // so agent.pid (= interceptor's getppid) must equal std::process::id().
+    let h = require_falco!();
+    let input = E2eHarness::make_input(
+        "Bash",
+        r#"{"command":"rm -rf /tmp/agent-pid-probe"}"#,
+        cwd(),
+        "e2e-pid",
+    );
+    let r = h.run_hook(&input);
+    assert_decision(&r, "deny");
+
+    let expected = std::process::id();
+    let needle = format!("agent_pid={expected}");
+    assert!(
+        r.stdout.contains(&needle),
+        "expected reason to carry '{}', got stdout='{}'",
+        needle,
+        r.stdout.trim()
+    );
+}
+
+#[test]
 fn deny_rm_rf_variant() {
     let h = require_falco!();
     let input = E2eHarness::make_input(
