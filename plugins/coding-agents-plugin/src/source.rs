@@ -20,7 +20,9 @@ impl SourcePlugin for CodingAgentPlugin {
     type Instance = CodingAgentInstance;
 
     const EVENT_SOURCE: &'static CStr = c"coding_agent";
-    const PLUGIN_ID: u32 = 999; // Development ID. Register for production.
+    // Registered ID for the `coding_agent` source.
+    // See https://github.com/falcosecurity/plugins/blob/main/registry.yaml
+    const PLUGIN_ID: u32 = 28;
 
     type Event<'a> = Event<PluginEvent<CodingAgentPayload<'a>>>;
 
