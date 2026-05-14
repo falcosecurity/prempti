@@ -343,8 +343,18 @@ fn handle_connection(
     broker.register(correlation_id, wire_id, stream);
 
     if event_tx.try_send(event_data).is_err() {
-        log::warn!("event queue full, denying event {}", correlation_id);
-        broker.apply_deny(correlation_id, "event queue full".to_string());
+        if broker.is_passthrough() {
+            // In passthrough, register() already wrote Allow and did not
+            // insert into the pending map. apply_deny would be a no-op
+            // here and the "denying event" wording would be misleading.
+            log::warn!(
+                "event queue full, event {} dropped (passthrough already allowed)",
+                correlation_id
+            );
+        } else {
+            log::warn!("event queue full, denying event {}", correlation_id);
+            broker.apply_deny(correlation_id, "event queue full".to_string());
+        }
         return Ok(());
     }
 
