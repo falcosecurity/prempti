@@ -87,6 +87,65 @@ fn mode_get(prefix: &PathBuf) {
     println!("guardrails");
 }
 
+/// Parse the plugin config YAML for `mode` and `passthrough`. Returns
+/// `None` when the file is missing or unreadable so the caller can print
+/// "unknown" without bailing the whole status command.
+///
+/// Defaults match the plugin's serde defaults: `mode = "guardrails"` and
+/// `passthrough = false` when the keys are absent. `passthrough` accepts
+/// any truthy YAML scalar (`true`, `yes`, `on`, `1`, case-insensitive;
+/// optional surrounding quotes are tolerated for ergonomics).
+fn parse_plugin_config_summary(data: &str) -> (String, bool) {
+    let mut mode = String::from("guardrails");
+    let mut passthrough = false;
+    for line in data.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("mode:") {
+            let value = rest.trim();
+            if !value.is_empty() {
+                mode = value.trim_matches(|c| c == '"' || c == '\'').to_string();
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("passthrough:") {
+            let v = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+            passthrough = v.eq_ignore_ascii_case("1")
+                || v.eq_ignore_ascii_case("true")
+                || v.eq_ignore_ascii_case("yes")
+                || v.eq_ignore_ascii_case("on");
+        }
+    }
+    (mode, passthrough)
+}
+
+fn read_plugin_config_summary(prefix: &Path) -> Option<(String, bool)> {
+    let path = plugin_config_path(&prefix.to_path_buf());
+    let data = fs::read_to_string(&path).ok()?;
+    Some(parse_plugin_config_summary(&data))
+}
+
+/// Print the configured mode and passthrough state. Called by every platform's
+/// `service_status` so operators can tell at a glance whether enforcement has
+/// been altered.
+fn print_plugin_config_summary(prefix: &Path) {
+    match read_plugin_config_summary(prefix) {
+        Some((mode, passthrough)) => {
+            println!("Mode: {mode}");
+            if passthrough {
+                println!(
+                    "Passthrough: enabled (Experimental — enforcement disabled; \
+                     tool calls allowed immediately)"
+                );
+            } else {
+                println!("Passthrough: disabled   (Experimental)");
+            }
+        }
+        None => {
+            println!("Mode: unknown");
+            println!("Passthrough: unknown");
+            println!("  (plugin config not readable)");
+        }
+    }
+}
+
 /// Rewrite the `mode:` line in a plugin-config YAML, preserving indentation
 /// and comments. Returns `None` if no `mode:` line is found.
 fn rewrite_mode_in_yaml(data: &str, mode: &str) -> Option<String> {
@@ -288,6 +347,7 @@ fn service_status() {
     let _ = Command::new("systemctl")
         .args(["--user", "status", SERVICE_NAME, "--no-pager"])
         .status();
+    print_plugin_config_summary(&default_prefix());
 }
 
 #[cfg(target_os = "macos")]
@@ -426,6 +486,7 @@ fn service_status() {
     } else {
         println!("Service not running.");
     }
+    print_plugin_config_summary(&default_prefix());
 }
 
 // ---------------------------------------------------------------------------
@@ -824,6 +885,7 @@ fn service_status() {
             println!("Auto-start: disabled.");
         }
     }
+    print_plugin_config_summary(&prefix);
 }
 
 // ---------------------------------------------------------------------------
@@ -1621,6 +1683,45 @@ mod mode_tests {
         let yaml = "mode: guardrails\nother: thing\n";
         let out = rewrite_mode_in_yaml(yaml, "monitor").unwrap();
         assert!(out.contains("mode: monitor\n"));
+    }
+}
+
+#[cfg(test)]
+mod plugin_config_summary_tests {
+    use super::{parse_plugin_config_summary, read_plugin_config_summary};
+    use std::path::Path;
+
+    #[test]
+    fn defaults_when_passthrough_absent() {
+        let yaml = "init_config:\n  mode: guardrails\n";
+        let (mode, passthrough) = parse_plugin_config_summary(yaml);
+        assert_eq!(mode, "guardrails");
+        assert!(!passthrough);
+    }
+
+    #[test]
+    fn monitor_with_passthrough_true() {
+        let yaml = "init_config:\n  mode: monitor\n  passthrough: true\n";
+        let (mode, passthrough) = parse_plugin_config_summary(yaml);
+        assert_eq!(mode, "monitor");
+        assert!(passthrough);
+    }
+
+    #[test]
+    fn monitor_with_passthrough_quoted_one() {
+        // Users may quote scalars; "1" should still parse as truthy so the
+        // status output matches what the plugin's serde deserializer accepts.
+        let yaml = "init_config:\n  mode: monitor\n  passthrough: \"1\"\n";
+        let (mode, passthrough) = parse_plugin_config_summary(yaml);
+        assert_eq!(mode, "monitor");
+        assert!(passthrough);
+    }
+
+    #[test]
+    fn missing_file_returns_none() {
+        // The caller prints "unknown" when None.
+        let prefix = Path::new("/tmp/premptictl-tests-no-such-prefix-xyz");
+        assert!(read_plugin_config_summary(prefix).is_none());
     }
 }
 
