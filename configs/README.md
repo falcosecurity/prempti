@@ -25,6 +25,21 @@ Contains:
 - `rules_files` (default rules → user rules → seen rule)
 - `http_output` configuration
 
+#### `passthrough` (Experimental)
+
+Embedding-only knob. When `true`, all interceptor requests are resolved
+as `allow` immediately at register, without waiting for rule evaluation.
+Events are still enqueued for Falco so observability via `http_output`
+and `falco.log` is preserved. Defaults to `false`.
+
+Use this only when embedding Prempti inside a host agent that handles
+alerts via its own pipeline.
+
+This is distinct from `mode: monitor`: monitor waits for rule
+evaluation and then forces an `allow` verdict (synchronous, so
+would-deny/would-ask log lines fire), while passthrough short-circuits
+at register and skips the wait entirely.
+
 ## Path Expansion
 
 All paths use `${HOME}` expansion (Falco native, `${VAR}` syntax). No hardcoded paths.

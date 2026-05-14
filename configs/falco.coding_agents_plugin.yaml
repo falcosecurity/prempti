@@ -9,6 +9,13 @@ plugins:
       # In monitor mode, rules are evaluated and logged but all verdicts resolve as allow.
       # Changed via: premptictl mode <guardrails|monitor>
       mode: guardrails
+      # EXPERIMENTAL — embedding-only. When true, all interceptor requests
+      # are resolved as "allow" immediately, without waiting for rule
+      # evaluation. Events are still enqueued for Falco so observability
+      # via http_output / falco.log is preserved. Use this only when
+      # embedding Prempti inside a host agent that handles alerts via its
+      # own pipeline.
+      # passthrough: false
       socket_path: ${HOME}/.prempti/run/broker.sock
       http_port: 2802
 
