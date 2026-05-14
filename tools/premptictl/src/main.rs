@@ -1672,6 +1672,17 @@ mod mode_tests {
         let out = rewrite_mode_in_yaml(yaml, "monitor").unwrap();
         assert!(out.contains("mode: monitor\n"));
     }
+
+    #[test]
+    fn rewrites_to_passthrough() {
+        // `passthrough` is the third accepted mode value; round-trip it both
+        // ways to confirm the rewriter is mode-string agnostic.
+        let yaml = "init_config:\n  mode: guardrails\n  http_port: 2802\n";
+        let out = rewrite_mode_in_yaml(yaml, "passthrough").unwrap();
+        assert!(out.contains("  mode: passthrough\n"), "got: {out}");
+        let back = rewrite_mode_in_yaml(&out, "guardrails").unwrap();
+        assert!(back.contains("  mode: guardrails\n"), "got: {back}");
+    }
 }
 
 #[cfg(test)]

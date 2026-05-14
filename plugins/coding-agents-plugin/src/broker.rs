@@ -470,4 +470,32 @@ mod tests {
         assert_eq!(n, 0);
         assert_eq!(broker.pending_count(), 1);
     }
+
+    #[test]
+    fn passthrough_allows_immediately_and_skips_pending() {
+        let broker = Broker::new();
+        broker.set_passthrough(true);
+        let peer = register_with(&broker, 1, "wire-1");
+        // Allow JSON is on the wire right away — no apply_* call needed.
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "allow");
+        assert_eq!(resp["id"], "wire-1");
+        // Pending map must stay empty: passthrough short-circuits before insert.
+        assert_eq!(broker.pending_count(), 0);
+    }
+
+    #[test]
+    fn passthrough_disabled_keeps_default_register_behavior() {
+        // Default (passthrough=false): entry inserted, stream stays open until
+        // a verdict is applied.
+        let broker = Broker::new();
+        assert!(!broker.is_passthrough());
+        let peer = register_with(&broker, 1, "wire-1");
+        assert_eq!(broker.pending_count(), 1);
+        expect_no_response(&peer);
+        // Resolve so the stream/peer drop cleanly.
+        broker.apply_deny(1, "cleanup".to_string());
+        let _ = read_response_json(&peer);
+        assert_eq!(broker.pending_count(), 0);
+    }
 }

@@ -469,4 +469,51 @@ mod tests {
         let r = tolerate_disconnected_shutdown(a.shutdown(Shutdown::Write));
         assert!(r.is_ok(), "expected tolerance, got {r:?}");
     }
+
+    // env_bool is process-global through std::env::var. Each test below uses a
+    // unique var name to avoid racing with other tests running in parallel,
+    // and removes the var at the end so reruns are clean.
+
+    #[test]
+    fn env_bool_unset_is_false() {
+        let name = "PREMPTI_TEST_ENV_BOOL_UNSET";
+        env::remove_var(name);
+        assert!(!env_bool(name));
+    }
+
+    #[test]
+    fn env_bool_one_is_true() {
+        let name = "PREMPTI_TEST_ENV_BOOL_ONE";
+        env::set_var(name, "1");
+        assert!(env_bool(name));
+        env::remove_var(name);
+    }
+
+    #[test]
+    fn env_bool_true_case_insensitive() {
+        let name = "PREMPTI_TEST_ENV_BOOL_TRUE";
+        for v in ["true", "TRUE", "True"] {
+            env::set_var(name, v);
+            assert!(env_bool(name), "{v} should be truthy");
+        }
+        env::remove_var(name);
+    }
+
+    #[test]
+    fn env_bool_trims_whitespace() {
+        let name = "PREMPTI_TEST_ENV_BOOL_WS";
+        env::set_var(name, " 1 ");
+        assert!(env_bool(name));
+        env::remove_var(name);
+    }
+
+    #[test]
+    fn env_bool_falsy_values() {
+        let name = "PREMPTI_TEST_ENV_BOOL_FALSY";
+        for v in ["0", "", "no", "off", "false", "anything"] {
+            env::set_var(name, v);
+            assert!(!env_bool(name), "{v:?} should be falsy");
+        }
+        env::remove_var(name);
+    }
 }
