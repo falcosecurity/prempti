@@ -42,8 +42,9 @@ pub struct InterceptorRequest {
     pub agent_name: String,
     /// PID of the agent process that invoked the hook. Optional on the
     /// wire so older interceptors (without this field) keep working.
+    /// `u64` matches the `agent.pid` Falco field type.
     #[serde(default)]
-    pub agent_pid: Option<u32>,
+    pub agent_pid: Option<u64>,
     pub event: serde_json::Value,
 }
 

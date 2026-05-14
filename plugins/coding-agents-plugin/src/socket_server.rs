@@ -321,7 +321,7 @@ fn handle_connection(
     let wire_id = request.id.clone();
     let agent_name = request.agent_name.clone();
     // Old interceptors don't send agent_pid; map None → 0 sentinel.
-    let agent_pid = request.agent_pid.map(|p| p as u64).unwrap_or(0);
+    let agent_pid = request.agent_pid.unwrap_or(0);
 
     // Broker assigns a unique correlation ID (monotonic u64 counter, always > 0).
     let correlation_id = broker.next_correlation_id();

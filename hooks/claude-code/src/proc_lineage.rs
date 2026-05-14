@@ -15,7 +15,11 @@
 /// shell. If a future change introduces a wrapper, the captured PID
 /// would point at the wrapper instead of the agent — the verification
 /// strategy is post-install field inspection, not runtime self-check.
-pub fn agent_pid() -> Option<u32> {
+///
+/// `u64` matches the `agent.pid` Falco field type. PIDs fit in 32 bits
+/// on every supported OS, but the broker would widen to `u64` anyway, so
+/// we widen at the source to keep one type along the whole pipeline.
+pub fn agent_pid() -> Option<u64> {
     platform::agent_pid()
 }
 
@@ -25,7 +29,7 @@ mod platform {
         fn getppid() -> i32;
     }
 
-    pub fn agent_pid() -> Option<u32> {
+    pub fn agent_pid() -> Option<u64> {
         // SAFETY: getppid is async-signal-safe and has no preconditions.
         let ppid = unsafe { getppid() };
         // 0 means error (per POSIX getppid never returns 0 on success, but
@@ -35,7 +39,7 @@ mod platform {
         if ppid <= 1 {
             None
         } else {
-            Some(ppid as u32)
+            Some(ppid as u64)
         }
     }
 }
@@ -75,7 +79,7 @@ mod platform {
     /// `ProcessBasicInformation` class index — stable since NT 4.
     const PROCESS_BASIC_INFORMATION_CLASS: i32 = 0;
 
-    pub fn agent_pid() -> Option<u32> {
+    pub fn agent_pid() -> Option<u64> {
         // SAFETY: passing a properly-aligned PROCESS_BASIC_INFORMATION
         // buffer of the documented size. NtQueryInformationProcess writes
         // into it iff status >= 0.
@@ -100,7 +104,7 @@ mod platform {
             if ppid == 0 || ppid > u32::MAX as usize {
                 None
             } else {
-                Some(ppid as u32)
+                Some(ppid as u64)
             }
         }
     }
@@ -108,7 +112,7 @@ mod platform {
 
 #[cfg(not(any(unix, windows)))]
 mod platform {
-    pub fn agent_pid() -> Option<u32> {
+    pub fn agent_pid() -> Option<u64> {
         None
     }
 }

@@ -53,9 +53,11 @@ struct Request<'a> {
     /// PID of the agent process that invoked the hook (the interceptor's
     /// immediate parent). `None` when the platform lookup fails; serde
     /// omits the field rather than writing `null`, keeping older brokers
-    /// happy.
+    /// happy. `u64` for alignment with the `agent.pid` Falco field type
+    /// (the `falco_plugin` SDK only exposes `u64` as the numeric extract
+    /// scalar — there's no `u32` variant).
     #[serde(skip_serializing_if = "Option::is_none")]
-    agent_pid: Option<u32>,
+    agent_pid: Option<u64>,
     event: &'a serde_json::value::RawValue,
 }
 
