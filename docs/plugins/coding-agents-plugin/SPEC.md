@@ -86,7 +86,7 @@ Interceptor          Socket Server       Event Queue       Falco Engine        H
 | Parameter | Value |
 |-----------|-------|
 | Plugin name | `coding_agent` |
-| Plugin ID | `999` (development; register for production) |
+| Plugin ID | `28` (registered in [falcosecurity/plugins](https://github.com/falcosecurity/plugins/blob/main/registry.yaml)) |
 | Event source | `coding_agent` |
 | Required config | `rule_matching: all`, `json_output: true` |
 | Alert delivery | `http_output` to `http://127.0.0.1:2802` |
