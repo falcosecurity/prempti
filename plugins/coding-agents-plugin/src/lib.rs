@@ -107,6 +107,14 @@ impl Plugin for CodingAgentPlugin {
         let broker = Arc::new(Broker::new());
         broker.set_monitor_mode(config.mode == "monitor");
         broker.set_passthrough(config.passthrough);
+        if config.passthrough && config.mode == "monitor" {
+            log::warn!(
+                "passthrough=true and mode=monitor are both set; \
+                 passthrough takes precedence — all requests will be \
+                 allowed immediately without rule-eval wait, and \
+                 monitor's would-deny/would-ask log lines will not fire"
+            );
+        }
 
         // Bring up the socket server first so its bind-time check cleanly
         // rejects a second Falco trying to share the same socket *before*
