@@ -333,12 +333,15 @@ fn spawn_signal_watcher(
 #[cfg(unix)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn process_alive(pid: u32) -> bool {
-    let rc = unsafe { libc::kill(pid as i32, 0) };
-    if rc == 0 {
-        return true;
+    let Some(pid) = rustix::process::Pid::from_raw(pid as i32) else {
+        return false;
+    };
+    match rustix::process::test_kill_process(pid) {
+        Ok(()) => true,
+        // ESRCH = no such process. Anything else (e.g. EPERM: process exists
+        // but we can't signal it) still counts as "alive".
+        Err(e) => e != rustix::io::Errno::SRCH,
     }
-    let err = std::io::Error::last_os_error();
-    err.raw_os_error() != Some(libc::ESRCH)
 }
 
 #[cfg(windows)]

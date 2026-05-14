@@ -586,6 +586,7 @@ name = "premptictl"
 version = "0.3.0"
 dependencies = [
  "libc",
+ "rustix",
  "serde",
  "serde_json",
  "uds_windows",

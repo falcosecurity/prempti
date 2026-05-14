@@ -24,17 +24,17 @@ pub fn graceful_stop(child: &mut Child, timeout: Duration) -> io::Result<ExitSta
 
 #[cfg(unix)]
 fn request_graceful_stop(child: &mut Child) -> io::Result<()> {
-    let pid = child.id() as i32;
-    let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
-    if rc != 0 {
-        let err = io::Error::last_os_error();
+    let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) else {
+        // PID 0 / invalid: a spawned Child should never have this; treat as
+        // "already gone" for safety.
+        return Ok(());
+    };
+    match rustix::process::kill_process(pid, rustix::process::Signal::TERM) {
+        Ok(()) => Ok(()),
         // ESRCH means the process is already gone; that's fine.
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(());
-        }
-        return Err(err);
+        Err(e) if e == rustix::io::Errno::SRCH => Ok(()),
+        Err(e) => Err(e.into()),
     }
-    Ok(())
 }
 
 #[cfg(windows)]
