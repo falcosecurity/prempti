@@ -86,6 +86,10 @@ struct ParsedFields {
     tool_input_command: String,
 }
 
+/// Number of `\n` separators in the on-wire payload format. Kept in sync
+/// with the section count in `encode_payload` / `decode_payload`.
+const NEWLINE_COUNT: usize = 3;
+
 /// The event payload stored in Falco events. Contains the correlation ID,
 /// agent name, agent PID, and the raw Claude Code hook JSON separated by
 /// newlines.
@@ -99,7 +103,7 @@ pub fn encode_payload(data: &EventData) -> Vec<u8> {
             + data.agent_name.len()
             + pid_str.len()
             + data.raw_event.len()
-            + 3,
+            + NEWLINE_COUNT,
     );
     payload.extend_from_slice(id_str.as_bytes());
     payload.push(b'\n');
