@@ -16,7 +16,8 @@ serde_json = "1"
 libc = "0.2"
 # `process` enables `kill_process` / `test_kill_process` (safe wrappers
 # around `kill(pid, sig)` and `kill(pid, 0)`).
-rustix = { version = "1", features = ["process"] }
+# `termios` enables `tcgetwinsize` (safe wrapper around `ioctl(TIOCGWINSZ)`).
+rustix = { version = "1", features = ["process", "termios"] }
 
 [target.'cfg(windows)'.dependencies]
 uds_windows = "1.2"

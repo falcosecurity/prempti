@@ -1597,9 +1597,7 @@ pub fn detect_term_size() -> (usize, usize) {
     #[cfg(unix)]
     {
         if cols.is_none() || rows.is_none() {
-            let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-            let r = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
-            if r == 0 {
+            if let Ok(ws) = rustix::termios::tcgetwinsize(std::io::stdout()) {
                 if cols.is_none() && ws.ws_col > 20 {
                     cols = Some(ws.ws_col as usize);
                 }
