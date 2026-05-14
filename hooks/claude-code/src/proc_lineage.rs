@@ -25,21 +25,17 @@ pub fn agent_pid() -> Option<u64> {
 
 #[cfg(unix)]
 mod platform {
-    unsafe extern "C" {
-        fn getppid() -> i32;
-    }
-
     pub fn agent_pid() -> Option<u64> {
-        // SAFETY: getppid is async-signal-safe and has no preconditions.
-        let ppid = unsafe { getppid() };
-        // 0 means error (per POSIX getppid never returns 0 on success, but
-        // be defensive). 1 means our parent is PID 1 (init / launchd /
-        // systemd), which is not the agent — happens if the agent died
-        // before we ran and we got reparented.
-        if ppid <= 1 {
+        // `rustix::process::getppid` already returns `None` for the
+        // (rare) `ppid == 0` case via `Option<Pid>`, so the `?` here
+        // covers POSIX's defensive-zero corner. We still drop `ppid == 1`
+        // (init / launchd / systemd) which is what we get if the agent
+        // died before us and we got reparented — not a useful "agent PID".
+        let raw = rustix::process::getppid()?.as_raw_pid();
+        if raw <= 1 {
             None
         } else {
-            Some(ppid as u64)
+            Some(raw as u64)
         }
     }
 }
