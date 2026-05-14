@@ -115,19 +115,29 @@ pub fn encode_payload(data: &EventData) -> Vec<u8> {
     payload
 }
 
-/// Decode the payload back into parts.
-fn decode_payload(payload: &[u8]) -> Option<(&str, &str, &str, &[u8])> {
+/// Borrowed view over a decoded wire-format payload. Each field points
+/// into the original payload buffer; see `encode_payload` for the layout.
+struct DecodedPayload<'a> {
+    correlation_id: &'a str,
+    agent_name: &'a str,
+    agent_pid: &'a str,
+    raw_event: &'a [u8],
+}
+
+/// Decode the payload back into its sections.
+fn decode_payload(payload: &[u8]) -> Option<DecodedPayload<'_>> {
     let first_nl = payload.iter().position(|&b| b == b'\n')?;
     let after_first = &payload[first_nl + 1..];
     let second_nl = after_first.iter().position(|&b| b == b'\n')?;
     let after_second = &after_first[second_nl + 1..];
     let third_nl = after_second.iter().position(|&b| b == b'\n')?;
 
-    let correlation_id = std::str::from_utf8(&payload[..first_nl]).ok()?;
-    let agent_name = std::str::from_utf8(&after_first[..second_nl]).ok()?;
-    let agent_pid = std::str::from_utf8(&after_second[..third_nl]).ok()?;
-    let raw_event = &after_second[third_nl + 1..];
-    Some((correlation_id, agent_name, agent_pid, raw_event))
+    Some(DecodedPayload {
+        correlation_id: std::str::from_utf8(&payload[..first_nl]).ok()?,
+        agent_name: std::str::from_utf8(&after_first[..second_nl]).ok()?,
+        agent_pid: std::str::from_utf8(&after_second[..third_nl]).ok()?,
+        raw_event: &after_second[third_nl + 1..],
+    })
 }
 
 impl ParsedEvent {
@@ -140,11 +150,10 @@ impl ParsedEvent {
     }
 
     fn parse(payload: &[u8]) -> Option<ParsedFields> {
-        let (correlation_id_str, agent_name, agent_pid_str, raw_event) =
-            decode_payload(payload)?;
-        let correlation_id: u64 = correlation_id_str.parse().ok()?;
-        let agent_pid: u64 = agent_pid_str.parse().ok()?;
-        let event: serde_json::Value = serde_json::from_slice(raw_event).ok()?;
+        let decoded = decode_payload(payload)?;
+        let correlation_id: u64 = decoded.correlation_id.parse().ok()?;
+        let agent_pid: u64 = decoded.agent_pid.parse().ok()?;
+        let event: serde_json::Value = serde_json::from_slice(decoded.raw_event).ok()?;
 
         let tool_use_id = event
             .get("tool_use_id")
@@ -196,7 +205,7 @@ impl ParsedEvent {
         let tool_input_command = extract_command(&tool_name, &tool_input);
 
         Some(ParsedFields {
-            agent_name: agent_name.to_string(),
+            agent_name: decoded.agent_name.to_string(),
             correlation_id,
             agent_pid,
             tool_use_id,
