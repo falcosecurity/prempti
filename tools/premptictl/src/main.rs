@@ -87,17 +87,14 @@ fn mode_get(prefix: &PathBuf) {
     println!("guardrails");
 }
 
-/// Parse the plugin config YAML for `mode` and `passthrough`. Returns
-/// `None` when the file is missing or unreadable so the caller can print
-/// "unknown" without bailing the whole status command.
+/// Parse the plugin config YAML for `mode`. Returns `None` when the file
+/// is missing or unreadable so the caller can print "unknown" without
+/// bailing the whole status command.
 ///
-/// Defaults match the plugin's serde defaults: `mode = "guardrails"` and
-/// `passthrough = false` when the keys are absent. `passthrough` accepts
-/// any truthy YAML scalar (`true`, `yes`, `on`, `1`, case-insensitive;
-/// optional surrounding quotes are tolerated for ergonomics).
-fn parse_plugin_config_summary(data: &str) -> (String, bool) {
+/// Default matches the plugin's serde default: `mode = "guardrails"` when
+/// the key is absent.
+fn parse_plugin_config_summary(data: &str) -> String {
     let mut mode = String::from("guardrails");
-    let mut passthrough = false;
     for line in data.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("mode:") {
@@ -105,42 +102,33 @@ fn parse_plugin_config_summary(data: &str) -> (String, bool) {
             if !value.is_empty() {
                 mode = value.trim_matches(|c| c == '"' || c == '\'').to_string();
             }
-        } else if let Some(rest) = trimmed.strip_prefix("passthrough:") {
-            let v = rest.trim().trim_matches(|c| c == '"' || c == '\'');
-            passthrough = v.eq_ignore_ascii_case("1")
-                || v.eq_ignore_ascii_case("true")
-                || v.eq_ignore_ascii_case("yes")
-                || v.eq_ignore_ascii_case("on");
         }
     }
-    (mode, passthrough)
+    mode
 }
 
-fn read_plugin_config_summary(prefix: &Path) -> Option<(String, bool)> {
+fn read_plugin_config_summary(prefix: &Path) -> Option<String> {
     let path = plugin_config_path(&prefix.to_path_buf());
     let data = fs::read_to_string(&path).ok()?;
     Some(parse_plugin_config_summary(&data))
 }
 
-/// Print the configured mode and passthrough state. Called by every platform's
-/// `service_status` so operators can tell at a glance whether enforcement has
-/// been altered.
+/// Print the configured mode. Called by every platform's `service_status`
+/// so operators can tell at a glance whether enforcement has been altered.
+/// `passthrough` is annotated as Experimental wherever it appears.
 fn print_plugin_config_summary(prefix: &Path) {
     match read_plugin_config_summary(prefix) {
-        Some((mode, passthrough)) => {
+        Some(mode) if mode == "passthrough" => {
+            println!(
+                "Mode: passthrough (Experimental — enforcement disabled; \
+                 tool calls allowed immediately)"
+            );
+        }
+        Some(mode) => {
             println!("Mode: {mode}");
-            if passthrough {
-                println!(
-                    "Passthrough: enabled (Experimental — enforcement disabled; \
-                     tool calls allowed immediately)"
-                );
-            } else {
-                println!("Passthrough: disabled   (Experimental)");
-            }
         }
         None => {
             println!("Mode: unknown");
-            println!("Passthrough: unknown");
             println!("  (plugin config not readable)");
         }
     }
@@ -177,8 +165,8 @@ fn rewrite_mode_in_yaml(data: &str, mode: &str) -> Option<String> {
 }
 
 fn mode_set(prefix: &PathBuf, mode: &str) {
-    if mode != "guardrails" && mode != "monitor" {
-        eprintln!("error: mode must be 'guardrails' or 'monitor'");
+    if mode != "guardrails" && mode != "monitor" && mode != "passthrough" {
+        eprintln!("error: mode must be 'guardrails', 'monitor', or 'passthrough'");
         process::exit(1);
     }
 
@@ -1692,29 +1680,29 @@ mod plugin_config_summary_tests {
     use std::path::Path;
 
     #[test]
-    fn defaults_when_passthrough_absent() {
-        let yaml = "init_config:\n  mode: guardrails\n";
-        let (mode, passthrough) = parse_plugin_config_summary(yaml);
-        assert_eq!(mode, "guardrails");
-        assert!(!passthrough);
+    fn defaults_to_guardrails_when_mode_absent() {
+        let yaml = "init_config:\n  socket_path: /tmp/x\n";
+        assert_eq!(parse_plugin_config_summary(yaml), "guardrails");
     }
 
     #[test]
-    fn monitor_with_passthrough_true() {
-        let yaml = "init_config:\n  mode: monitor\n  passthrough: true\n";
-        let (mode, passthrough) = parse_plugin_config_summary(yaml);
-        assert_eq!(mode, "monitor");
-        assert!(passthrough);
+    fn parses_monitor_mode() {
+        let yaml = "init_config:\n  mode: monitor\n";
+        assert_eq!(parse_plugin_config_summary(yaml), "monitor");
     }
 
     #[test]
-    fn monitor_with_passthrough_quoted_one() {
-        // Users may quote scalars; "1" should still parse as truthy so the
-        // status output matches what the plugin's serde deserializer accepts.
-        let yaml = "init_config:\n  mode: monitor\n  passthrough: \"1\"\n";
-        let (mode, passthrough) = parse_plugin_config_summary(yaml);
-        assert_eq!(mode, "monitor");
-        assert!(passthrough);
+    fn parses_passthrough_mode() {
+        let yaml = "init_config:\n  mode: passthrough\n";
+        assert_eq!(parse_plugin_config_summary(yaml), "passthrough");
+    }
+
+    #[test]
+    fn tolerates_quoted_scalar() {
+        // Users may quote scalars; quotes are stripped so the value matches
+        // what the plugin's serde deserializer accepts.
+        let yaml = "init_config:\n  mode: \"monitor\"\n";
+        assert_eq!(parse_plugin_config_summary(yaml), "monitor");
     }
 
     #[test]
@@ -1739,9 +1727,11 @@ fn print_usage() {
     eprintln!("  hook remove      Remove the interceptor hook from Claude Code");
     eprintln!("  hook status      Check if the hook is registered");
     eprintln!();
-    eprintln!("  mode             Show current operational mode");
-    eprintln!("  mode guardrails  Switch to guardrails mode (deny/ask enforced)");
-    eprintln!("  mode monitor     Switch to monitor mode (all verdicts allow, alerts logged)");
+    eprintln!("  mode              Show current operational mode");
+    eprintln!("  mode guardrails   Switch to guardrails mode (deny/ask enforced)");
+    eprintln!("  mode monitor      Switch to monitor mode (all verdicts allow, alerts logged)");
+    eprintln!("  mode passthrough  Switch to passthrough mode (Experimental, embedding-only:");
+    eprintln!("                    instant allow, no rule-eval wait; events still enqueued)");
     eprintln!();
     eprintln!("  start            Start the service");
     eprintln!("  stop             Stop the service");

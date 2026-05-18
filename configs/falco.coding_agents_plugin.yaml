@@ -5,17 +5,21 @@ plugins:
   - name: coding_agent
     library_path: ${HOME}/.prempti/share/libcoding_agent.so
     init_config:
-      # Operational mode: "guardrails" (default) or "monitor".
-      # In monitor mode, rules are evaluated and logged but all verdicts resolve as allow.
-      # Changed via: premptictl mode <guardrails|monitor>
+      # Operational mode. One of:
+      #   guardrails (default): verdicts enforced (deny/ask/allow).
+      #   monitor:              rules evaluated and logged, but all
+      #                         verdicts resolve as allow after the
+      #                         synchronous rule-eval wait.
+      #   passthrough (EXPERIMENTAL, embedding-only): every interceptor
+      #                         request resolves as allow immediately at
+      #                         register, without waiting for rule
+      #                         evaluation. Events are still enqueued for
+      #                         Falco so observability via http_output /
+      #                         falco.log is preserved. Use only when
+      #                         embedding Prempti inside a host agent
+      #                         that handles alerts via its own pipeline.
+      # Changed via: premptictl mode <guardrails|monitor|passthrough>
       mode: guardrails
-      # EXPERIMENTAL — embedding-only. When true, all interceptor requests
-      # are resolved as "allow" immediately, without waiting for rule
-      # evaluation. Events are still enqueued for Falco so observability
-      # via http_output / falco.log is preserved. Use this only when
-      # embedding Prempti inside a host agent that handles alerts via its
-      # own pipeline.
-      # passthrough: false
       socket_path: ${HOME}/.prempti/run/broker.sock
       http_port: 2802
 

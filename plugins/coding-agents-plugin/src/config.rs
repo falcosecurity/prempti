@@ -6,8 +6,16 @@ use falco_plugin::serde::Deserialize;
 #[schemars(crate = "falco_plugin::schemars")]
 #[serde(crate = "falco_plugin::serde")]
 pub struct CodingAgentConfig {
-    /// Operational mode: "guardrails" (default) or "monitor".
-    /// In monitor mode, rules are evaluated and logged but all verdicts resolve as allow.
+    /// Operational mode. One of:
+    /// - `guardrails` (default): verdicts enforced (deny / ask / allow).
+    /// - `monitor`: rules are evaluated and logged, but all verdicts resolve
+    ///   as `allow` after the synchronous rule-eval wait.
+    /// - `passthrough` (Experimental): every interceptor request is resolved
+    ///   as `allow` immediately at register, without waiting for rule
+    ///   evaluation. Events are still enqueued so observability via
+    ///   `http_output` / `falco.log` is preserved. Use only when embedding
+    ///   Prempti inside a host agent that handles alerts through its own
+    ///   pipeline.
     #[serde(default = "default_mode")]
     pub mode: String,
 
@@ -18,15 +26,6 @@ pub struct CodingAgentConfig {
     /// Port for the HTTP alert receiver.
     #[serde(default = "default_http_port")]
     pub http_port: u16,
-
-    /// Experimental: when true, resolve all interceptor requests as "allow"
-    /// immediately, without waiting for rule evaluation. Events are still
-    /// enqueued for processing. Useful when embedded in a host agent that
-    /// handles alerts through its own pipeline instead of Falco's
-    /// http_output. Distinct from `mode: monitor`, which evaluates rules
-    /// synchronously and only then forces an allow verdict.
-    #[serde(default)]
-    pub passthrough: bool,
 
     /// Tags that indicate a deny verdict.
     #[serde(default = "default_deny_tags")]
