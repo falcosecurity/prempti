@@ -93,12 +93,13 @@ impl Broker {
         NEXT_CORRELATION_ID.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Set the operational mode. In monitor mode, all verdicts resolve as allow.
+    /// Set monitor mode. When enabled, all verdicts resolve as allow after
+    /// the synchronous rule-eval wait. Independent of passthrough mode.
     pub fn set_monitor_mode(&self, enabled: bool) {
         self.monitor_mode.store(enabled, Ordering::Relaxed);
         log::info!(
-            "broker mode: {}",
-            if enabled { "monitor" } else { "guardrails" }
+            "broker monitor: {}",
+            if enabled { "enabled" } else { "disabled" }
         );
     }
 

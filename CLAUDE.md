@@ -165,7 +165,7 @@ Three plugin modes, switchable without reinstallation via `premptictl mode <guar
 - **Monitor** — rules evaluated and logged, but all verdicts resolve to allow after the synchronous rule-eval wait. Would-deny / would-ask log lines still fire.
 - **Passthrough** (Experimental, embedding-only) — every interceptor request is resolved as `allow` immediately at register, without waiting for rule evaluation. Events are still enqueued for Falco, so alerts continue to flow through `http_output` / `falco.log` and any observability pipeline hanging off them. No would-deny / would-ask log lines, because rule evaluation is decoupled from the verdict. Use only when embedding Prempti inside a host agent that has its own alert pipeline and does not want the hook's latency tied to Falco's rule loop.
 
-The three modes are mutually exclusive — `mode:` is a single string, so `monitor` and `passthrough` cannot coexist.
+The three modes are mutually exclusive — `mode:` is a single string, so only one is active at a time.
 
 Mode changes are applied via an explicit service restart driven by `ctl mode`: it rewrites the plugin config fragment, stops the service, re-registers the interceptor hook (so the brief restart window stays fail-closed rather than passing tool calls through unchecked), and starts the service again. Behavior is identical on Linux, macOS, and Windows. The same flow applies to any other config edit: edits made directly to `falco.yaml` or any included config / rule file take effect on the next `ctl start` (or `ctl mode`) — Falco's own `watch_config_files` is disabled deliberately because it is Linux-only upstream.
 
