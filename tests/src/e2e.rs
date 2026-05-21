@@ -4,7 +4,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::interceptor;
+use crate::interceptor::{self, AgentKind};
 
 static NEXT_HARNESS_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -99,9 +99,13 @@ impl E2eHarness {
     pub fn start(mode: &str) -> Option<Self> {
         let falco_bin = find_falco()?;
         let plugin_lib = find_plugin_lib()?;
-        let hook_bin = interceptor::interceptor_path();
-        if !hook_bin.exists() {
-            eprintln!("SKIP: interceptor binary not found");
+        // Skip only if NO interceptor is built. Per-test binary requirements
+        // are checked by run_hook_for at spawn time, which fails loudly with
+        // the exact missing path.
+        let claude_bin = interceptor::interceptor_path_for(AgentKind::Claude);
+        let codex_bin = interceptor::interceptor_path_for(AgentKind::Codex);
+        if !claude_bin.exists() && !codex_bin.exists() {
+            eprintln!("SKIP: no interceptor binary found (claude or codex)");
             return None;
         }
 
@@ -199,16 +203,56 @@ impl E2eHarness {
         })
     }
 
-    /// Run a hook event through the interceptor against this Falco instance.
+    /// Run a Claude Code hook event through the interceptor against this
+    /// Falco instance. Preserved for back-compat with existing tests.
     pub fn run_hook(&self, input: &str) -> interceptor::InterceptorResult {
-        interceptor::run_interceptor(input, &self.socket_path.to_string_lossy(), &[])
+        self.run_hook_for(AgentKind::Claude, input)
     }
 
-    /// Build a hook JSON input string.
+    /// Run a hook event through the given agent's interceptor against this
+    /// Falco instance.
+    pub fn run_hook_for(
+        &self,
+        kind: AgentKind,
+        input: &str,
+    ) -> interceptor::InterceptorResult {
+        interceptor::run_interceptor_for(
+            kind,
+            input,
+            &self.socket_path.to_string_lossy(),
+            &[],
+        )
+    }
+
+    /// Build a Claude Code hook JSON input string (PreToolUse).
     pub fn make_input(tool_name: &str, tool_input: &str, cwd: &str, tool_use_id: &str) -> String {
         format!(
             r#"{{"hook_event_name":"PreToolUse","tool_name":"{}","tool_input":{},"session_id":"e2e-test","cwd":"{}","tool_use_id":"{}"}}"#,
             tool_name, tool_input, cwd, tool_use_id
+        )
+    }
+
+    /// Build a Codex PreToolUse hook input string. All 10 required fields
+    /// per the upstream schema, snake_case, single-line (RawValue passthrough
+    /// would otherwise break the mock broker's read_line — and even though
+    /// the real broker reads more carefully here, single-line keeps the
+    /// inputs consistent and easy to scan in failure output).
+    pub fn make_codex_pretool_input(
+        tool_name: &str,
+        tool_input: &str,
+        cwd: &str,
+        tool_use_id: &str,
+    ) -> String {
+        format!(
+            r#"{{"session_id":"e2e-codex","turn_id":"e2e-turn","transcript_path":null,"cwd":"{cwd}","hook_event_name":"PreToolUse","model":"gpt-5-codex","permission_mode":"default","tool_name":"{tool_name}","tool_input":{tool_input},"tool_use_id":"{tool_use_id}"}}"#
+        )
+    }
+
+    /// Build a Codex PermissionRequest hook input string. Same shape as
+    /// PreToolUse minus tool_use_id (omitted per the upstream schema).
+    pub fn make_codex_permreq_input(tool_name: &str, tool_input: &str, cwd: &str) -> String {
+        format!(
+            r#"{{"session_id":"e2e-codex","turn_id":"e2e-turn","transcript_path":null,"cwd":"{cwd}","hook_event_name":"PermissionRequest","model":"gpt-5-codex","permission_mode":"default","tool_name":"{tool_name}","tool_input":{tool_input}}}"#
         )
     }
 }
@@ -349,6 +393,28 @@ fn write_rules(rules_dir: &Path) {
   priority: NOTICE
   source: coding_agent
   tags: []
+
+# --- Codex E2E sentinel rules ---
+# These rules fire only for agent.name = "codex" and only on unique markers
+# unlikely to appear elsewhere. They let the Codex E2E suite prove agent.name
+# routing through Falco end-to-end without disturbing the agent-agnostic
+# rules above (which fire for both Claude Code and Codex).
+
+- rule: Codex sentinel deny
+  desc: Sentinel deny rule used by Codex E2E tests to verify agent.name routing
+  condition: agent.name = "codex" and tool.name = "Bash" and tool.input_command contains "codex-e2e-deny-marker"
+  output: "Codex deny sentinel matched: %tool.input_command | correlation=%correlation.id"
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Codex sentinel ask
+  desc: Sentinel ask rule used by Codex E2E tests to verify the PermissionRequest mount
+  condition: agent.name = "codex" and tool.name = "Bash" and tool.input_command contains "codex-e2e-ask-marker"
+  output: "Codex ask sentinel matched: %tool.input_command | correlation=%correlation.id"
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
 "#
     );
     std::fs::write(rules_dir.join("deny.yaml"), deny_rules).expect("failed to write deny rules");

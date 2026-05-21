@@ -9,7 +9,7 @@ ARCH := $(shell uname -m)
 	download-falco-linux falco-linux-bin-dir \
 	falco-macos falco-macos-bin-dir \
 	falco-windows falco-windows-x64 falco-windows-arm64 \
-	test test-plugin-unit test-interceptor test-codex-interceptor test-e2e \
+	test test-plugin-unit test-interceptor test-codex-interceptor test-e2e test-codex-e2e \
 	linux linux-x86_64 linux-aarch64 \
 	macos macos-aarch64 macos-x86_64 macos-universal \
 	windows windows-x64 windows-arm64 \
@@ -51,7 +51,7 @@ falco-linux-bin-dir:
 	@echo "build/falco-$(FALCO_VERSION)-$(ARCH)/usr/bin"
 
 ## Run all tests
-test: test-plugin-unit test-interceptor test-codex-interceptor test-e2e
+test: test-plugin-unit test-interceptor test-codex-interceptor test-e2e test-codex-e2e
 
 ## Run plugin unit tests (event parsing, verdict resolution, broker logic — no Falco needed)
 test-plugin-unit:
@@ -68,6 +68,10 @@ test-codex-interceptor: build-codex-interceptor
 ## Run end-to-end tests (Rust, cross-platform, requires Falco built)
 test-e2e: build
 	cd tests && cargo test --test e2e --test e2e_monitor --test e2e_concurrent -- --nocapture
+
+## Run Codex Falco-driven E2E tests (requires Falco + plugin + codex-interceptor built)
+test-codex-e2e: build-codex-interceptor build-plugin
+	cd tests && cargo test --test e2e_codex -- --nocapture
 
 ## Build Linux packages for all architectures
 linux: linux-x86_64 linux-aarch64
