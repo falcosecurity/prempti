@@ -61,9 +61,9 @@ test-plugin-unit:
 test-interceptor: build-interceptor
 	cd tests && cargo test --test interceptor -- --nocapture
 
-## Run Codex interceptor unit tests (Rust, cross-platform; inline in the crate)
-test-codex-interceptor:
-	cargo test -p codex-interceptor
+## Run Codex interceptor E2E tests (mock-broker driven; needs the binary built)
+test-codex-interceptor: build-codex-interceptor
+	cd tests && cargo test --test codex_interceptor -- --nocapture
 
 ## Run end-to-end tests (Rust, cross-platform, requires Falco built)
 test-e2e: build
