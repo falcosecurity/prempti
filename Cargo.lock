@@ -123,6 +123,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-interceptor"
+version = "0.3.0"
+dependencies = [
+ "rustix",
+ "serde",
+ "serde_json",
+ "uds_windows",
+]
+
+[[package]]
 name = "coding-agents-plugin"
 version = "0.3.0"
 dependencies = [

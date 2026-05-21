@@ -5,11 +5,11 @@ VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 FALCO_VERSION := 0.43.0
 ARCH := $(shell uname -m)
 
-.PHONY: all build build-interceptor build-plugin build-ctl \
+.PHONY: all build build-interceptor build-codex-interceptor build-plugin build-ctl \
 	download-falco-linux falco-linux-bin-dir \
 	falco-macos falco-macos-bin-dir \
 	falco-windows falco-windows-x64 falco-windows-arm64 \
-	test test-plugin-unit test-interceptor test-e2e \
+	test test-plugin-unit test-interceptor test-codex-interceptor test-e2e \
 	linux linux-x86_64 linux-aarch64 \
 	macos macos-aarch64 macos-x86_64 macos-universal \
 	windows windows-x64 windows-arm64 \
@@ -18,11 +18,15 @@ ARCH := $(shell uname -m)
 all: linux
 
 ## Build all components for the native architecture (no packaging)
-build: build-interceptor build-plugin build-ctl
+build: build-interceptor build-codex-interceptor build-plugin build-ctl
 
-## Build the interceptor
+## Build the Claude Code interceptor
 build-interceptor:
 	cd hooks/claude-code && cargo build --release
+
+## Build the Codex interceptor
+build-codex-interceptor:
+	cd hooks/codex && cargo build --release
 
 ## Build the plugin
 build-plugin:
@@ -47,15 +51,19 @@ falco-linux-bin-dir:
 	@echo "build/falco-$(FALCO_VERSION)-$(ARCH)/usr/bin"
 
 ## Run all tests
-test: test-plugin-unit test-interceptor test-e2e
+test: test-plugin-unit test-interceptor test-codex-interceptor test-e2e
 
 ## Run plugin unit tests (event parsing, verdict resolution, broker logic — no Falco needed)
 test-plugin-unit:
 	cargo test -p coding-agents-plugin --lib
 
-## Run interceptor unit tests (Rust, cross-platform)
+## Run Claude Code interceptor unit tests (Rust, cross-platform)
 test-interceptor: build-interceptor
 	cd tests && cargo test --test interceptor -- --nocapture
+
+## Run Codex interceptor unit tests (Rust, cross-platform; inline in the crate)
+test-codex-interceptor:
+	cargo test -p codex-interceptor
 
 ## Run end-to-end tests (Rust, cross-platform, requires Falco built)
 test-e2e: build

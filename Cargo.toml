@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "hooks/claude-code",
+    "hooks/codex",
     "plugins/coding-agents-plugin",
     "tools/premptictl",
     "tests",
@@ -26,6 +27,10 @@ strip = true
 # for every tool call or are invoked manually, so binary size matters more
 # than raw throughput.
 [profile.release.package.claude-interceptor]
+opt-level = "z"
+codegen-units = 1
+
+[profile.release.package.codex-interceptor]
 opt-level = "z"
 codegen-units = 1
 

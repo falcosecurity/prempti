@@ -780,4 +780,98 @@ mod tests {
         assert_eq!(pe.agent_pid(&encoded), Some(9999));
         assert_eq!(pe.tool_name(&encoded), Some("Bash"));
     }
+
+    // ------------------------------------------------------------------
+    // Codex-shaped event payloads. These are regression guards: Codex's
+    // hook JSON is snake_case (same as Claude Code), but the tool names
+    // and field set differ. If a future event.rs refactor accidentally
+    // assumes Claude Code shape, these tests catch it.
+    // ------------------------------------------------------------------
+
+    fn codex_payload(event_json: &str) -> Vec<u8> {
+        format!("1\ncodex\n0\n{}", event_json).into_bytes()
+    }
+
+    #[test]
+    fn parses_codex_pre_tool_use_bash_payload() {
+        // Full Codex PreToolUse JSON shape per codex-rs/hooks/schema/
+        // generated/pre-tool-use.command.input.schema.json. Required fields:
+        // session_id, turn_id, transcript_path, cwd, hook_event_name, model,
+        // permission_mode, tool_name, tool_input, tool_use_id.
+        let p = codex_payload(
+            r#"{
+                "session_id": "sess-codex-1",
+                "turn_id": "turn-1",
+                "transcript_path": null,
+                "cwd": "/work",
+                "hook_event_name": "PreToolUse",
+                "model": "gpt-5-codex",
+                "permission_mode": "default",
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls -la"},
+                "tool_use_id": "tu-1"
+            }"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_name(&p), Some("codex"));
+        assert_eq!(pe.hook_event_name(&p), Some("PreToolUse"));
+        assert_eq!(pe.session_id(&p), Some("sess-codex-1"));
+        assert_eq!(pe.permission_mode(&p), Some("default"));
+        assert_eq!(pe.transcript_path(&p), Some(""));
+        assert_eq!(pe.tool_use_id(&p), Some("tu-1"));
+        assert_eq!(pe.tool_name(&p), Some("Bash"));
+        assert_eq!(pe.tool_input_command(&p), Some("ls -la"));
+    }
+
+    #[test]
+    fn parses_codex_permission_request_without_tool_use_id() {
+        // PermissionRequest's schema omits tool_use_id — defaults to empty.
+        let p = codex_payload(
+            r#"{
+                "session_id": "sess-codex-2",
+                "turn_id": "turn-7",
+                "transcript_path": null,
+                "cwd": "/work",
+                "hook_event_name": "PermissionRequest",
+                "model": "gpt-5-codex",
+                "permission_mode": "default",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf /"}
+            }"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.hook_event_name(&p), Some("PermissionRequest"));
+        assert_eq!(pe.tool_use_id(&p), Some(""));
+        assert_eq!(pe.tool_input_command(&p), Some("rm -rf /"));
+    }
+
+    #[test]
+    fn codex_apply_patch_yields_empty_file_path() {
+        // Codex uses tool_name = "apply_patch" for file writes. Our parser
+        // only extracts file_path for Claude Code's Write/Edit/Read tools,
+        // so apply_patch produces an empty file_path until path resolution
+        // for patch-based inputs lands (v1 limitation).
+        let p = codex_payload(
+            r#"{
+                "hook_event_name": "PreToolUse",
+                "tool_name": "apply_patch",
+                "tool_input": {"input": "diff content here"}
+            }"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.tool_name(&p), Some("apply_patch"));
+        assert_eq!(pe.file_path(&p), Some(""));
+        assert_eq!(pe.real_file_path(&p), Some(""));
+    }
+
+    #[test]
+    fn codex_dont_ask_permission_mode_passes_through() {
+        // dontAsk is a Codex-only permission_mode value; the parser must not
+        // reject it (it's an opaque string at the plugin layer).
+        let p = codex_payload(
+            r#"{"hook_event_name":"PreToolUse","permission_mode":"dontAsk"}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.permission_mode(&p), Some("dontAsk"));
+    }
 }

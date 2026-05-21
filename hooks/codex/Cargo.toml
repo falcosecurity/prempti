@@ -1,0 +1,22 @@
+[package]
+name = "codex-interceptor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "codex-interceptor"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+
+[target.'cfg(unix)'.dependencies]
+# `process` feature enables `rustix::process::getppid`. `std` is already in
+# the default feature set; we keep defaults to avoid surprising no_std-style
+# build modes.
+rustix = { version = "1", features = ["process"] }
+
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1.2"
