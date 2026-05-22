@@ -101,7 +101,8 @@ Background thread spawned in `Plugin::new()`. Listens on a Unix domain socket fo
 - **Bind**: `config.socket_path` (default `~/.prempti/run/broker.sock`)
 - **Protocol**: Newline-terminated JSON, one request per connection
 - **Read timeout**: 5 seconds (prevents slow connections from blocking the accept loop)
-- **Flow**: read request → validate → assign `correlation.id` → register in broker → enqueue event
+- **Default flow** (single-event): read request → validate → assign `correlation.id` → register in broker (`expected_events = 1`) → enqueue one event
+- **Codex apply_patch flow** (multi-event multiplex): read request → validate → parse the patch envelope from `tool_input.command` → for each `(operation, path)` tuple, build a per-event payload with `tool_input.command` rewritten to just that hunk's slice wrapped in a fresh `*** Begin Patch ... *** End Patch` envelope → assign one shared `correlation.id` → register in broker with `expected_events = N` → enqueue N events. Malformed envelopes fail closed: a deny response is written directly to the interceptor socket and no broker entry is created. See [`docs/hooks/codex/SPEC.md`](../../hooks/codex/SPEC.md) for the wire shape that triggers this path.
 
 ### Event Queue (`crossbeam-channel`)
 
@@ -117,7 +118,7 @@ Bounded channel (capacity 1024) connecting the socket server thread to Falco's `
 Implements `SourcePlugin` + `SourcePluginInstance`.
 
 - **`next_batch`**: Blocks on `recv_timeout(100ms)` for the first event, then drains up to 31 more via `try_recv`. Returns `Timeout` if no events, `Eof` if channel disconnected.
-- **Event encoding**: `<correlation_id>\n<agent_name>\n<agent_pid>\n<raw_event_json>` as raw bytes in the plugin event payload. `agent_pid` is the decimal u64 captured by the interceptor (`0` = unknown).
+- **Event encoding**: `<correlation_id>\n<agent_name>\n<agent_pid>\n<patch_op>\n<patch_path>\n<raw_event_json>` as raw bytes in the plugin event payload. Five newline-separated sections. `agent_pid` is the decimal u64 captured by the interceptor (`0` = unknown). `patch_op` and `patch_path` are empty strings unless this event is a synthetic per-path event the broker emitted from one Codex `apply_patch` hook invocation — see "Socket Server" above for when those are populated. The order is fixed so the extract plugin can decode either single-event or multi-event payloads with the same parser.
 
 ### Extract Plugin (`extract.rs`)
 
@@ -125,22 +126,25 @@ Implements `ExtractPlugin` with per-event caching via `ExtractContext`.
 
 | Field | Type | Source |
 |-------|------|--------|
-| `correlation.id` | u64 | Broker-assigned monotonic counter (from payload header) |
-| `agent.name` | string | Wire protocol `agent_name` field |
+| `correlation.id` | u64 | Broker-assigned monotonic counter (from payload header). Multiple events from one Codex `apply_patch` invocation share the same `correlation.id`. |
+| `agent.name` | string | Wire protocol `agent_name` field (`claude_code` or `codex`) |
 | `agent.os` | string | Compile-time `cfg!(target_os)` — `linux`, `macos`, `windows`, or `unknown` (static per build, not parsed from the payload) |
 | `agent.pid` | u64 | PID of the agent process that invoked the hook (the interceptor's immediate parent). `0` when the platform lookup fails. |
-| `agent.hook_event_name` | string | `event.hook_event_name` |
+| `agent.hook_event_name` | string | `event.hook_event_name` (e.g. `PreToolUse`, `PermissionRequest`) |
 | `agent.session_id` | string | `event.session_id` |
-| `agent.permission_mode` | string | `event.permission_mode` — session permission mode reported by the agent |
+| `agent.permission_mode` | string | `event.permission_mode` — session permission mode reported by the agent. Codex-only values include `dontAsk`. |
 | `agent.transcript_path` | string | `event.transcript_path` — empty when the agent reports `null` |
+| `agent.model` | string | `event.model` — model identifier (Codex-only; empty for Claude Code) |
+| `agent.turn_id` | string | `event.turn_id` — finer correlation than `session_id` (Codex-only; empty for Claude Code) |
 | `agent.cwd` | string | `event.cwd` (raw) |
 | `agent.real_cwd` | string | `event.cwd` resolved via `canonicalize` + lexical fallback |
-| `tool.use_id` | string | `event.tool_use_id` (raw from Claude Code) |
-| `tool.name` | string | `event.tool_name` |
-| `tool.input` | string | `event.tool_input` as JSON string |
+| `tool.use_id` | string | `event.tool_use_id` (present on Claude Code hooks and Codex `PreToolUse`; absent on Codex `PermissionRequest`) |
+| `tool.name` | string | `event.tool_name` (e.g. `Bash`, `Write`, `Edit` for Claude Code; `Bash`, `apply_patch`, `mcp__<server>__<tool>` for Codex) |
+| `tool.input` | string | `event.tool_input` as JSON string. For Codex `apply_patch` synthetic events, the broker has already rewritten `tool_input.command` to just this hunk's slice. |
 | `tool.input_command` | string | `event.tool_input.command` (Bash only) |
-| `tool.file_path` | string | `event.tool_input.file_path` (raw, Write/Edit/Read only) |
-| `tool.real_file_path` | string | Resolved absolute path (Write/Edit/Read only) |
+| `tool.file_path` | string | Raw from `event.tool_input.file_path` for Claude Code (`Write`/`Edit`/`Read`); broker-injected per-event path for Codex `apply_patch` synthetic events. Empty otherwise. |
+| `tool.real_file_path` | string | Resolved absolute path. Populated whenever `tool.file_path` is. |
+| `tool.patch_op` | string | Per-event operation for Codex `apply_patch` synthetic events: `Add`, `Update`, `Delete`, or `Move`. Empty for all other events. |
 
 Event source restriction: `CodingAgentPayload` with `EventSource::SOURCE = Some("coding_agent")` prevents extraction from syscall events.
 
@@ -161,6 +165,7 @@ Tracks pending requests and resolves verdicts. Shared via `Arc<Broker>` across a
 - **Pending map**: `DashMap<u64, PendingRequest>` keyed by `correlation.id`
 - **Correlation ID**: Monotonic `AtomicU64` counter (starts at 1, always > 0)
 - **Wire ID**: The interceptor's original request `id` (stored per-request, used in the verdict response)
+- **`expected_events` counter**: `AtomicU64` per pending request, set at register time. `1` for ordinary single-event flows (every hook except Codex `apply_patch`), `N` for the multi-file `apply_patch` multiplex. `apply_seen` decrements; the broker only resolves on the last seen (the call that brings the counter to 0). `apply_deny` short-circuits regardless of remaining seens.
 - **Monitor mode**: `AtomicBool`, set from plugin config on init
 
 ### Verdict Resolution
@@ -169,15 +174,15 @@ Tags in Falco alerts determine the verdict:
 
 | Tag | Default | Verdict | Behavior |
 |-----|---------|---------|----------|
-| `coding_agent_deny` | configurable | Deny | Resolve immediately, remove from pending |
-| `coding_agent_ask` | configurable | Ask | Escalate (deny > ask), wait for seen |
-| `coding_agent_seen` | configurable | Seen | Resolve with best verdict (allow if no deny/ask) |
+| `coding_agent_deny` | configurable | Deny | Resolve immediately, remove from pending (short-circuits any pending `expected_events`) |
+| `coding_agent_ask` | configurable | Ask | Escalate (deny > ask), stage verdict, wait for all expected seens |
+| `coding_agent_seen` | configurable | Seen | Decrement `expected_events`; resolve with best verdict when it reaches 0 (allow if no deny/ask staged) |
 
-Escalation: `deny > ask > allow`. Multiple rules can match the same event (`rule_matching: all`).
+Escalation: `deny > ask > allow`. Multiple rules can match the same event (`rule_matching: all`). For Codex `apply_patch` multi-event multiplex, escalation also runs **across** the N synthetic events sharing one `correlation.id`: one deny on any one event wins; one ask on any one event becomes the final verdict if no deny lands; all-allow only if every event's seen arrived without a deny or ask alert.
 
-**Alert ordering guarantee**: Falco enqueues alerts in rule-load order, the output worker delivers in FIFO order. Deny/ask alerts (from rules loaded before `seen.yaml`) always arrive before the seen alert.
+**Alert ordering guarantee**: Falco enqueues alerts in rule-load order, the output worker delivers in FIFO order. Deny/ask alerts (from rules loaded before `seen.yaml`) always arrive before the seen alert for any given event. For multi-event flows, ordering between events is preserved by Falco's single-producer single-consumer output queue, so the broker sees all deny/ask alerts for event K before the seen alert for event K+1.
 
-**Monitor mode**: `apply_deny` and `apply_ask` log but don't resolve. `apply_seen` always resolves as allow.
+**Monitor mode**: `apply_deny` and `apply_ask` log but don't resolve. `apply_seen` decrements `expected_events` and resolves as allow when it reaches 0 (so multi-event monitor still waits for all seens before responding).
 
 ### Verdict Reason Format
 
@@ -248,3 +253,5 @@ Since `correlation.id` is a broker-assigned monotonic counter starting at 1, thi
 2. **No pending request TTL**: If a seen alert never arrives for an event (e.g., Falco crashes mid-evaluation), the pending request leaks. The interceptor will timeout and fail-closed.
 3. **Brief unavailability during `ctl mode`**: applying a mode change runs `service_stop` + `service_start` (~2–3s). The broker socket is unavailable in that window and interceptors fail-closed (the hook is intentionally re-registered between stop and start to keep this property).
 4. **`Plugin::Drop` only runs on graceful shutdown**: on Linux, Falco's `SIGTERM` handler tears the plugin down cleanly. On macOS and Windows, Falco has no signal handler — the service manager terminates the process, so `Drop` is skipped. Resources are still reclaimed correctly: TCP listener via the kernel, AF_UNIX socket file via `prepare_listener`'s stale-file cleanup on next start, threads via process exit.
+5. **Codex `apply_patch` 64 KB wire cap**: the request size is currently bounded by the socket-server read limit and the interceptor's stdin limit; large multi-file refactors above ~64 KB are rejected before any rule fires. Raising the limit (configurable plugin / interceptor caps) is tracked in TODOs.
+6. **Codex `permission_mode = "dontAsk"` × `PermissionRequest` interaction is unverified at runtime**: the multi-event multiplex and the verdict mapping (`ask → deny + reason` on both mounts) handle this safely on paper, but exact firing semantics of `PermissionRequest` under `dontAsk` are still inferred from upstream source, not observed.
