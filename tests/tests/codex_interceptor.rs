@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use prempti_tests::interceptor::{
     assert_codex_permreq_behavior, assert_codex_permreq_message_contains,
-    assert_codex_permreq_no_message, assert_codex_pretool_decision, assert_reason_contains,
+    assert_codex_permreq_no_output, assert_codex_pretool_decision, assert_reason_contains,
     run_interceptor_for, run_with_mock_for, AgentKind,
 };
 use prempti_tests::mock_broker::{self, MockBroker, MockMode};
@@ -117,12 +117,15 @@ fn pretool_fail_open_yields_allow_when_broker_unreachable() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn permreq_allow_omits_message_field() {
+fn permreq_allow_emits_no_output() {
+    // Broker `allow` on PermissionRequest only means "no Prempti rule
+    // matched". Emitting `{"behavior":"allow"}` would tell Codex to SKIP
+    // its own approval prompt — auto-bypassing the user's configured
+    // approval UX. The safe wire shape for "no Prempti objection" is empty
+    // stdout + exit 0: Codex's hook contract treats that as "no opinion,
+    // fall through to normal approval flow".
     let r = run_with_mock_for(CODEX, MockMode::Allow, PERMISSION_REQUEST, "codex-pr-allow");
-    assert_codex_permreq_behavior(&r, "allow");
-    // Codex's wire enum has `behavior: "allow"` with no message field —
-    // emitting one would be schema-invalid.
-    assert_codex_permreq_no_message(&r);
+    assert_codex_permreq_no_output(&r);
 }
 
 #[test]
@@ -158,7 +161,11 @@ fn permreq_broker_unreachable_fail_closed() {
 }
 
 #[test]
-fn permreq_fail_open_yields_allow_when_broker_unreachable() {
+fn permreq_fail_open_emits_no_output_when_broker_unreachable() {
+    // Same no-output semantics as the happy-path allow: a broker outage
+    // with PREMPTI_FAIL_OPEN=1 still must NOT auto-bypass Codex's
+    // approval prompt; "no Prempti objection" is the strongest claim we
+    // can safely make on PermissionRequest.
     let sock = mock_broker::temp_socket_path("codex-pr-failopen");
     let r = run_interceptor_for(
         CODEX,
@@ -166,8 +173,7 @@ fn permreq_fail_open_yields_allow_when_broker_unreachable() {
         &sock.to_string_lossy(),
         &[("PREMPTI_FAIL_OPEN", "1")],
     );
-    assert_codex_permreq_behavior(&r, "allow");
-    assert_codex_permreq_no_message(&r);
+    assert_codex_permreq_no_output(&r);
 }
 
 // ---------------------------------------------------------------------------
@@ -180,9 +186,11 @@ fn permreq_without_tool_use_id_still_completes() {
     // fallback chain handles a real PermissionRequest input (which the
     // upstream schema does not include tool_use_id for). Failure here would
     // mean the broker received a request whose id couldn't be echoed back
-    // and the interceptor rejected it as a mismatch.
+    // and the interceptor rejected it as a mismatch; that would surface as
+    // a fail-closed deny on stdout rather than the clean no-output we
+    // expect for broker = allow.
     let r = run_with_mock_for(CODEX, MockMode::Allow, PERMISSION_REQUEST, "codex-pr-noid");
-    assert_codex_permreq_behavior(&r, "allow");
+    assert_codex_permreq_no_output(&r);
 }
 
 // ---------------------------------------------------------------------------

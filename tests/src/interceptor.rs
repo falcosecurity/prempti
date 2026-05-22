@@ -264,17 +264,23 @@ pub fn assert_codex_permreq_message_contains(result: &InterceptorResult, needle:
     );
 }
 
-/// Assert the interceptor's `PermissionRequest` output has no `message`
-/// field (Codex's wire enum forbids it on `allow`).
-pub fn assert_codex_permreq_no_message(result: &InterceptorResult) {
-    let v = parse_codex_stdout(result);
-    let has_message = v["hookSpecificOutput"]["decision"]
-        .as_object()
-        .map(|o| o.contains_key("message"))
-        .unwrap_or(false);
+/// Assert the interceptor emitted **no output** for a `PermissionRequest` —
+/// the wire-level representation of "no Prempti objection, fall through to
+/// Codex's normal approval flow" (Codex's hook contract: empty stdout +
+/// exit 0). Emitting `{"behavior":"allow"}` on PermissionRequest would tell
+/// Codex to SKIP its approval prompt, which is unsafe when Prempti just
+/// had no matching rule.
+pub fn assert_codex_permreq_no_output(result: &InterceptorResult) {
     assert!(
-        !has_message,
-        "expected no message field on allow, got '{}'",
-        result.stdout.trim()
+        result.stdout.trim().is_empty(),
+        "expected empty stdout on PermissionRequest allow, got '{}' (stderr='{}')",
+        result.stdout.trim(),
+        result.stderr.trim()
+    );
+    assert_eq!(
+        result.exit_code, 0,
+        "expected exit 0 on PermissionRequest allow, got {} (stderr='{}')",
+        result.exit_code,
+        result.stderr.trim()
     );
 }

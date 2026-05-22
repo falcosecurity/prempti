@@ -236,30 +236,51 @@ fn render_pre_tool_use(verdict: CodexVerdict, reason: &str) -> Result<String, se
     serde_json::to_string(&output)
 }
 
-fn render_permission_request(
-    verdict: CodexVerdict,
-    reason: &str,
-) -> Result<String, serde_json::Error> {
-    let (behavior, message) = match verdict {
-        CodexVerdict::Allow => ("allow", None),
-        CodexVerdict::Deny => ("deny", Some(reason)),
-    };
+/// Render a `PermissionRequest` deny output.
+///
+/// Only deny has a wire shape on this mount. Allow MUST NOT emit
+/// `{"behavior":"allow"}` — per Codex's hook docs that response tells Codex
+/// to **skip its own approval prompt entirely**, which would auto-bypass the
+/// approval UX the user has configured. A broker `allow` only means "no
+/// Prempti rule matched", not "definitely approve". The safe representation
+/// of that on PermissionRequest is no output at all (Codex's contract:
+/// empty stdout + exit 0 = no objection, normal approval flow proceeds).
+/// See `write_verdict` for the no-output path.
+fn render_permission_request_deny(reason: &str) -> Result<String, serde_json::Error> {
     let output = PermissionRequestOutput {
         hook_specific_output: PermissionRequestHookSpecificOutput {
             hook_event_name: EVENT_PERMISSION_REQUEST,
-            decision: PermissionRequestDecision { behavior, message },
+            decision: PermissionRequestDecision {
+                behavior: "deny",
+                message: Some(reason),
+            },
         },
     };
     serde_json::to_string(&output)
 }
 
-/// Write a verdict JSON to stdout. If serialization or write fails, falls back
-/// to a hardcoded deny literal — Codex treats empty stdout as allow, which is
-/// the wrong fail-safe direction.
+/// Write a verdict to stdout. PreToolUse always emits an explicit decision;
+/// PermissionRequest emits a deny JSON only for Deny verdicts and emits
+/// nothing for Allow (see `render_permission_request_deny` doc for why).
+/// On serialization or write failure, falls back to a hardcoded deny
+/// literal — for the deny path only, because emitting "fail-closed deny" by
+/// mistake is the right direction; for the allow path there is no risk of
+/// silent auto-approval since we emit nothing.
 fn write_verdict(event: CodexEvent, verdict: CodexVerdict, reason: &str) {
+    // PermissionRequest + Allow: deliberately no output. Codex falls through
+    // to its normal approval flow (user prompt, mode-driven auto-approve,
+    // etc.) instead of being told to skip approval.
+    if matches!(
+        (event, verdict),
+        (CodexEvent::PermissionRequest, CodexVerdict::Allow)
+    ) {
+        return;
+    }
+
     let rendered = match event {
         CodexEvent::PreToolUse => render_pre_tool_use(verdict, reason),
-        CodexEvent::PermissionRequest => render_permission_request(verdict, reason),
+        // PermissionRequest reaches here only on Deny (Allow short-circuited above).
+        CodexEvent::PermissionRequest => render_permission_request_deny(reason),
     };
 
     match rendered {
@@ -670,26 +691,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn permission_request_allow_omits_message() {
-        // Codex's wire enum has `behavior: "allow"` with no message field.
-        // Emitting message on allow would be schema-invalid.
-        let json = render_permission_request(CodexVerdict::Allow, "ignored").expect("render");
-        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(
-            v["hookSpecificOutput"]["hookEventName"],
-            "PermissionRequest"
-        );
-        assert_eq!(v["hookSpecificOutput"]["decision"]["behavior"], "allow");
-        assert!(
-            v["hookSpecificOutput"]["decision"].get("message").is_none(),
-            "message must not be serialized for allow"
-        );
-    }
+    // No `render_permission_request_allow` exists: PermissionRequest + Allow
+    // emits no output by design (so Codex falls through to its normal
+    // approval flow instead of being told to skip it). The "no output"
+    // behavior is exercised at the E2E layer where the binary's stdout is
+    // observable; here we just pin the deny render shape.
 
     #[test]
     fn permission_request_deny_includes_message() {
-        let json = render_permission_request(CodexVerdict::Deny, "rule Y: ask").expect("render");
+        let json = render_permission_request_deny("rule Y: ask").expect("render");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert_eq!(v["hookSpecificOutput"]["decision"]["behavior"], "deny");
         assert_eq!(
@@ -702,7 +712,7 @@ mod tests {
     fn permission_request_deny_with_empty_reason_still_emits_message_field() {
         // If the broker returns deny with an empty reason, we still emit the
         // message field (empty string) so the deny shape stays well-formed.
-        let json = render_permission_request(CodexVerdict::Deny, "").expect("render");
+        let json = render_permission_request_deny("").expect("render");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert_eq!(v["hookSpecificOutput"]["decision"]["behavior"], "deny");
         assert_eq!(v["hookSpecificOutput"]["decision"]["message"], "");
