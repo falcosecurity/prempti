@@ -62,6 +62,12 @@ struct PendingRequest {
     current_verdict: Mutex<Option<Verdict>>,
     /// When this request was registered.
     created_at: Instant,
+    /// Number of "seen" alerts still expected before resolving. Set at
+    /// register time: 1 for single-event flows (every hook except codex's
+    /// multi-file apply_patch), N for synthetic multi-event flows where the
+    /// broker emitted N Falco events from one wire request. `apply_seen`
+    /// decrements; only the last seen triggers resolve.
+    remaining_seens: AtomicU64,
 }
 
 impl Broker {
@@ -126,11 +132,20 @@ impl Broker {
 
     /// Register a new pending request. `correlation_id` is the broker-assigned ID
     /// used for Falco alert correlation. `wire_id` is the interceptor's request ID
-    /// used in the verdict response.
+    /// used in the verdict response. `expected_events` is the number of "seen"
+    /// alerts the broker should wait for before resolving — 1 for ordinary
+    /// hooks, N for codex apply_patch multi-file multiplex. Values below 1 are
+    /// clamped to 1 so misuse can't deadlock the interceptor.
     ///
     /// In passthrough mode, the request is resolved as "allow" immediately without
     /// being added to the pending map.
-    pub fn register(&self, correlation_id: u64, wire_id: String, stream: BrokerStream) {
+    pub fn register(
+        &self,
+        correlation_id: u64,
+        wire_id: String,
+        stream: BrokerStream,
+        expected_events: u64,
+    ) {
         if self.is_passthrough() {
             let response = Verdict::Allow.to_response_json(&wire_id);
             let mut s = stream;
@@ -146,6 +161,7 @@ impl Broker {
                 wire_id,
                 current_verdict: Mutex::new(None),
                 created_at: Instant::now(),
+                remaining_seens: AtomicU64::new(expected_events.max(1)),
             },
         );
     }
@@ -181,16 +197,37 @@ impl Broker {
         // Don't resolve yet — wait for the seen signal.
     }
 
-    /// Signal that rule evaluation is complete for this correlation ID.
-    /// Resolve with the current best verdict (allow if no deny/ask arrived).
-    /// In monitor mode, always resolves as allow.
+    /// Signal that rule evaluation is complete for one Falco event with this
+    /// correlation ID. For single-event flows the broker resolves immediately;
+    /// for multi-event flows (codex apply_patch multiplex) the broker waits
+    /// for `expected_events` seen alerts before resolving with the escalated
+    /// verdict (deny > ask > allow). In monitor mode the verdict is always
+    /// downgraded to allow.
+    ///
+    /// `apply_deny` may short-circuit and `resolve` away the entry before all
+    /// seens arrive; subsequent calls hit an empty pending map and become
+    /// no-ops, which is the intended behavior.
     pub fn apply_seen(&self, correlation_id: u64) {
+        // Decrement the seen counter under the DashMap shard lock. Returns
+        // `Some(true)` if we just brought the counter to 0 (= ready to
+        // resolve), `Some(false)` if more seens are still expected, and
+        // `None` if the entry is already gone (e.g. apply_deny resolved
+        // early). Holding the shard lock for the duration of this check is
+        // fine — fetch_sub is a single atomic op, the lock is just to keep
+        // the entry alive while we touch the counter.
+        let should_resolve = self
+            .pending
+            .get(&correlation_id)
+            .map(|p| p.remaining_seens.fetch_sub(1, Ordering::AcqRel) == 1);
+        match should_resolve {
+            Some(true) => {}
+            Some(false) | None => return,
+        }
+
         if self.is_monitor() {
-            // Monitor mode: always allow.
             self.resolve(correlation_id, Verdict::Allow);
             return;
         }
-        // Atomically remove the entry. Only one caller wins the remove.
         if let Some((_, pending)) = self.pending.remove(&correlation_id) {
             let verdict = pending
                 .current_verdict
@@ -319,8 +356,17 @@ mod tests {
     }
 
     fn register_with(broker: &Broker, id: u64, wire_id: &str) -> UnixStream {
+        register_with_count(broker, id, wire_id, 1)
+    }
+
+    fn register_with_count(
+        broker: &Broker,
+        id: u64,
+        wire_id: &str,
+        expected_events: u64,
+    ) -> UnixStream {
         let (broker_side, peer) = UnixStream::pair().expect("UnixStream::pair");
-        broker.register(id, wire_id.to_string(), broker_side);
+        broker.register(id, wire_id.to_string(), broker_side, expected_events);
         peer
     }
 
@@ -482,6 +528,105 @@ mod tests {
         assert_eq!(resp["decision"], "allow");
         assert_eq!(resp["id"], "wire-1");
         // Pending map must stay empty: passthrough short-circuits before insert.
+        assert_eq!(broker.pending_count(), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Multi-event seen counting (apply_patch multiplex)
+    //
+    // These tests pin the broker's expected_events behavior: a single wire
+    // request can correspond to N Falco events sharing the same correlation
+    // id, and the broker must wait for N seen alerts before resolving.
+    // Deny still short-circuits.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn multi_event_seen_counts_down_before_resolving_allow() {
+        let broker = Broker::new();
+        let peer = register_with_count(&broker, 1, "wire-1", 3);
+
+        // First two seens do nothing on the wire — broker waits for all three.
+        broker.apply_seen(1);
+        expect_no_response(&peer);
+        broker.apply_seen(1);
+        expect_no_response(&peer);
+
+        // Third seen resolves as allow (no deny/ask was applied).
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "allow");
+        assert_eq!(resp["id"], "wire-1");
+        assert_eq!(broker.pending_count(), 0);
+    }
+
+    #[test]
+    fn multi_event_deny_short_circuits_pending_seens() {
+        let broker = Broker::new();
+        let peer = register_with_count(&broker, 1, "wire-1", 5);
+
+        // Deny resolves immediately regardless of how many seens remain.
+        broker.apply_deny(1, "blocked on path 2 of 5".to_string());
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "deny");
+        assert_eq!(resp["reason"], "blocked on path 2 of 5");
+        assert_eq!(broker.pending_count(), 0);
+
+        // Remaining seen alerts for that correlation id are silent no-ops.
+        broker.apply_seen(1);
+        broker.apply_seen(1);
+        broker.apply_seen(1);
+        broker.apply_seen(1);
+        // Pending stays empty; no double-write to the stream.
+        assert_eq!(broker.pending_count(), 0);
+    }
+
+    #[test]
+    fn multi_event_ask_resolves_only_at_last_seen() {
+        let broker = Broker::new();
+        let peer = register_with_count(&broker, 1, "wire-1", 2);
+
+        // Ask alert lands first; broker stages the verdict and waits.
+        broker.apply_ask(1, "needs confirm".to_string());
+        expect_no_response(&peer);
+
+        // First of two seens still doesn't resolve.
+        broker.apply_seen(1);
+        expect_no_response(&peer);
+
+        // Second seen resolves with the staged ask.
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "ask");
+        assert_eq!(resp["reason"], "needs confirm");
+    }
+
+    #[test]
+    fn multi_event_monitor_mode_resolves_at_last_seen_as_allow() {
+        let broker = Broker::new();
+        broker.set_monitor_mode(true);
+        let peer = register_with_count(&broker, 1, "wire-1", 2);
+
+        // Monitor mode also has to wait for the full seen count — otherwise
+        // a single-event observer would race ahead and resolve before the
+        // rest of a multi-file apply_patch finishes evaluating.
+        broker.apply_deny(1, "would-deny on first path".to_string());
+        expect_no_response(&peer);
+        broker.apply_seen(1);
+        expect_no_response(&peer);
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "allow");
+    }
+
+    #[test]
+    fn register_with_zero_expected_events_clamps_to_one() {
+        // Defensive: a caller bug passing 0 must not deadlock the broker by
+        // requiring an impossible-to-reach seen count. Clamp to 1.
+        let broker = Broker::new();
+        let peer = register_with_count(&broker, 1, "wire-1", 0);
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "allow");
         assert_eq!(broker.pending_count(), 0);
     }
 

@@ -1,4 +1,5 @@
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::Shutdown;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,8 +11,10 @@ use uds_windows::{UnixListener, UnixStream};
 
 use crossbeam_channel::Sender;
 
+use crate::apply_patch::{self, PatchOp};
 use crate::broker::{Broker, BrokerStream};
 use crate::event::{EventData, InterceptorRequest};
+use crate::verdict::Verdict;
 
 /// Max request size from an interceptor (64KB + envelope overhead).
 const MAX_REQUEST_SIZE: u64 = 128 * 1024;
@@ -330,33 +333,138 @@ fn handle_connection(
     let raw_event = serde_json::to_vec(&request.event)
         .map_err(|e| format!("failed to serialize event: {e}"))?;
 
-    let event_data = EventData {
-        correlation_id,
-        agent_name,
-        agent_pid,
-        raw_event,
+    // Codex's apply_patch tool can touch multiple files in one invocation
+    // (the Lark grammar at codex-rs/core/src/tools/handlers/apply_patch.lark
+    // allows `hunk+`; an Update hunk can additionally carry a `*** Move to:`
+    // line that touches a second path). We multiplex one wire request into
+    // N synthetic Falco events — one per touched (op, path) — all sharing
+    // the same correlation id. The broker waits for N seen alerts before
+    // resolving, and existing escalation gives us deny > ask > allow over
+    // the combined verdicts.
+    let multiplex = try_parse_apply_patch_multiplex(&agent_name, &request.event);
+
+    let events: Vec<EventData> = match multiplex {
+        Ok(None) => {
+            // Single-event flow (every hook except codex apply_patch).
+            vec![EventData {
+                correlation_id,
+                agent_name,
+                agent_pid,
+                patch_op: String::new(),
+                patch_path: String::new(),
+                raw_event,
+            }]
+        }
+        Ok(Some(ops)) => {
+            // Multi-event multiplex. The parser guarantees ops is non-empty
+            // (Lark grammar requires `hunk+`; `parse_apply_patch` returns
+            // `Err(NoHunks)` for an empty envelope).
+            ops.into_iter()
+                .map(|(op, path)| EventData {
+                    correlation_id,
+                    agent_name: agent_name.clone(),
+                    agent_pid,
+                    patch_op: op.as_str().to_string(),
+                    patch_path: path,
+                    raw_event: raw_event.clone(),
+                })
+                .collect()
+        }
+        Err(reason) => {
+            // Fail-closed: a malformed apply_patch envelope can't be safely
+            // multiplexed. Write the deny directly to the stream (no broker
+            // entry to track since we never registered).
+            log::warn!(
+                "rejecting codex apply_patch with malformed envelope: {reason} (correlation {correlation_id})"
+            );
+            let response = Verdict::Deny(format!("apply_patch parse error: {reason}"))
+                .to_response_json(&wire_id);
+            write_response_and_close(stream, &response);
+            return Ok(());
+        }
     };
 
-    // Register pending request BEFORE enqueuing the event. This ensures the broker
-    // entry exists before Falco can process the event and send back an alert.
-    // If enqueue fails, we remove the broker entry and deny.
-    broker.register(correlation_id, wire_id, stream);
+    let expected_events = events.len() as u64;
 
-    if event_tx.try_send(event_data).is_err() {
-        if broker.is_passthrough() {
-            // In passthrough, register() already wrote Allow and did not
-            // insert into the pending map. apply_deny would be a no-op
-            // here and the "denying event" wording would be misleading.
-            log::warn!(
-                "event queue full, event {} dropped (passthrough already allowed)",
-                correlation_id
-            );
-        } else {
-            log::warn!("event queue full, denying event {}", correlation_id);
-            broker.apply_deny(correlation_id, "event queue full".to_string());
+    // Register pending request BEFORE enqueuing events. This ensures the
+    // broker entry exists before Falco can process any of them and send back
+    // an alert.
+    broker.register(correlation_id, wire_id, stream, expected_events);
+
+    // Enqueue each synthetic event. If the channel fills mid-emission the
+    // broker entry has the wrong expected_events count and would never
+    // resolve via seens — apply_deny instead so the interceptor gets a
+    // response.
+    for (idx, event_data) in events.into_iter().enumerate() {
+        if event_tx.try_send(event_data).is_err() {
+            if broker.is_passthrough() {
+                // In passthrough, register() already wrote Allow and did
+                // not insert into the pending map. apply_deny would be a
+                // no-op here and the "denying event" wording would be
+                // misleading.
+                log::warn!(
+                    "event queue full, dropping event {}/{} for correlation {} (passthrough already allowed)",
+                    idx + 1,
+                    expected_events,
+                    correlation_id
+                );
+            } else {
+                log::warn!(
+                    "event queue full at event {}/{} for correlation {}, denying",
+                    idx + 1,
+                    expected_events,
+                    correlation_id
+                );
+                broker.apply_deny(correlation_id, "event queue full".to_string());
+            }
+            return Ok(());
         }
-        return Ok(());
     }
 
     Ok(())
+}
+
+/// Detect whether this request is a codex apply_patch invocation that needs
+/// path-based multiplexing. Returns:
+/// - `Ok(None)` — not a codex apply_patch event; the single-event flow applies.
+/// - `Ok(Some(ops))` — codex apply_patch with a valid envelope; emit one
+///   synthetic event per `(op, path)` tuple.
+/// - `Err(reason)` — codex apply_patch but the envelope failed to parse;
+///   caller must fail closed.
+fn try_parse_apply_patch_multiplex(
+    agent_name: &str,
+    event: &serde_json::Value,
+) -> Result<Option<Vec<(PatchOp, String)>>, String> {
+    if agent_name != "codex" {
+        return Ok(None);
+    }
+    let tool_name = event
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if tool_name != "apply_patch" {
+        return Ok(None);
+    }
+    // The patch body lives at tool_input.command per the in-process
+    // PreToolUsePayload struct that codex constructs in
+    // codex-rs/core/src/tools/handlers/apply_patch.rs:
+    //   tool_input: serde_json::json!({ "command": command })
+    // PermissionRequest carries the same shape. Missing or non-string is
+    // a wire-shape violation we treat as malformed.
+    let command = event
+        .get("tool_input")
+        .and_then(|t| t.get("command"))
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| "tool_input.command missing or not a string".to_string())?;
+    let ops = apply_patch::parse_apply_patch(command).map_err(|e| e.to_string())?;
+    Ok(Some(ops))
+}
+
+/// Write a verdict response JSON to the interceptor and close the stream.
+/// Used on fail-closed paths where there's nothing to register with the
+/// broker (e.g. malformed apply_patch envelope).
+fn write_response_and_close(mut stream: BrokerStream, response: &str) {
+    let _ = writeln!(stream, "{response}");
+    let _ = stream.flush();
+    let _ = stream.shutdown(Shutdown::Both);
 }

@@ -56,7 +56,17 @@ pub struct EventData {
     pub agent_name: String,
     /// PID of the agent process that invoked the hook. `0` = unknown.
     pub agent_pid: u64,
-    /// Raw event JSON bytes (the Claude Code hook input).
+    /// Synthetic per-event apply_patch operation, set when the broker
+    /// multiplexes one apply_patch hook into N events. Empty for all other
+    /// inputs. Values come from `apply_patch::PatchOp::as_str()`: "Add",
+    /// "Update", "Delete", or "Move".
+    pub patch_op: String,
+    /// Synthetic per-event file path the apply_patch hunk will touch. Empty
+    /// when `patch_op` is empty. Carries one path per synthetic event; the
+    /// caller (socket_server) emits one EventData per path the patch
+    /// references.
+    pub patch_path: String,
+    /// Raw event JSON bytes (the Claude Code / Codex hook input).
     pub raw_event: Vec<u8>,
 }
 
@@ -78,6 +88,9 @@ struct ParsedFields {
     // Codex-only fields (empty for Claude Code).
     agent_model: String,
     agent_turn_id: String,
+    // Synthetic per-event apply_patch metadata (empty for single-event flows).
+    patch_op: String,
+    patch_path: String,
     // Raw paths (as reported by Claude Code)
     cwd: String,
     file_path: String,
@@ -92,13 +105,18 @@ struct ParsedFields {
 
 /// Number of `\n` separators in the on-wire payload format. Kept in sync
 /// with the section count in `encode_payload` / `decode_payload`.
-const NEWLINE_COUNT: usize = 3;
+const NEWLINE_COUNT: usize = 5;
 
-/// The event payload stored in Falco events. Contains the correlation ID,
-/// agent name, agent PID, and the raw Claude Code hook JSON separated by
-/// newlines.
+/// The event payload stored in Falco events. Sections are separated by `\n`;
+/// the raw event JSON is last (it never contains `\n` because the broker
+/// constructs the in-process bytes from `serde_json::to_vec` which emits
+/// compact JSON).
 ///
-/// Format: `<correlation_id>\n<agent_name>\n<agent_pid>\n<raw_event_json>`
+/// Format: `<correlation_id>\n<agent_name>\n<agent_pid>\n<patch_op>\n<patch_path>\n<raw_event_json>`
+///
+/// `patch_op` and `patch_path` are empty strings unless this event is a
+/// synthetic per-path event the broker emitted from one apply_patch hook
+/// invocation.
 pub fn encode_payload(data: &EventData) -> Vec<u8> {
     let id_str = data.correlation_id.to_string();
     let pid_str = data.agent_pid.to_string();
@@ -106,6 +124,8 @@ pub fn encode_payload(data: &EventData) -> Vec<u8> {
         id_str.len()
             + data.agent_name.len()
             + pid_str.len()
+            + data.patch_op.len()
+            + data.patch_path.len()
             + data.raw_event.len()
             + NEWLINE_COUNT,
     );
@@ -114,6 +134,10 @@ pub fn encode_payload(data: &EventData) -> Vec<u8> {
     payload.extend_from_slice(data.agent_name.as_bytes());
     payload.push(b'\n');
     payload.extend_from_slice(pid_str.as_bytes());
+    payload.push(b'\n');
+    payload.extend_from_slice(data.patch_op.as_bytes());
+    payload.push(b'\n');
+    payload.extend_from_slice(data.patch_path.as_bytes());
     payload.push(b'\n');
     payload.extend_from_slice(&data.raw_event);
     payload
@@ -125,6 +149,8 @@ struct DecodedPayload<'a> {
     correlation_id: &'a str,
     agent_name: &'a str,
     agent_pid: &'a str,
+    patch_op: &'a str,
+    patch_path: &'a str,
     raw_event: &'a [u8],
 }
 
@@ -135,12 +161,18 @@ fn decode_payload(payload: &[u8]) -> Option<DecodedPayload<'_>> {
     let second_nl = after_first.iter().position(|&b| b == b'\n')?;
     let after_second = &after_first[second_nl + 1..];
     let third_nl = after_second.iter().position(|&b| b == b'\n')?;
+    let after_third = &after_second[third_nl + 1..];
+    let fourth_nl = after_third.iter().position(|&b| b == b'\n')?;
+    let after_fourth = &after_third[fourth_nl + 1..];
+    let fifth_nl = after_fourth.iter().position(|&b| b == b'\n')?;
 
     Some(DecodedPayload {
         correlation_id: std::str::from_utf8(&payload[..first_nl]).ok()?,
         agent_name: std::str::from_utf8(&after_first[..second_nl]).ok()?,
         agent_pid: std::str::from_utf8(&after_second[..third_nl]).ok()?,
-        raw_event: &after_second[third_nl + 1..],
+        patch_op: std::str::from_utf8(&after_third[..fourth_nl]).ok()?,
+        patch_path: std::str::from_utf8(&after_fourth[..fifth_nl]).ok()?,
+        raw_event: &after_fourth[fifth_nl + 1..],
     })
 }
 
@@ -212,7 +244,18 @@ impl ParsedEvent {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let file_path = extract_raw_file_path(&tool_name, &tool_input);
+        // For synthetic apply_patch events the broker injects the per-event
+        // path via `patch_path` in the wire payload. Use that in preference
+        // to `tool_input.file_path` (which Codex's apply_patch doesn't emit).
+        // For non-apply_patch events `patch_path` is empty and we fall back
+        // to the Write/Edit/Read extraction.
+        let patch_op = decoded.patch_op.to_string();
+        let patch_path = decoded.patch_path.to_string();
+        let file_path = if !patch_path.is_empty() {
+            patch_path.clone()
+        } else {
+            extract_raw_file_path(&tool_name, &tool_input)
+        };
 
         // Resolved paths — canonicalized with lexical normalization fallback.
         let real_cwd = resolve_path(&cwd);
@@ -231,6 +274,8 @@ impl ParsedEvent {
             transcript_path,
             agent_model,
             agent_turn_id,
+            patch_op,
+            patch_path,
             cwd,
             file_path,
             real_cwd,
@@ -285,6 +330,15 @@ impl ParsedEvent {
     pub fn agent_turn_id(&mut self, payload: &[u8]) -> Option<&str> {
         self.ensure_parsed(payload)
             .map(|f| f.agent_turn_id.as_str())
+    }
+
+    pub fn patch_op(&mut self, payload: &[u8]) -> Option<&str> {
+        self.ensure_parsed(payload).map(|f| f.patch_op.as_str())
+    }
+
+    #[allow(dead_code)]
+    pub fn patch_path(&mut self, payload: &[u8]) -> Option<&str> {
+        self.ensure_parsed(payload).map(|f| f.patch_path.as_str())
     }
 
     pub fn cwd(&mut self, payload: &[u8]) -> Option<&str> {
@@ -497,7 +551,26 @@ mod tests {
     }
 
     fn payload_with_pid(event_json: &str, agent_pid: u64) -> Vec<u8> {
-        format!("1\nclaude_code\n{}\n{}", agent_pid, event_json).into_bytes()
+        // Five newlines per the wire format in encode_payload:
+        //   correlation_id \n agent_name \n agent_pid \n patch_op \n patch_path \n raw_event
+        // Default helper produces a single-event (non-apply_patch) payload
+        // with empty patch metadata.
+        format!(
+            "1\nclaude_code\n{}\n\n\n{}",
+            agent_pid, event_json
+        )
+        .into_bytes()
+    }
+
+    fn payload_with_patch(
+        event_json: &str,
+        patch_op: &str,
+        patch_path: &str,
+    ) -> Vec<u8> {
+        format!(
+            "1\nclaude_code\n0\n{patch_op}\n{patch_path}\n{event_json}"
+        )
+        .into_bytes()
     }
 
     #[test]
@@ -762,15 +835,26 @@ mod tests {
     #[test]
     fn parsed_event_missing_agent_pid_section_returns_none() {
         // Old wire format (correlation_id\nagent_name\nevent) without the
-        // agent_pid section. decode_payload requires three newlines now.
+        // agent_pid, patch_op, or patch_path sections. decode_payload
+        // requires five newlines now.
         let bad = b"1\nclaude_code\n{}".to_vec();
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.agent_name(&bad), None);
     }
 
     #[test]
+    fn parsed_event_missing_patch_sections_returns_none() {
+        // Two-newline-too-few format from before the apply_patch plumbing
+        // landed. decode_payload now requires sections for patch_op and
+        // patch_path even when empty.
+        let bad = b"1\nclaude_code\n0\n{}".to_vec();
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.agent_name(&bad), None);
+    }
+
+    #[test]
     fn parsed_event_invalid_event_json_returns_none() {
-        let bad = b"1\nclaude_code\n0\n{this is not json".to_vec();
+        let bad = b"1\nclaude_code\n0\n\n\n{this is not json".to_vec();
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.agent_name(&bad), None);
     }
@@ -792,7 +876,7 @@ mod tests {
     #[test]
     fn parsed_event_agent_pid_invalid_number_returns_none() {
         // Non-numeric agent_pid section should fail the parse.
-        let bad = b"1\nclaude_code\nnotanumber\n{}".to_vec();
+        let bad = b"1\nclaude_code\nnotanumber\n\n\n{}".to_vec();
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.agent_pid(&bad), None);
     }
@@ -803,6 +887,8 @@ mod tests {
             correlation_id: 42,
             agent_name: "claude_code".to_string(),
             agent_pid: 9999,
+            patch_op: String::new(),
+            patch_path: String::new(),
             raw_event: br#"{"tool_name":"Bash"}"#.to_vec(),
         };
         let encoded = encode_payload(&data);
@@ -811,6 +897,66 @@ mod tests {
         assert_eq!(pe.agent_name(&encoded), Some("claude_code"));
         assert_eq!(pe.agent_pid(&encoded), Some(9999));
         assert_eq!(pe.tool_name(&encoded), Some("Bash"));
+        assert_eq!(pe.patch_op(&encoded), Some(""));
+        assert_eq!(pe.patch_path(&encoded), Some(""));
+    }
+
+    #[test]
+    fn encode_decode_synthetic_apply_patch_event_round_trip() {
+        // The broker's multi-file multiplex constructs one EventData per
+        // (op, path) tuple parsed from an apply_patch envelope. The wire
+        // payload format carries those as dedicated sections; the parser
+        // must surface them via patch_op/patch_path and use patch_path as
+        // the file_path source so existing path-based rules fire.
+        let data = EventData {
+            correlation_id: 7,
+            agent_name: "codex".to_string(),
+            agent_pid: 0,
+            patch_op: "Add".to_string(),
+            patch_path: "src/new.rs".to_string(),
+            raw_event: br#"{"tool_name":"apply_patch","cwd":"/work","tool_input":{"command":"*** Begin Patch\n*** Add File: src/new.rs\n+x\n*** End Patch"}}"#.to_vec(),
+        };
+        let encoded = encode_payload(&data);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.correlation_id(&encoded), Some(7));
+        assert_eq!(pe.agent_name(&encoded), Some("codex"));
+        assert_eq!(pe.tool_name(&encoded), Some("apply_patch"));
+        assert_eq!(pe.patch_op(&encoded), Some("Add"));
+        assert_eq!(pe.patch_path(&encoded), Some("src/new.rs"));
+        // file_path takes from patch_path for synthetic apply_patch events
+        // even though apply_patch's tool_input doesn't carry file_path.
+        assert_eq!(pe.file_path(&encoded), Some("src/new.rs"));
+        // real_file_path resolves against agent.cwd as for any other event.
+        assert_eq!(pe.real_file_path(&encoded), Some("/work/src/new.rs"));
+    }
+
+    #[test]
+    fn synthetic_event_file_path_overrides_tool_input_file_path() {
+        // Defense-in-depth: even if a synthetic event somehow carried a
+        // legacy `file_path` inside tool_input, the broker-injected
+        // patch_path is the authoritative source.
+        let p = payload_with_patch(
+            r#"{"tool_name":"apply_patch","cwd":"/work","tool_input":{"file_path":"/legacy/path"}}"#,
+            "Update",
+            "/from-broker",
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.file_path(&p), Some("/from-broker"));
+        assert_eq!(pe.patch_op(&p), Some("Update"));
+    }
+
+    #[test]
+    fn non_apply_patch_events_keep_existing_file_path_logic() {
+        // Empty patch metadata → file_path still comes from tool_input as
+        // before. Regression guard against the patch-aware change leaking
+        // into the default extraction path.
+        let p = payload_with(
+            r#"{"tool_name":"Write","tool_input":{"file_path":"/tmp/f.txt"}}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.file_path(&p), Some("/tmp/f.txt"));
+        assert_eq!(pe.patch_op(&p), Some(""));
+        assert_eq!(pe.patch_path(&p), Some(""));
     }
 
     // ------------------------------------------------------------------
@@ -821,7 +967,10 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn codex_payload(event_json: &str) -> Vec<u8> {
-        format!("1\ncodex\n0\n{}", event_json).into_bytes()
+        // Single-event Codex payload — no apply_patch multiplex, so both
+        // patch_op and patch_path are empty. Matches the 5-newline wire
+        // format in encode_payload.
+        format!("1\ncodex\n0\n\n\n{}", event_json).into_bytes()
     }
 
     #[test]

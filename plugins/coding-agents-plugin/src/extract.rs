@@ -188,6 +188,15 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
+    fn extract_patch_op(
+        &mut self,
+        mut req: ExtractRequest<Self>,
+    ) -> Result<CString, Error> {
+        let payload = self.get_payload(&mut req)?;
+        let val = req.context.patch_op(payload).unwrap_or("");
+        Ok(CString::new(val)?)
+    }
+
 }
 
 impl ExtractPlugin for CodingAgentPlugin {
@@ -251,5 +260,8 @@ impl ExtractPlugin for CodingAgentPlugin {
         field("tool.real_file_path", &Self::extract_real_file_path)
             .with_display("Resolved File Path")
             .with_description("Target file path, resolved to absolute canonical path (Write/Edit/Read only)"),
+        field("tool.patch_op", &Self::extract_patch_op)
+            .with_display("Patch Operation")
+            .with_description("Per-event operation for codex apply_patch synthetic events: Add | Update | Delete | Move (empty for all other events)"),
     ];
 }
