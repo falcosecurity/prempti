@@ -193,3 +193,174 @@ fn codex_agent_pid_round_trips() {
         r.stdout.trim()
     );
 }
+
+// ---------------------------------------------------------------------------
+// apply_patch multi-file pipeline
+//
+// The broker parses the patch envelope from tool_input.command, emits one
+// synthetic Falco event per (op, path) tuple, and waits for N seen alerts
+// before resolving. Deny short-circuits — first deny wins. These tests prove
+// the parser, the multiplex, the per-event field extraction, the seen
+// counter, and the verdict escalation all hold together end-to-end.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(target_os = "linux")]
+fn codex_apply_patch_single_add_to_sensitive_path_denies() {
+    let h = require_falco!();
+    let patch = "\
+*** Begin Patch
+*** Add File: /etc/codex-e2e-evil
++evil
+*** End Patch
+";
+    let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-1");
+    let r = h.run_hook_for(AgentKind::Codex, &input);
+    assert_codex_pretool_decision(&r, "deny");
+    assert!(
+        r.stdout.contains("Deny writes to sensitive paths"),
+        "expected sensitive-path rule reason, got '{}'",
+        r.stdout.trim()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn codex_apply_patch_single_delete_to_sensitive_path_denies() {
+    // Pins the Delete-coverage fix: is_write_tool now includes patch_op
+    // = "Delete", so deletions to /etc/* hit the same sensitive-path rule
+    // that catches Add/Update/Move.
+    let h = require_falco!();
+    let patch = "\
+*** Begin Patch
+*** Delete File: /etc/codex-e2e-evil
+*** End Patch
+";
+    let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-2");
+    let r = h.run_hook_for(AgentKind::Codex, &input);
+    assert_codex_pretool_decision(&r, "deny");
+    assert!(
+        r.stdout.contains("Deny writes to sensitive paths"),
+        "expected sensitive-path rule reason, got '{}'",
+        r.stdout.trim()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn codex_apply_patch_multi_file_with_one_sensitive_denies() {
+    // Multi-event multiplex: 2 synthetic events fire, one per path. Only
+    // the sensitive one matches the deny rule; the broker resolves as deny
+    // via escalation (deny > allow). The safe one's seen alert may arrive
+    // before or after the deny but cannot reverse it.
+    let h = require_falco!();
+    let patch = "\
+*** Begin Patch
+*** Add File: /tmp/myproject/safe.txt
++safe
+*** Add File: /etc/codex-e2e-evil
++evil
+*** End Patch
+";
+    let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-3");
+    let r = h.run_hook_for(AgentKind::Codex, &input);
+    assert_codex_pretool_decision(&r, "deny");
+    assert!(
+        r.stdout.contains("Deny writes to sensitive paths"),
+        "expected sensitive-path rule reason, got '{}'",
+        r.stdout.trim()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn codex_apply_patch_update_with_move_to_sensitive_target_denies() {
+    // An Update hunk with a Move-to target produces TWO synthetic events:
+    // (Update, source) and (Move, target). When the target is sensitive,
+    // the Move event triggers the deny — even though the Update on the
+    // source path would be allowed.
+    let h = require_falco!();
+    let patch = "\
+*** Begin Patch
+*** Update File: /tmp/myproject/origin.txt
+*** Move to: /etc/codex-e2e-evil
+@@
+- old
++ new
+*** End Patch
+";
+    let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-4");
+    let r = h.run_hook_for(AgentKind::Codex, &input);
+    assert_codex_pretool_decision(&r, "deny");
+    assert!(
+        r.stdout.contains("Deny writes to sensitive paths"),
+        "expected sensitive-path rule reason for the Move target, got '{}'",
+        r.stdout.trim()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn codex_apply_patch_all_paths_inside_cwd_allows() {
+    // All N events resolve as allow; the broker waits for N seens before
+    // closing the interceptor's stream. Regression guard against the seen
+    // counter resolving early after just one event.
+    let h = require_falco!();
+    let patch = "\
+*** Begin Patch
+*** Add File: /tmp/myproject/safe1.txt
++x
+*** Add File: /tmp/myproject/safe2.txt
++y
+*** Add File: /tmp/myproject/safe3.txt
++z
+*** End Patch
+";
+    let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-5");
+    let r = h.run_hook_for(AgentKind::Codex, &input);
+    assert_codex_pretool_decision(&r, "allow");
+}
+
+#[test]
+fn codex_apply_patch_malformed_envelope_fails_closed() {
+    // No `*** End Patch` trailer — parse_apply_patch returns MissingEndPatch.
+    // The broker writes the deny response directly to the interceptor
+    // stream without enqueuing any events; no broker entry is created.
+    let h = require_falco!();
+    let patch = "\
+*** Begin Patch
+*** Add File: /tmp/myproject/safe.txt
++x
+";
+    let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-mal");
+    let r = h.run_hook_for(AgentKind::Codex, &input);
+    assert_codex_pretool_decision(&r, "deny");
+    assert!(
+        r.stdout.contains("apply_patch parse error"),
+        "expected parse-error reason, got '{}'",
+        r.stdout.trim()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn codex_apply_patch_ssh_path_denies() {
+    // The ssh-dir rule's condition is `is_write_tool and tool.real_file_path
+    // contains "/.ssh/"`. apply_patch with Add to a path containing /.ssh/
+    // should hit this rule via the new patch_op-aware macro.
+    let h = require_falco!();
+    let patch = "\
+*** Begin Patch
+*** Add File: /home/test/.ssh/authorized_keys
++ssh-rsa AAAA
+*** End Patch
+";
+    let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-ssh");
+    let r = h.run_hook_for(AgentKind::Codex, &input);
+    assert_codex_pretool_decision(&r, "deny");
+    assert!(
+        r.stdout.contains("Deny writing to ssh dir"),
+        "expected ssh-dir rule reason, got '{}'",
+        r.stdout.trim()
+    );
+}

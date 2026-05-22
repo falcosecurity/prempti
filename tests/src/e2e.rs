@@ -246,6 +246,21 @@ impl E2eHarness {
             r#"{{"session_id":"e2e-codex","turn_id":"e2e-turn","transcript_path":null,"cwd":"{cwd}","hook_event_name":"PermissionRequest","model":"gpt-5-codex","permission_mode":"default","tool_name":"{tool_name}","tool_input":{tool_input}}}"#
         )
     }
+
+    /// Build a Codex apply_patch PreToolUse input from a raw multi-line patch
+    /// body. JSON-escapes newlines and quotes so the resulting wire request
+    /// is a single line (the broker's read_line would truncate otherwise).
+    /// `patch_body` is the full envelope including `*** Begin Patch` and
+    /// `*** End Patch` markers.
+    pub fn make_codex_apply_patch_input(
+        patch_body: &str,
+        cwd: &str,
+        tool_use_id: &str,
+    ) -> String {
+        let escaped = serde_json::to_string(patch_body).expect("JSON-escape patch body");
+        let tool_input = format!(r#"{{"command":{escaped}}}"#);
+        Self::make_codex_pretool_input("apply_patch", &tool_input, cwd, tool_use_id)
+    }
 }
 
 impl Drop for E2eHarness {
@@ -321,12 +336,16 @@ fn write_rules(rules_dir: &Path) {
     // via canonicalize() when the file exists, but falls back to lexical
     // normalization when it doesn't (common in tests). Rules must match both
     // forms: /etc/... and /private/etc/...
+    //
+    // is_write_tool mirrors the production macro from rules/default/
+    // coding_agents_rules.yaml so the same path-based rules fire for both
+    // Claude Code's Write/Edit and Codex's apply_patch synthetic events.
     let sensitive_write_condition = if cfg!(windows) {
-        r#"tool.name in ("Write", "Edit") and tool.real_file_path startswith "C:/Windows""#
+        r#"is_write_tool and tool.real_file_path startswith "C:/Windows""#
     } else if cfg!(target_os = "macos") {
-        r#"tool.name in ("Write", "Edit") and (tool.real_file_path startswith "/etc" or tool.real_file_path startswith "/private/etc")"#
+        r#"is_write_tool and (tool.real_file_path startswith "/etc" or tool.real_file_path startswith "/private/etc")"#
     } else {
-        r#"tool.name in ("Write", "Edit") and tool.real_file_path startswith "/etc""#
+        r#"is_write_tool and tool.real_file_path startswith "/etc""#
     };
     let sensitive_read_condition = if cfg!(windows) {
         r#"tool.name = "Read" and (tool.real_file_path startswith "C:/Windows" or tool.real_file_path contains ".ssh")"#
@@ -337,7 +356,10 @@ fn write_rules(rules_dir: &Path) {
     };
 
     let deny_rules = format!(
-        r#"- rule: Deny rm -rf
+        r#"- macro: is_write_tool
+  condition: tool.name in ("Write", "Edit") or (tool.name = "apply_patch" and tool.patch_op in ("Add", "Update", "Delete", "Move"))
+
+- rule: Deny rm -rf
   desc: Block dangerous rm -rf commands
   condition: tool.name = "Bash" and tool.input_command contains "rm -rf"
   output: "Falco blocked rm -rf: %tool.input_command | correlation=%correlation.id agent_pid=%agent.pid"
@@ -355,7 +377,7 @@ fn write_rules(rules_dir: &Path) {
 
 - rule: Deny writing to ssh dir
   desc: Block writes to .ssh directories
-  condition: tool.name in ("Write", "Edit") and tool.real_file_path contains "/.ssh/"
+  condition: is_write_tool and tool.real_file_path contains "/.ssh/"
   output: "Falco blocked writing to %tool.real_file_path because .ssh is sensitive | correlation=%correlation.id"
   priority: CRITICAL
   source: coding_agent
@@ -363,7 +385,7 @@ fn write_rules(rules_dir: &Path) {
 
 - rule: Ask write outside cwd
   desc: Require confirmation for writes outside working directory
-  condition: tool.name in ("Write", "Edit") and not tool.real_file_path startswith val(agent.real_cwd)
+  condition: is_write_tool and not tool.real_file_path startswith val(agent.real_cwd)
   output: "Falco asks about writing to %tool.real_file_path outside %agent.real_cwd | correlation=%correlation.id"
   priority: WARNING
   source: coding_agent
