@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 It is not a sandbox or OS-level security boundary: at the hook level it only sees what the agent declares, not the runtime side effects of the resulting commands. It is a cooperative policy layer — the agent receives LLM-friendly feedback on blocked or flagged actions and adapts — meant to complement containment techniques, not replace them.
 
-The project targets **Claude Code** on **Linux, macOS, and Windows**. The architecture is designed to accommodate other coding agents (e.g., Codex) in the future.
+The project targets **Claude Code** as its primary integration on **Linux, macOS, and Windows**, with **experimental Codex CLI** support (interceptor + plugin path; installer wiring deferred). The wire envelope, broker, and plugin field schema are agent-agnostic by design — adding another agent is a new interceptor crate plus any agent-specific field decoding, not a rewrite.
 
 ## Architecture
 
@@ -36,8 +36,9 @@ The project targets **Claude Code** on **Linux, macOS, and Windows**. The archit
 
 | Component | Location | Language | Role |
 |-----------|----------|----------|------|
-| **Interceptor** | `hooks/claude-code/` | Rust | Thin passthrough: reads hook JSON from stdin, wraps in envelope, sends to broker, maps verdict to stdout. No content interpretation. |
-| **Plugin** | `plugins/` | Rust (falco_plugin SDK) | Falco source+extract plugin with embedded broker. Parses events, extracts fields, feeds Falco, receives alerts, resolves verdicts. |
+| **Claude Code interceptor** | `hooks/claude-code/` | Rust | Thin passthrough: reads `PreToolUse` hook JSON from stdin, wraps in envelope, sends to broker, maps verdict to stdout. No content interpretation. |
+| **Codex interceptor (experimental)** | `hooks/codex/` | Rust | Same passthrough role, but mounts on both `PreToolUse` and `PermissionRequest` and emits Codex's per-event output shape. See [`hooks/codex/README.md`](hooks/codex/README.md). |
+| **Plugin** | `plugins/` | Rust (falco_plugin SDK) | Falco source+extract plugin with embedded broker. Parses events, extracts fields, feeds Falco, receives alerts, resolves verdicts. Multiplexes Codex `apply_patch` into N events (one per touched path). |
 | **Supervisor** | `tools/premptictl/src/daemon/` | Rust | `ctl daemon` subcommand. Spawns Falco, captures and rotates its stdout/stderr into the log files, owns the Claude Code hook lifecycle, exposes a control socket for graceful shutdown. The init system (systemd / launchd / Windows Run key) starts the supervisor; the supervisor starts Falco. |
 | **Rules** | `rules/` | YAML (Falco rule language) | Vendor and local security policies. |
 | **Installer** | `installers/linux/`, `installers/macos/`, `installers/windows/` | Shell/PowerShell | Platform-specific packaging, installation, hook registration, mode switching. |
@@ -84,15 +85,15 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 | Field | Type | Description |
 |-------|------|-------------|
 | `correlation.id` | u64 | Broker-assigned unique ID for this event (monotonic counter, always > 0) |
-| `agent.name` | string | Coding agent identifier (e.g., `claude_code`) |
+| `agent.name` | string | Coding agent identifier (`claude_code` or `codex`) |
 | `agent.os` | string | Host OS — `linux`, `macos`, `windows`, or `unknown` (static per build, derived from `cfg!(target_os)`) |
 | `agent.pid` | u64 | PID of the agent process that invoked the hook (the interceptor's immediate parent). `0` when the platform lookup fails. Lets a side-by-side vanilla Falco correlate hook events with syscall events emitted by the same agent instance via `proc.apid[]`. |
 | `agent.hook_event_name` | string | Lifecycle hook type (e.g., `PreToolUse`) |
 | `agent.session_id` | string | Session identifier |
-| `agent.cwd` | string | Working directory, raw from Claude Code JSON |
+| `agent.cwd` | string | Working directory, raw from the hook JSON (`cwd` field on both Claude Code and Codex) |
 | `agent.real_cwd` | string | Working directory, resolved to absolute canonical path (symlinks resolved if exists, lexical normalization otherwise) |
-| `tool.use_id` | string | Tool call identifier from Claude Code (`tool_use_id`, raw value, may be empty) |
-| `tool.name` | string | Tool name (e.g., `Bash`, `Write`, `Edit`) |
+| `tool.use_id` | string | Tool call identifier (`tool_use_id`, raw value). Present on Claude Code hooks and Codex `PreToolUse`; absent on Codex `PermissionRequest`. May be empty. |
+| `tool.name` | string | Tool name (e.g., `Bash`, `Write`, `Edit` for Claude Code; `Bash`, `apply_patch`, `mcp__<server>__<tool>` for Codex) |
 | `tool.input` | string | Full tool input as JSON |
 | `tool.input_command` | string | Shell command (Bash tool calls) |
 | `tool.file_path` | string | Target file path. Raw from `tool_input.file_path` for Claude Code's `Write`/`Edit`/`Read`; for Codex `apply_patch` synthetic events the broker injects the per-event path parsed from the patch envelope. Empty otherwise. |
