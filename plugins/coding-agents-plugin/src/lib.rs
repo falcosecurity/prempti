@@ -7,6 +7,7 @@ use falco_plugin::base::{Json, Plugin};
 use falco_plugin::tables::TablesInput;
 use falco_plugin::{extract_plugin, plugin, source_plugin};
 
+mod apply_patch;
 mod broker;
 mod config;
 mod event;
