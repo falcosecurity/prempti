@@ -87,18 +87,20 @@
 # Macros — shared
 # ---------------------------------------------------------------------------
 
-# File-write detection across agents. Claude Code calls Write/Edit at the
+# File-mutation detection across agents. Claude Code calls Write/Edit at the
 # hook layer; Codex routes all file mutations through apply_patch, with the
 # specific operation surfaced as tool.patch_op (one of Add/Update/Delete/Move).
-# Add/Update create or modify content; Move's target path is also effectively
-# a write (the destination is materialized with content). Delete is destructive
-# but not a content write — author dedicated rules with tool.patch_op = "Delete"
-# if you need to gate deletions specifically.
+# All four are destructive in the sense the default ruleset cares about: a
+# rule denying writes to /etc/* should also deny `*** Delete File: /etc/*`,
+# and an outside-cwd ask should fire equally for create, modify, delete, or
+# rename. The macro intentionally treats them uniformly. Rules that need
+# operation-level granularity can still pattern-match on tool.patch_op
+# directly (e.g. `tool.patch_op = "Delete" and tool.real_file_path …`).
 - macro: is_claude_write_tool
   condition: tool.name in ("Write", "Edit")
 
 - macro: is_codex_patch_write
-  condition: tool.name = "apply_patch" and tool.patch_op in ("Add", "Update", "Move")
+  condition: tool.name = "apply_patch" and tool.patch_op in ("Add", "Update", "Delete", "Move")
 
 - macro: is_write_tool
   condition: is_claude_write_tool or is_codex_patch_write
