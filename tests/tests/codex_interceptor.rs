@@ -42,12 +42,15 @@ fn pretool_deny_verdict() {
 }
 
 #[test]
-fn pretool_ask_passes_through_as_allow() {
-    // Key UX test: PreToolUse cannot surface 'ask' to the user on Codex,
-    // so the interceptor returns allow and lets the tool call proceed into
-    // Codex's approval flow (where PermissionRequest fires instead).
+fn pretool_ask_becomes_deny_with_reason() {
+    // Codex has no per-call user-confirmation UX at the hook layer.
+    // Returning allow at PreToolUse silently allows in permission_modes
+    // that don't prompt downstream (bypassPermissions, dontAsk,
+    // --ask-for-approval never). The correct mapping is deny + reason at
+    // the earliest mount point.
     let r = run_with_mock_for(CODEX, MockMode::Ask, PRE_TOOL_USE, "codex-pre-ask");
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_decision(&r, "deny");
+    assert_reason_contains(&r, "requires confirmation");
 }
 
 // ---------------------------------------------------------------------------

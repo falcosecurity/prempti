@@ -151,10 +151,12 @@ fn codex_permreq_ask_sentinel_surfaces_reason_as_deny_message() {
 }
 
 #[test]
-fn codex_pretool_ask_sentinel_allows_through_to_approval_flow() {
-    // Same ask rule, but at the PreToolUse mount point: the interceptor
-    // translates ask -> allow so Codex enters its approval flow (where
-    // PermissionRequest would then fire).
+fn codex_pretool_ask_sentinel_becomes_deny_with_reason() {
+    // PreToolUse maps Falco ask to Codex deny + reason. Codex's hook
+    // contract is binary allow/deny on this mount and PermissionRequest
+    // only fires for permission_modes that would prompt anyway — letting
+    // ask pass through to allow at PreToolUse would silently allow when
+    // it shouldn't. Deny + rule reason is the only safe mapping.
     let h = require_falco!();
     let input = E2eHarness::make_codex_pretool_input(
         "Bash",
@@ -163,7 +165,12 @@ fn codex_pretool_ask_sentinel_allows_through_to_approval_flow() {
         "codex-ask-pre",
     );
     let r = h.run_hook_for(AgentKind::Codex, &input);
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_decision(&r, "deny");
+    assert!(
+        r.stdout.contains("Codex ask sentinel matched"),
+        "expected sentinel rule output surfaced as deny reason, got '{}'",
+        r.stdout.trim()
+    );
 }
 
 // ---------------------------------------------------------------------------

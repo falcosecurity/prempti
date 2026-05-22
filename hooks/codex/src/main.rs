@@ -198,16 +198,22 @@ enum CodexVerdict {
 
 /// Map (Codex event, broker decision) → Codex verdict.
 ///
-/// - PreToolUse: broker `ask` becomes `allow` so the tool call proceeds into
-///   Codex's approval flow, where PermissionRequest fires.
-/// - PermissionRequest: broker `ask` becomes `deny` so the user sees the rule
-///   reason as the approval-denial message in Codex's UX.
-fn translate_verdict(event: CodexEvent, broker: BrokerDecision) -> CodexVerdict {
-    match (event, broker) {
-        (_, BrokerDecision::Allow) => CodexVerdict::Allow,
-        (_, BrokerDecision::Deny) => CodexVerdict::Deny,
-        (CodexEvent::PreToolUse, BrokerDecision::Ask) => CodexVerdict::Allow,
-        (CodexEvent::PermissionRequest, BrokerDecision::Ask) => CodexVerdict::Deny,
+/// Codex's hook contract is binary allow/deny on both mount points — there
+/// is no equivalent of Claude's per-call "ask the user" UX. An earlier design
+/// tried to preserve ask semantics by routing PreToolUse `ask` → `allow` and
+/// catching it downstream at `PermissionRequest`, but `PermissionRequest`
+/// only fires when Codex's own `permission_mode` would have prompted (so
+/// `bypassPermissions`, `dontAsk`, and `--ask-for-approval never` silently
+/// allow). The only correct mapping is to deny at the earliest mount point
+/// with the rule reason surfaced as the deny message, on both mounts.
+///
+/// The `event` parameter is kept in the signature so the matrix is explicit
+/// for future Codex events that may differentiate; today every `(event,
+/// Ask)` cell resolves the same way.
+fn translate_verdict(_event: CodexEvent, broker: BrokerDecision) -> CodexVerdict {
+    match broker {
+        BrokerDecision::Allow => CodexVerdict::Allow,
+        BrokerDecision::Deny | BrokerDecision::Ask => CodexVerdict::Deny,
     }
 }
 
@@ -558,12 +564,16 @@ mod tests {
     }
 
     #[test]
-    fn pre_tool_use_ask_becomes_allow() {
-        // PreToolUse can't surface ask to the user — the tool call enters the
-        // approval flow where PermissionRequest fires instead.
+    fn pre_tool_use_ask_becomes_deny() {
+        // Codex has no per-call user-confirmation UX at the hook layer.
+        // Returning allow and hoping PermissionRequest catches it silently
+        // allows when Codex's permission_mode wouldn't prompt downstream
+        // (bypassPermissions, dontAsk, --ask-for-approval never). Deny at
+        // the earliest mount point with the rule reason as the message is
+        // the only safe mapping.
         assert_eq!(
             translate_verdict(CodexEvent::PreToolUse, BrokerDecision::Ask),
-            CodexVerdict::Allow
+            CodexVerdict::Deny
         );
     }
 
