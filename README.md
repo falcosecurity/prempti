@@ -276,9 +276,9 @@ The skill guides Claude through writing the rule, placing it in the right direct
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Linux (x86_64, aarch64) | Supported |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | macOS (Apple Silicon, Intel) | Supported |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Windows (x86_64, ARM64) | Supported |
-| [Codex](https://openai.com/index/codex/) | Linux, macOS | Planned |
+| [Codex](https://openai.com/index/codex/) | Linux | Experimental |
 
-We are actively working on expanding agent and platform support. [Codex](https://openai.com/index/codex/) integration is next on the roadmap.
+[Codex](https://openai.com/index/codex/) support landed as the experimental `codex-interceptor` binary in `hooks/codex/` — the wire envelope, plugin field schema, default ruleset, and `apply_patch` multi-file handling all work end-to-end on Linux. macOS and Windows are likely to work too (the interceptor is cross-platform Rust) but are unverified at this time. Installer wiring (`premptictl hook add codex`) is deferred, so Codex hooks must be registered by hand in `~/.codex/hooks.json` or in the `[hooks]` block of `~/.codex/config.toml` — see [`hooks/codex/README.md`](hooks/codex/README.md) for setup.
 
 ## Building from Source
 
