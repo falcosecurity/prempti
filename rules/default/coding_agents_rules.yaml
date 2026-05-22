@@ -87,8 +87,21 @@
 # Macros — shared
 # ---------------------------------------------------------------------------
 
-- macro: is_write_tool
+# File-write detection across agents. Claude Code calls Write/Edit at the
+# hook layer; Codex routes all file mutations through apply_patch, with the
+# specific operation surfaced as tool.patch_op (one of Add/Update/Delete/Move).
+# Add/Update create or modify content; Move's target path is also effectively
+# a write (the destination is materialized with content). Delete is destructive
+# but not a content write — author dedicated rules with tool.patch_op = "Delete"
+# if you need to gate deletions specifically.
+- macro: is_claude_write_tool
   condition: tool.name in ("Write", "Edit")
+
+- macro: is_codex_patch_write
+  condition: tool.name = "apply_patch" and tool.patch_op in ("Add", "Update", "Move")
+
+- macro: is_write_tool
+  condition: is_claude_write_tool or is_codex_patch_write
 
 # Extensible macro: each line is an "or" condition.
 # Users can append custom sensitive paths via override:
@@ -557,7 +570,7 @@
     settings.json edits — particularly when the Edit tool surfaces an
     existing disable-shape value in old_string/new_string.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and is_agent_sandbox_config
     and is_sandbox_disable_content
@@ -1118,7 +1131,7 @@
     denies because the path alone is not a sufficient signal of malicious
     intent — the exfiltration follow-up is caught by the curl/wget rule.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and is_tmp_path
   output: >
@@ -1223,7 +1236,7 @@
     persistence mechanism. Writing to them may be legitimate in dotfiles projects
     but always warrants explicit user confirmation.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.file_path != ""
     and basename(tool.file_path) in (shell_startup_files)
   output: >
@@ -1239,7 +1252,7 @@
     working directory. Writing agent instructions to another project is a prompt
     injection vector. Writes inside the current project are allowed.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.file_path != ""
     and basename(tool.file_path) in (agent_instruction_files)
     and tool.real_file_path != ""
@@ -1338,7 +1351,7 @@
 # .mcp.json is the project-level MCP config; managed-mcp.json is the managed variant.
 - macro: is_mcp_config_write
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.file_path != ""
     and (basename(tool.file_path) = ".mcp.json"
          or basename(tool.file_path) = "managed-mcp.json")
@@ -1524,7 +1537,7 @@
     Code session. Unlike tool calls, slash command files persist indefinitely and are not
     visible to the user without explicitly inspecting the commands directory.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and tool.real_file_path contains "/.claude/commands/"
   output: >
@@ -1545,7 +1558,7 @@
     this rule adds CLAUDE.md, Claude Code's own instruction file. Writes to CLAUDE.md
     inside the working project directory are allowed.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.file_path != ""
     and basename(tool.file_path) = "CLAUDE.md"
     and tool.real_file_path != ""
@@ -1566,7 +1579,7 @@
     next invocation. This converts the catch-all ask rule (Rule 5) to a hard deny
     for file content that conclusively indicates a supply chain attack.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and is_skill_content_ioc
   output: >
@@ -1585,7 +1598,7 @@
     as a tool call when the skill is triggered. Legitimate skills describe workflows
     and reference tools — they do not embed direct shell pipeline execution.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and is_skill_pipe_bash
   output: >
@@ -1641,7 +1654,7 @@
     subagent setup is user-driven (via the Claude CLI or marketplace);
     the coding agent has no need to author other agents' instructions.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and tool.real_file_path contains "/.claude/agents/"
   output: >
@@ -1662,7 +1675,7 @@
     flows through the Claude CLI or the marketplace; direct file
     authoring by the agent warrants explicit approval.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and tool.real_file_path contains "/.claude/skills/"
   output: >
@@ -1683,7 +1696,7 @@
     Legitimate installs are user-initiated via the Claude CLI;
     agent-driven Write/Edit here is a supply-chain attack surface.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and tool.real_file_path contains "/.claude/plugins/"
   output: >
@@ -1702,7 +1715,7 @@
     restores manually, sidestepping the direct settings.json deny rule.
     Reads are not flagged — the directory is otherwise routine.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and tool.real_file_path contains "/.claude/backups/"
   output: >
@@ -1744,7 +1757,7 @@
 # project-level (.claude/settings.json) with the same pattern.
 - macro: is_claude_settings_write
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and (tool.real_file_path endswith "/.claude/settings.json"
          or tool.real_file_path endswith "/.claude/settings.local.json")
@@ -1767,7 +1780,7 @@
 # Uses real_file_path (canonicalized) so symlinked repos are also covered.
 - macro: is_git_hooks_write
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and tool.real_file_path contains "/.git/hooks/"
 
@@ -1784,7 +1797,7 @@
 # where packages are downloaded from (registry_config_files list).
 - macro: is_registry_config_write
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.file_path != ""
     and basename(tool.file_path) in (registry_config_files)
 
@@ -1834,7 +1847,7 @@
 # to avoid false positives on remote/CI environment files not loaded locally.
 - macro: is_env_file_write
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.file_path != ""
     and basename(tool.file_path) in (env_file_names)
 
@@ -2123,7 +2136,7 @@
     (custom rules, config changes) are user-driven: edit files under
     rules/user/ directly outside a coding session, then `premptictl
     restart` to apply.
-  condition: tool.name in ("Write", "Edit") and is_prempti_install_path
+  condition: is_write_tool and is_prempti_install_path
   output: >
     Falco blocked writing to %tool.real_file_path under the Prempti install prefix
   priority: CRITICAL
@@ -2136,7 +2149,7 @@
     here; modifying the file is the most direct way for an agent to
     unregister the interceptor. Use `premptictl hook` for legitimate
     hook lifecycle.
-  condition: tool.name in ("Write", "Edit") and is_claude_settings_path
+  condition: is_write_tool and is_claude_settings_path
   output: >
     Falco blocked writing to Claude Code settings at %tool.real_file_path
   priority: CRITICAL
@@ -2154,7 +2167,7 @@
     closed. Policy limits are configured by the user or an enterprise
     MDM; the agent has no legitimate reason to write here.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path endswith "/.claude/policy-limits.json"
   output: >
     Falco blocked writing to Claude Code policy-limits.json at %tool.real_file_path
