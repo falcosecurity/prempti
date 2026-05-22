@@ -95,8 +95,9 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 | `tool.name` | string | Tool name (e.g., `Bash`, `Write`, `Edit`) |
 | `tool.input` | string | Full tool input as JSON |
 | `tool.input_command` | string | Shell command (Bash tool calls) |
-| `tool.file_path` | string | Target file path, raw from `tool_input.file_path` (Write/Edit/Read only) |
-| `tool.real_file_path` | string | Target file path, resolved to absolute canonical path. Relative paths resolved against `agent.cwd`. (Write/Edit/Read only) |
+| `tool.file_path` | string | Target file path. Raw from `tool_input.file_path` for Claude Code's `Write`/`Edit`/`Read`; for Codex `apply_patch` synthetic events the broker injects the per-event path parsed from the patch envelope. Empty otherwise. |
+| `tool.real_file_path` | string | Target file path, resolved to absolute canonical path. Relative paths resolved against `agent.cwd`. Populated whenever `tool.file_path` is. |
+| `tool.patch_op` | string | Per-event apply_patch operation for Codex synthetic events: `Add`, `Update`, `Delete`, or `Move`. Empty for all other events. |
 | `agent.permission_mode` | string | Session permission mode reported by the agent (e.g., `default`, `acceptEdits`, `plan`, `bypassPermissions`; Codex also emits `dontAsk`) |
 | `agent.transcript_path` | string | Session transcript file path. Empty when the agent reports `null`. |
 | `agent.model` | string | Model identifier reported by the agent (Codex-only; empty for Claude Code) |
@@ -105,12 +106,21 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 This schema is agent-agnostic. The `agent.name` field distinguishes which coding agent generated the event.
 
 Path fields come in raw/real pairs:
-- **Raw** (`agent.cwd`, `tool.file_path`): exactly as reported in the Claude Code hook JSON. Use for display and audit.
-- **Real** (`agent.real_cwd`, `tool.real_file_path`): resolved via `canonicalize` (symlinks resolved, absolute). Falls back to lexical normalization if the path doesn't exist yet (common for Write). Use for policy matching.
+- **Raw** (`agent.cwd`, `tool.file_path`): exactly as reported in the hook JSON for Claude Code, or as injected by the broker per synthetic event for Codex `apply_patch`. Use for display and audit.
+- **Real** (`agent.real_cwd`, `tool.real_file_path`): resolved via `canonicalize` (symlinks resolved, absolute). Falls back to lexical normalization if the path doesn't exist yet (common for `Write` / `Add`). Use for policy matching.
+
+### Codex apply_patch: one event per touched path
+
+Codex's `apply_patch` tool can touch multiple files in a single hook invocation (Lark grammar `start: begin_patch hunk+ end_patch`; an Update hunk can also carry a `*** Move to:` line that touches a second path). The broker parses the patch envelope at receive time and emits **one synthetic Falco event per (operation, path) tuple**, all sharing the same `correlation.id`. The broker waits for N "seen" alerts before resolving with the escalated verdict (`deny` > `ask` > `allow`).
+
+Each synthetic event carries `tool.patch_op` (Add/Update/Delete/Move) and a single `tool.file_path` / `tool.real_file_path` so existing path-based rules fire naturally. The `is_write_tool` macro in the default ruleset abstracts Claude Code's `Write`/`Edit` and Codex's `apply_patch + tool.patch_op in (Add, Update, Delete, Move)` — rules conditioned on the macro fire for both agents without per-tool branching.
+
+Malformed apply_patch envelopes fail closed: the broker writes a deny response with the parse error as the reason and never enqueues events.
 
 **Rule authoring notes**:
 - When comparing one field against another in Falco rule conditions, use the `val()` transformer. For example: `tool.real_file_path startswith val(agent.real_cwd)`. Without `val()`, the RHS is treated as a literal string, not a field reference.
 - Use the `basename()` transformer to extract the file name from a path. For example: `basename(tool.file_path) = ".env"` matches any `.env` file regardless of directory.
+- For rules that care about the destructive operation type (e.g. gating only deletes), pattern-match on `tool.patch_op` directly: `tool.patch_op = "Delete" and tool.real_file_path startswith "/etc/"`. Otherwise prefer `is_write_tool` which covers all four ops uniformly.
 
 ### Rule output convention
 
