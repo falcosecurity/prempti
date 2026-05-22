@@ -93,19 +93,38 @@ Codex expects **camelCase** JSON on stdout.
 
 ## Hook registration (Codex CLI)
 
-The installer does not yet register Codex hooks automatically. Add them manually to your Codex configuration:
+Register the interceptor with:
 
-```toml
-[[hooks]]
-event = "PreToolUse"
-command = "~/.prempti/bin/codex-interceptor"
-
-[[hooks]]
-event = "PermissionRequest"
-command = "~/.prempti/bin/codex-interceptor"
+```bash
+premptictl hook add codex
 ```
 
-(Codex's hooks configuration is under iteration upstream — consult `codex --help` for the current syntax.)
+This writes a `~/.codex/hooks.json` file that mounts the `codex-interceptor` binary on both `PreToolUse` and `PermissionRequest` (matcher `.*`, 30s timeout). The file is self-contained — your `~/.codex/config.toml` is not touched. Remove with `premptictl hook remove codex`; status with `premptictl hook status codex`.
+
+Codex separately requires hook **trust** before it'll actually run a registered hook. Either pass `--dangerously-bypass-hook-trust` on every `codex` invocation, or use the `/hooks` slash command once in interactive mode to mark the hook as trusted.
+
+If you'd rather hand-roll the config — for example to bind it to a specific matcher or to combine with hooks you already have — the canonical shape is:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [{"type": "command", "command": "/abs/path/to/codex-interceptor", "timeout": 30}]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": ".*",
+        "hooks": [{"type": "command", "command": "/abs/path/to/codex-interceptor", "timeout": 30}]
+      }
+    ]
+  }
+}
+```
+
+(Codex also accepts an inline `[hooks]` block in `~/.codex/config.toml`; both layers are loaded.)
 
 ## Configuration
 

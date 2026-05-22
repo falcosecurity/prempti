@@ -5,6 +5,7 @@ use std::process::{self, Command};
 
 mod daemon;
 mod hook;
+mod hook_codex;
 mod logs_pretty;
 
 #[cfg(target_os = "linux")]
@@ -1734,9 +1735,9 @@ fn print_usage() {
     eprintln!("Usage: premptictl <command>");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  hook add         Register the interceptor hook in Claude Code");
-    eprintln!("  hook remove      Remove the interceptor hook from Claude Code");
-    eprintln!("  hook status      Check if the hook is registered");
+    eprintln!("  hook add [claude|codex]      Register the interceptor hook (default: claude)");
+    eprintln!("  hook remove [claude|codex]   Remove the interceptor hook (default: claude)");
+    eprintln!("  hook status [claude|codex]   Check if the hook is registered (default: claude)");
     eprintln!();
     eprintln!("  mode              Show current operational mode");
     eprintln!("  mode guardrails   Switch to guardrails mode (deny/ask enforced)");
@@ -1865,9 +1866,12 @@ fn main() {
     }
 
     match cmd_args.as_slice() {
-        ["hook", "add"] => hook::cli_add(&prefix),
-        ["hook", "remove"] => hook::cli_remove(&prefix),
-        ["hook", "status"] => hook::cli_status(),
+        ["hook", "add"] | ["hook", "add", "claude"] => hook::cli_add(&prefix),
+        ["hook", "remove"] | ["hook", "remove", "claude"] => hook::cli_remove(&prefix),
+        ["hook", "status"] | ["hook", "status", "claude"] => hook::cli_status(),
+        ["hook", "add", "codex"] => hook_codex::cli_add(&prefix),
+        ["hook", "remove", "codex"] => hook_codex::cli_remove(&prefix),
+        ["hook", "status", "codex"] => hook_codex::cli_status(),
         ["mode"] => mode_get(&prefix),
         ["mode", mode] => mode_set(&prefix, mode),
         ["start"] => service_start(&prefix),
