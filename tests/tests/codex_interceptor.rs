@@ -194,7 +194,8 @@ fn empty_stdin_exits_two() {
     let sock = mock_broker::temp_socket_path("codex-empty");
     let r = run_interceptor_for(CODEX, "", &sock.to_string_lossy(), &[]);
     assert_eq!(
-        r.exit_code, 2,
+        r.exit_code,
+        2,
         "expected exit 2 for empty stdin, got {} stderr='{}'",
         r.exit_code,
         r.stderr.trim()
@@ -206,7 +207,8 @@ fn malformed_json_exits_two() {
     let sock = mock_broker::temp_socket_path("codex-malformed");
     let r = run_interceptor_for(CODEX, "not json", &sock.to_string_lossy(), &[]);
     assert_eq!(
-        r.exit_code, 2,
+        r.exit_code,
+        2,
         "expected exit 2 for malformed JSON, got {} stderr='{}'",
         r.exit_code,
         r.stderr.trim()
@@ -222,7 +224,8 @@ fn unsupported_event_exits_two() {
     let input = r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{}}"#;
     let r = run_interceptor_for(CODEX, input, &sock.to_string_lossy(), &[]);
     assert_eq!(
-        r.exit_code, 2,
+        r.exit_code,
+        2,
         "expected exit 2 for unsupported event, got {} stderr='{}'",
         r.exit_code,
         r.stderr.trim()

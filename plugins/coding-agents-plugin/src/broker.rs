@@ -149,7 +149,7 @@ impl Broker {
         if self.is_passthrough() {
             let response = Verdict::Allow.to_response_json(&wire_id);
             let mut s = stream;
-            let _ = write!(s, "{}\n", response);
+            let _ = writeln!(s, "{}", response);
             let _ = s.flush();
             let _ = s.shutdown(Shutdown::Both);
             return;
@@ -237,7 +237,7 @@ impl Broker {
                 .unwrap_or(Verdict::Allow);
             let response = verdict.to_response_json(&pending.wire_id);
             let mut stream = pending.stream.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = write!(stream, "{}\n", response);
+            let _ = writeln!(stream, "{}", response);
             let _ = stream.flush();
             let _ = stream.shutdown(Shutdown::Both);
         }
@@ -250,7 +250,7 @@ impl Broker {
         if let Some((_, pending)) = self.pending.remove(&correlation_id) {
             let response = verdict.to_response_json(&pending.wire_id);
             let mut stream = pending.stream.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = write!(stream, "{}\n", response);
+            let _ = writeln!(stream, "{}", response);
             let _ = stream.flush();
             let _ = stream.shutdown(Shutdown::Both);
         }
@@ -278,10 +278,10 @@ impl Broker {
                     now.duration_since(pending.created_at)
                 );
                 // Send deny to unblock the interceptor if it's somehow still waiting.
-                let response = Verdict::Deny("request expired".to_string())
-                    .to_response_json(&pending.wire_id);
+                let response =
+                    Verdict::Deny("request expired".to_string()).to_response_json(&pending.wire_id);
                 let mut stream = pending.stream.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = write!(stream, "{}\n", response);
+                let _ = writeln!(stream, "{}", response);
                 let _ = stream.flush();
                 let _ = stream.shutdown(Shutdown::Both);
                 reaped += 1;
@@ -503,10 +503,7 @@ mod tests {
         assert_eq!(broker.pending_count(), 0);
         let resp = read_response_json(&peer);
         assert_eq!(resp["decision"], "deny");
-        assert!(resp["reason"]
-            .as_str()
-            .unwrap()
-            .contains("expired"));
+        assert!(resp["reason"].as_str().unwrap().contains("expired"));
     }
 
     #[test]

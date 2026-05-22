@@ -101,151 +101,6 @@ pub fn start(
         .map_err(|e| anyhow::anyhow!("failed to spawn socket server thread: {e}"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_socket_path(label: &str) -> String {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("prempti-sock-{}-{}.sock", std::process::id(), label));
-        path.to_string_lossy().replace('\\', "/")
-    }
-
-    #[test]
-    fn prepare_listener_on_empty_path_succeeds() {
-        let path = temp_socket_path("empty");
-        let _ = std::fs::remove_file(&path);
-        let listener = prepare_listener(&path).expect("bind should succeed");
-        drop(listener);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn prepare_listener_rebinds_over_stale_socket_file() {
-        let path = temp_socket_path("stale");
-        // Simulate a leftover socket file from a previously crashed Falco.
-        std::fs::write(&path, b"").expect("create stub file");
-        // No process is listening, so prepare_listener should treat it as
-        // stale and rebind cleanly.
-        let listener = prepare_listener(&path).expect("stale file should be cleared");
-        drop(listener);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn prepare_listener_refuses_to_clobber_live_peer() {
-        // A different Falco process holding the socket must be refused so the
-        // running server keeps working.
-        let path = temp_socket_path("live");
-        let _ = std::fs::remove_file(&path);
-        let first = prepare_listener(&path).expect("first bind");
-        let second = prepare_listener(&path);
-        assert!(second.is_err(), "expected error when another server is live");
-        let err = format!("{}", second.unwrap_err());
-        assert!(
-            err.contains("already in use"),
-            "error should mention 'already in use', got: {err}"
-        );
-        // Sanity: the first listener is still usable — a client can connect.
-        let _client = UnixStream::connect(&path).expect("original listener survived");
-        drop(first);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// Pins the post-accept `set_nonblocking(false)` fix in `run_server`.
-    ///
-    /// macOS's `accept(2)` inherits the listener's `O_NONBLOCK` onto the
-    /// accepted stream; Linux's does not, and Windows uses `uds_windows`
-    /// which doesn't share the BSD inheritance behavior either. Without
-    /// clearing the flag on the accepted side, `set_read_timeout` becomes
-    /// a no-op against `WouldBlock` and the first read on a request whose
-    /// bytes haven't fully landed in the kernel's 8 KB Unix-socket buffer
-    /// fails immediately, dropping the stream. On the interceptor side
-    /// this surfaced as "broker closed connection" / EPIPE / ENOTCONN
-    /// under concurrent load with payloads larger than 8 KB.
-    ///
-    /// macOS-only: the test relies on the kernel's actual inheritance
-    /// behavior rather than forcing it, so it would be testing nothing
-    /// meaningful on the other targets.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn accepted_stream_clears_inherited_nonblock_for_handle_connection_read() {
-        use std::io::{BufRead, BufReader, Read, Write};
-        use std::time::Duration;
-
-        let path = temp_socket_path("nonblock-clear-macos");
-        let _ = std::fs::remove_file(&path);
-
-        let listener = UnixListener::bind(&path).expect("bind");
-        listener
-            .set_nonblocking(true)
-            .expect("set_nonblocking on listener");
-
-        let client_path = path.clone();
-        let writer = std::thread::spawn(move || {
-            let mut client = UnixStream::connect(&client_path).expect("connect");
-            // Write the request in chunks with a pause between them so the
-            // broker's BufReader::read_line is FORCED to do a follow-up
-            // `fill_buf` against an empty kernel buffer. Without the fix
-            // line, that follow-up returns WouldBlock immediately even
-            // though set_read_timeout was set, because the accepted
-            // stream inherited the listener's non-blocking flag and
-            // SO_RCVTIMEO has no effect on a non-blocking socket.
-            for _ in 0..4 {
-                let chunk = vec![b'x'; 4 * 1024];
-                client.write_all(&chunk).expect("client write_all chunk");
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            client.write_all(b"\n").expect("client write \\n");
-            client
-                .shutdown(std::net::Shutdown::Write)
-                .expect("client shutdown WR");
-            // Block until the broker side closes its end. We must NOT drop
-            // here — if the writer's fd closes before the broker's
-            // `set_read_timeout` runs, `soisdisconnected` propagates onto
-            // the broker side and the setsockopt itself returns EINVAL on
-            // macOS, which would mask what this test is meant to pin down.
-            // The main thread drops its `stream` after the assertions so
-            // this read returns Ok(0) and the thread exits cleanly.
-            let _ = (&client).read(&mut [0u8; 1]);
-        });
-
-        // Poll-accept exactly like `run_server`'s loop.
-        let stream = loop {
-            match listener.accept() {
-                Ok((s, _)) => break s,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(e) => panic!("accept: {e}"),
-            }
-        };
-
-        // The fix: clear the flag macOS inherited from the listener.
-        // Removing this line makes the `read_line` below fail with
-        // `WouldBlock` (errno 35) immediately.
-        stream
-            .set_nonblocking(false)
-            .expect("clear inherited non-blocking on accepted stream");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .expect("set_read_timeout");
-
-        let mut line = String::new();
-        BufReader::new((&stream).take(64 * 1024))
-            .read_line(&mut line)
-            .expect("read_line should succeed on a blocking stream");
-        assert_eq!(line.len(), 16 * 1024 + 1); // 4 × 4 KB chunks + '\n'
-        assert!(line.ends_with('\n'));
-
-        // Release the broker side so the writer's blocking read returns
-        // Ok(0) and its thread can exit; otherwise `join` deadlocks.
-        drop(stream);
-        writer.join().expect("writer thread panicked");
-        let _ = std::fs::remove_file(&path);
-    }
-}
-
 /// Accept loop. Listener is already bound. Same implementation on Unix and
 /// Windows — `UnixListener` is aliased per-target via the imports above.
 fn run_server(
@@ -467,4 +322,156 @@ fn write_response_and_close(mut stream: BrokerStream, response: &str) {
     let _ = writeln!(stream, "{response}");
     let _ = stream.flush();
     let _ = stream.shutdown(Shutdown::Both);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_socket_path(label: &str) -> String {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "prempti-sock-{}-{}.sock",
+            std::process::id(),
+            label
+        ));
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    #[test]
+    fn prepare_listener_on_empty_path_succeeds() {
+        let path = temp_socket_path("empty");
+        let _ = std::fs::remove_file(&path);
+        let listener = prepare_listener(&path).expect("bind should succeed");
+        drop(listener);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn prepare_listener_rebinds_over_stale_socket_file() {
+        let path = temp_socket_path("stale");
+        // Simulate a leftover socket file from a previously crashed Falco.
+        std::fs::write(&path, b"").expect("create stub file");
+        // No process is listening, so prepare_listener should treat it as
+        // stale and rebind cleanly.
+        let listener = prepare_listener(&path).expect("stale file should be cleared");
+        drop(listener);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn prepare_listener_refuses_to_clobber_live_peer() {
+        // A different Falco process holding the socket must be refused so the
+        // running server keeps working.
+        let path = temp_socket_path("live");
+        let _ = std::fs::remove_file(&path);
+        let first = prepare_listener(&path).expect("first bind");
+        let second = prepare_listener(&path);
+        assert!(
+            second.is_err(),
+            "expected error when another server is live"
+        );
+        let err = format!("{}", second.unwrap_err());
+        assert!(
+            err.contains("already in use"),
+            "error should mention 'already in use', got: {err}"
+        );
+        // Sanity: the first listener is still usable — a client can connect.
+        let _client = UnixStream::connect(&path).expect("original listener survived");
+        drop(first);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Pins the post-accept `set_nonblocking(false)` fix in `run_server`.
+    ///
+    /// macOS's `accept(2)` inherits the listener's `O_NONBLOCK` onto the
+    /// accepted stream; Linux's does not, and Windows uses `uds_windows`
+    /// which doesn't share the BSD inheritance behavior either. Without
+    /// clearing the flag on the accepted side, `set_read_timeout` becomes
+    /// a no-op against `WouldBlock` and the first read on a request whose
+    /// bytes haven't fully landed in the kernel's 8 KB Unix-socket buffer
+    /// fails immediately, dropping the stream. On the interceptor side
+    /// this surfaced as "broker closed connection" / EPIPE / ENOTCONN
+    /// under concurrent load with payloads larger than 8 KB.
+    ///
+    /// macOS-only: the test relies on the kernel's actual inheritance
+    /// behavior rather than forcing it, so it would be testing nothing
+    /// meaningful on the other targets.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn accepted_stream_clears_inherited_nonblock_for_handle_connection_read() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::time::Duration;
+
+        let path = temp_socket_path("nonblock-clear-macos");
+        let _ = std::fs::remove_file(&path);
+
+        let listener = UnixListener::bind(&path).expect("bind");
+        listener
+            .set_nonblocking(true)
+            .expect("set_nonblocking on listener");
+
+        let client_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            let mut client = UnixStream::connect(&client_path).expect("connect");
+            // Write the request in chunks with a pause between them so the
+            // broker's BufReader::read_line is FORCED to do a follow-up
+            // `fill_buf` against an empty kernel buffer. Without the fix
+            // line, that follow-up returns WouldBlock immediately even
+            // though set_read_timeout was set, because the accepted
+            // stream inherited the listener's non-blocking flag and
+            // SO_RCVTIMEO has no effect on a non-blocking socket.
+            for _ in 0..4 {
+                let chunk = vec![b'x'; 4 * 1024];
+                client.write_all(&chunk).expect("client write_all chunk");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            client.write_all(b"\n").expect("client write \\n");
+            client
+                .shutdown(std::net::Shutdown::Write)
+                .expect("client shutdown WR");
+            // Block until the broker side closes its end. We must NOT drop
+            // here — if the writer's fd closes before the broker's
+            // `set_read_timeout` runs, `soisdisconnected` propagates onto
+            // the broker side and the setsockopt itself returns EINVAL on
+            // macOS, which would mask what this test is meant to pin down.
+            // The main thread drops its `stream` after the assertions so
+            // this read returns Ok(0) and the thread exits cleanly.
+            let _ = (&client).read(&mut [0u8; 1]);
+        });
+
+        // Poll-accept exactly like `run_server`'s loop.
+        let stream = loop {
+            match listener.accept() {
+                Ok((s, _)) => break s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        };
+
+        // The fix: clear the flag macOS inherited from the listener.
+        // Removing this line makes the `read_line` below fail with
+        // `WouldBlock` (errno 35) immediately.
+        stream
+            .set_nonblocking(false)
+            .expect("clear inherited non-blocking on accepted stream");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set_read_timeout");
+
+        let mut line = String::new();
+        BufReader::new((&stream).take(64 * 1024))
+            .read_line(&mut line)
+            .expect("read_line should succeed on a blocking stream");
+        assert_eq!(line.len(), 16 * 1024 + 1); // 4 × 4 KB chunks + '\n'
+        assert!(line.ends_with('\n'));
+
+        // Release the broker side so the writer's blocking read returns
+        // Ok(0) and its thread can exit; otherwise `join` deadlocks.
+        drop(stream);
+        writer.join().expect("writer thread panicked");
+        let _ = std::fs::remove_file(&path);
+    }
 }

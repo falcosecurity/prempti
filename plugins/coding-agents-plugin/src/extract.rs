@@ -18,10 +18,7 @@ impl CodingAgentPlugin {
         Ok(event.params.event_data.0)
     }
 
-    fn extract_agent_name(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_agent_name(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.agent_name(payload).unwrap_or("");
         Ok(CString::new(val)?)
@@ -30,10 +27,7 @@ impl CodingAgentPlugin {
     /// Operating system the plugin was compiled for. Static per build, not
     /// parsed from the event payload — there's a single Falco process per
     /// host, so the OS doesn't vary across events.
-    fn extract_agent_os(
-        &mut self,
-        _req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_agent_os(&mut self, _req: ExtractRequest<Self>) -> Result<CString, Error> {
         let val = if cfg!(target_os = "linux") {
             "linux"
         } else if cfg!(target_os = "macos") {
@@ -46,116 +40,77 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
-    fn extract_correlation_id(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<u64, Error> {
+    fn extract_correlation_id(&mut self, mut req: ExtractRequest<Self>) -> Result<u64, Error> {
         let payload = self.get_payload(&mut req)?;
         Ok(req.context.correlation_id(payload).unwrap_or(0))
     }
 
-    fn extract_agent_pid(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<u64, Error> {
+    fn extract_agent_pid(&mut self, mut req: ExtractRequest<Self>) -> Result<u64, Error> {
         let payload = self.get_payload(&mut req)?;
         Ok(req.context.agent_pid(payload).unwrap_or(0))
     }
 
-    fn extract_tool_use_id(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_tool_use_id(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.tool_use_id(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_hook_event_name(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_hook_event_name(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.hook_event_name(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_session_id(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_session_id(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.session_id(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_permission_mode(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_permission_mode(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.permission_mode(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_transcript_path(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_transcript_path(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.transcript_path(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_agent_model(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_agent_model(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.agent_model(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_agent_turn_id(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_agent_turn_id(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.agent_turn_id(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_cwd(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_cwd(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.cwd(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_real_cwd(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_real_cwd(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.real_cwd(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_tool_name(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_tool_name(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.tool_name(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_tool_input(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_tool_input(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.tool_input(payload).unwrap_or_default();
         Ok(CString::new(val)?)
@@ -170,33 +125,23 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
-    fn extract_file_path(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_file_path(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.file_path(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_real_file_path(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_real_file_path(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.real_file_path(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
 
-    fn extract_patch_op(
-        &mut self,
-        mut req: ExtractRequest<Self>,
-    ) -> Result<CString, Error> {
+    fn extract_patch_op(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.patch_op(payload).unwrap_or("");
         Ok(CString::new(val)?)
     }
-
 }
 
 impl ExtractPlugin for CodingAgentPlugin {

@@ -55,12 +55,8 @@ fn codex_pretool_deny_rm_rf() {
 #[test]
 fn codex_pretool_allow_safe_command() {
     let h = require_falco!();
-    let input = E2eHarness::make_codex_pretool_input(
-        "Bash",
-        r#"{"command":"ls -la"}"#,
-        cwd(),
-        "codex-ls",
-    );
+    let input =
+        E2eHarness::make_codex_pretool_input("Bash", r#"{"command":"ls -la"}"#, cwd(), "codex-ls");
     let r = h.run_hook_for(AgentKind::Codex, &input);
     assert_codex_pretool_decision(&r, "allow");
 }
@@ -75,11 +71,8 @@ fn codex_permreq_deny_rm_rf_uses_permission_request_shape() {
     // PermissionRequest output shape: hookSpecificOutput.decision.behavior,
     // not permissionDecision. The rule reason is surfaced as decision.message.
     let h = require_falco!();
-    let input = E2eHarness::make_codex_permreq_input(
-        "Bash",
-        r#"{"command":"rm -rf /home"}"#,
-        cwd(),
-    );
+    let input =
+        E2eHarness::make_codex_permreq_input("Bash", r#"{"command":"rm -rf /home"}"#, cwd());
     let r = h.run_hook_for(AgentKind::Codex, &input);
     assert_codex_permreq_behavior(&r, "deny");
     assert_codex_permreq_message_contains(&r, "Deny rm -rf");

@@ -76,8 +76,10 @@ pub fn interceptor_path_for(kind: AgentKind) -> PathBuf {
     let legacy_dir = kind.legacy_per_crate_dir();
     let candidates = [
         root.join("target/release").join(bin_name),
-        root.join("target/x86_64-pc-windows-msvc/release").join(bin_name),
-        root.join("target/aarch64-pc-windows-msvc/release").join(bin_name),
+        root.join("target/x86_64-pc-windows-msvc/release")
+            .join(bin_name),
+        root.join("target/aarch64-pc-windows-msvc/release")
+            .join(bin_name),
         root.join(legacy_dir).join("target/release").join(bin_name),
         root.join(legacy_dir)
             .join("target/x86_64-pc-windows-msvc/release")
@@ -213,13 +215,15 @@ pub fn assert_codex_pretool_decision(result: &InterceptorResult, expected: &str)
     let v = parse_codex_stdout(result);
     let event = &v["hookSpecificOutput"]["hookEventName"];
     assert_eq!(
-        event, "PreToolUse",
+        event,
+        "PreToolUse",
         "expected hookEventName=PreToolUse, got {event} (full stdout: '{}')",
         result.stdout.trim()
     );
     let decision = &v["hookSpecificOutput"]["permissionDecision"];
     assert_eq!(
-        decision, expected,
+        decision,
+        expected,
         "expected permissionDecision={expected}, got {decision} (full stdout: '{}')",
         result.stdout.trim()
     );
@@ -231,13 +235,15 @@ pub fn assert_codex_permreq_behavior(result: &InterceptorResult, expected: &str)
     let v = parse_codex_stdout(result);
     let event = &v["hookSpecificOutput"]["hookEventName"];
     assert_eq!(
-        event, "PermissionRequest",
+        event,
+        "PermissionRequest",
         "expected hookEventName=PermissionRequest, got {event} (full stdout: '{}')",
         result.stdout.trim()
     );
     let behavior = &v["hookSpecificOutput"]["decision"]["behavior"];
     assert_eq!(
-        behavior, expected,
+        behavior,
+        expected,
         "expected decision.behavior={expected}, got {behavior} (full stdout: '{}')",
         result.stdout.trim()
     );

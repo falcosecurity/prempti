@@ -211,17 +211,8 @@ impl E2eHarness {
 
     /// Run a hook event through the given agent's interceptor against this
     /// Falco instance.
-    pub fn run_hook_for(
-        &self,
-        kind: AgentKind,
-        input: &str,
-    ) -> interceptor::InterceptorResult {
-        interceptor::run_interceptor_for(
-            kind,
-            input,
-            &self.socket_path.to_string_lossy(),
-            &[],
-        )
+    pub fn run_hook_for(&self, kind: AgentKind, input: &str) -> interceptor::InterceptorResult {
+        interceptor::run_interceptor_for(kind, input, &self.socket_path.to_string_lossy(), &[])
     }
 
     /// Build a Claude Code hook JSON input string (PreToolUse).

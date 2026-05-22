@@ -299,8 +299,7 @@ impl ParsedEvent {
     }
 
     pub fn tool_use_id(&mut self, payload: &[u8]) -> Option<&str> {
-        self.ensure_parsed(payload)
-            .map(|f| f.tool_use_id.as_str())
+        self.ensure_parsed(payload).map(|f| f.tool_use_id.as_str())
     }
 
     pub fn hook_event_name(&mut self, payload: &[u8]) -> Option<&str> {
@@ -323,8 +322,7 @@ impl ParsedEvent {
     }
 
     pub fn agent_model(&mut self, payload: &[u8]) -> Option<&str> {
-        self.ensure_parsed(payload)
-            .map(|f| f.agent_model.as_str())
+        self.ensure_parsed(payload).map(|f| f.agent_model.as_str())
     }
 
     pub fn agent_turn_id(&mut self, payload: &[u8]) -> Option<&str> {
@@ -371,7 +369,6 @@ impl ParsedEvent {
         self.ensure_parsed(payload)
             .map(|f| f.real_file_path.as_str())
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -428,10 +425,7 @@ fn normalize_separators(path: String) -> String {
     #[cfg(windows)]
     {
         // Strip \\?\ prefix that Windows canonicalize may add.
-        let stripped = path
-            .strip_prefix(r"\\?\")
-            .unwrap_or(&path)
-            .to_string();
+        let stripped = path.strip_prefix(r"\\?\").unwrap_or(&path).to_string();
         stripped.replace('\\', "/")
     }
     #[cfg(not(windows))]
@@ -450,7 +444,11 @@ fn resolve_path(raw: &str) -> String {
         return normalize_separators(resolved.to_string_lossy().into_owned());
     }
     // Fallback: lexical normalization only.
-    normalize_separators(normalize_path(Path::new(raw)).to_string_lossy().into_owned())
+    normalize_separators(
+        normalize_path(Path::new(raw))
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// Resolve a file path: if relative, join with cwd first, then resolve.
@@ -480,7 +478,10 @@ mod tests {
 
     #[test]
     fn normalize_path_relative() {
-        assert_eq!(normalize_path(Path::new("foo/bar/../baz")), PathBuf::from("foo/baz"));
+        assert_eq!(
+            normalize_path(Path::new("foo/bar/../baz")),
+            PathBuf::from("foo/baz")
+        );
     }
 
     #[test]
@@ -501,7 +502,10 @@ mod tests {
 
     #[test]
     fn normalize_path_dot_only() {
-        assert_eq!(normalize_path(Path::new("./foo/./bar")), PathBuf::from("foo/bar"));
+        assert_eq!(
+            normalize_path(Path::new("./foo/./bar")),
+            PathBuf::from("foo/bar")
+        );
     }
 
     #[cfg(windows)]
@@ -555,22 +559,11 @@ mod tests {
         //   correlation_id \n agent_name \n agent_pid \n patch_op \n patch_path \n raw_event
         // Default helper produces a single-event (non-apply_patch) payload
         // with empty patch metadata.
-        format!(
-            "1\nclaude_code\n{}\n\n\n{}",
-            agent_pid, event_json
-        )
-        .into_bytes()
+        format!("1\nclaude_code\n{}\n\n\n{}", agent_pid, event_json).into_bytes()
     }
 
-    fn payload_with_patch(
-        event_json: &str,
-        patch_op: &str,
-        patch_path: &str,
-    ) -> Vec<u8> {
-        format!(
-            "1\nclaude_code\n0\n{patch_op}\n{patch_path}\n{event_json}"
-        )
-        .into_bytes()
+    fn payload_with_patch(event_json: &str, patch_op: &str, patch_path: &str) -> Vec<u8> {
+        format!("1\nclaude_code\n0\n{patch_op}\n{patch_path}\n{event_json}").into_bytes()
     }
 
     #[test]
@@ -627,18 +620,14 @@ mod tests {
 
     #[test]
     fn tool_input_command_populated_for_bash() {
-        let p = payload_with(
-            r#"{"tool_name":"Bash","tool_input":{"command":"ls -la"}}"#,
-        );
+        let p = payload_with(r#"{"tool_name":"Bash","tool_input":{"command":"ls -la"}}"#);
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.tool_input_command(&p), Some("ls -la"));
     }
 
     #[test]
     fn tool_input_command_empty_for_non_bash() {
-        let p = payload_with(
-            r#"{"tool_name":"Write","tool_input":{"command":"echo hi"}}"#,
-        );
+        let p = payload_with(r#"{"tool_name":"Write","tool_input":{"command":"echo hi"}}"#);
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.tool_input_command(&p), Some(""));
     }
@@ -692,8 +681,7 @@ mod tests {
 
     #[test]
     fn resolve_path_lexical_fallback_for_nonexistent() {
-        let resolved =
-            resolve_path("/definitely/does/not/exist/foo/../bar");
+        let resolved = resolve_path("/definitely/does/not/exist/foo/../bar");
         // Lexical normalization: foo/.. pops, leaving /.../exist/bar.
         assert_eq!(resolved, "/definitely/does/not/exist/bar");
     }
@@ -706,8 +694,7 @@ mod tests {
     #[test]
     fn resolve_file_path_joins_relative_to_cwd() {
         // Use a non-existent cwd so we exercise the lexical path.
-        let resolved =
-            resolve_file_path("foo/bar", "/nonexistent-cwd-1234");
+        let resolved = resolve_file_path("foo/bar", "/nonexistent-cwd-1234");
         assert_eq!(resolved, "/nonexistent-cwd-1234/foo/bar");
     }
 
@@ -724,8 +711,7 @@ mod tests {
 
     #[test]
     fn resolve_file_path_lexical_collapses_dotdot() {
-        let resolved =
-            resolve_file_path("../sibling/file", "/nonexistent/a/b");
+        let resolved = resolve_file_path("../sibling/file", "/nonexistent/a/b");
         assert_eq!(resolved, "/nonexistent/a/sibling/file");
     }
 
@@ -763,10 +749,7 @@ mod tests {
         assert_eq!(pe.real_cwd(&p), Some("/nonexistent-cwd-999"));
         assert_eq!(pe.tool_name(&p), Some("Write"));
         assert_eq!(pe.file_path(&p), Some("out.txt"));
-        assert_eq!(
-            pe.real_file_path(&p),
-            Some("/nonexistent-cwd-999/out.txt")
-        );
+        assert_eq!(pe.real_file_path(&p), Some("/nonexistent-cwd-999/out.txt"));
         assert_eq!(pe.tool_input_command(&p), Some(""));
 
         // tool_input round-trips as JSON string.
@@ -803,9 +786,8 @@ mod tests {
     fn parsed_event_caches_after_first_access() {
         // Second access of a field must not re-parse (and must not silently
         // diverge from the first call).
-        let p = payload_with(
-            r#"{"session_id":"abc","tool_name":"Bash","tool_input":{"command":"x"}}"#,
-        );
+        let p =
+            payload_with(r#"{"session_id":"abc","tool_name":"Bash","tool_input":{"command":"x"}}"#);
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.session_id(&p), Some("abc"));
         assert_eq!(pe.tool_input_command(&p), Some("x"));
@@ -950,9 +932,7 @@ mod tests {
         // Empty patch metadata → file_path still comes from tool_input as
         // before. Regression guard against the patch-aware change leaking
         // into the default extraction path.
-        let p = payload_with(
-            r#"{"tool_name":"Write","tool_input":{"file_path":"/tmp/f.txt"}}"#,
-        );
+        let p = payload_with(r#"{"tool_name":"Write","tool_input":{"file_path":"/tmp/f.txt"}}"#);
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.file_path(&p), Some("/tmp/f.txt"));
         assert_eq!(pe.patch_op(&p), Some(""));
@@ -1055,9 +1035,7 @@ mod tests {
     fn codex_dont_ask_permission_mode_passes_through() {
         // dontAsk is a Codex-only permission_mode value; the parser must not
         // reject it (it's an opaque string at the plugin layer).
-        let p = codex_payload(
-            r#"{"hook_event_name":"PreToolUse","permission_mode":"dontAsk"}"#,
-        );
+        let p = codex_payload(r#"{"hook_event_name":"PreToolUse","permission_mode":"dontAsk"}"#);
         let mut pe = ParsedEvent::default();
         assert_eq!(pe.permission_mode(&p), Some("dontAsk"));
     }

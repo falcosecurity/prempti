@@ -86,9 +86,9 @@ impl fmt::Display for ParseError {
             Self::MissingEndPatch => f.write_str("missing '*** End Patch' trailer"),
             Self::NoHunks => f.write_str("patch contains no file operations"),
             Self::EmptyPath => f.write_str("patch header has an empty file path"),
-            Self::OrphanMoveTo => f.write_str(
-                "'*** Move to:' line without a preceding '*** Update File:' header",
-            ),
+            Self::OrphanMoveTo => {
+                f.write_str("'*** Move to:' line without a preceding '*** Update File:' header")
+            }
         }
     }
 }
@@ -384,10 +384,7 @@ ignored line two
         let text = "*** Begin Patch
 *** End Patch
 ";
-        assert_eq!(
-            parse_apply_patch(text).unwrap_err(),
-            ParseError::NoHunks
-        );
+        assert_eq!(parse_apply_patch(text).unwrap_err(), ParseError::NoHunks);
     }
 
     #[test]
@@ -396,10 +393,7 @@ ignored line two
         // the grammar's `filename: /(.+)/` rejects (one-or-more chars
         // required). The header prefix matches, but the path is empty.
         let text = "*** Begin Patch\n*** Add File: \n+x\n*** End Patch\n";
-        assert_eq!(
-            parse_apply_patch(text).unwrap_err(),
-            ParseError::EmptyPath
-        );
+        assert_eq!(parse_apply_patch(text).unwrap_err(), ParseError::EmptyPath);
     }
 
     #[test]
@@ -412,10 +406,7 @@ ignored line two
 +x
 *** End Patch
 ";
-        assert_eq!(
-            parse_apply_patch(text).unwrap_err(),
-            ParseError::NoHunks
-        );
+        assert_eq!(parse_apply_patch(text).unwrap_err(), ParseError::NoHunks);
     }
 
     #[test]
@@ -475,7 +466,12 @@ ignored line two
 
     #[test]
     fn patch_op_display_matches_as_str() {
-        for op in [PatchOp::Add, PatchOp::Update, PatchOp::Delete, PatchOp::Move] {
+        for op in [
+            PatchOp::Add,
+            PatchOp::Update,
+            PatchOp::Delete,
+            PatchOp::Move,
+        ] {
             assert_eq!(format!("{op}"), op.as_str());
         }
     }

@@ -77,10 +77,7 @@ impl Plugin for CodingAgentPlugin {
 
     type ConfigType = Json<CodingAgentConfig>;
 
-    fn new(
-        _input: Option<&TablesInput>,
-        config: Self::ConfigType,
-    ) -> Result<Self, Error> {
+    fn new(_input: Option<&TablesInput>, config: Self::ConfigType) -> Result<Self, Error> {
         let Json(config) = config;
 
         // Validate mode early. Without this, a typo (e.g. `mode: monitr`)

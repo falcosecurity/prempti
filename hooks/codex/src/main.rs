@@ -499,9 +499,8 @@ fn run() -> Result<(), Error> {
     let timeout = get_timeout();
 
     // Step 5: Communicate with broker.
-    let response = communicate(&socket_path, &request_bytes, timeout).map_err(|reason| {
-        Error::BrokerError { event, reason }
-    })?;
+    let response = communicate(&socket_path, &request_bytes, timeout)
+        .map_err(|reason| Error::BrokerError { event, reason })?;
 
     // Step 6: Validate response.
     if response.id != correlation_id {
@@ -511,12 +510,11 @@ fn run() -> Result<(), Error> {
         });
     }
 
-    let broker_decision = BrokerDecision::parse(&response.decision).ok_or_else(|| {
-        Error::BrokerError {
+    let broker_decision =
+        BrokerDecision::parse(&response.decision).ok_or_else(|| Error::BrokerError {
             event,
             reason: format!("invalid broker decision: {:?}", response.decision),
-        }
-    })?;
+        })?;
 
     // Step 7: Translate + write verdict.
     let codex_verdict = translate_verdict(event, broker_decision);
