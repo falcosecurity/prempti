@@ -26,8 +26,8 @@ The interceptor mounts on **two** Codex hook events:
 
 | Hook event | Codex purpose | Interceptor responsibility |
 |------------|---------------|----------------------------|
-| `PreToolUse` | Fires before every tool dispatch | Hard-block deny rules; pass ask/allow through |
-| `PermissionRequest` | Fires in the approval path before guardian/UI prompts | Surface ask/deny rules to the user via Codex's approval UX |
+| `PreToolUse` | Fires before every tool dispatch | Block deny / ask rules with the rule reason as the message; pass allow through |
+| `PermissionRequest` | Fires in the approval path before guardian/UI prompts | Same: deny on deny / ask, allow otherwise |
 
 Both hooks send the same wire envelope to the broker (`agent_name = "codex"`); the broker runs the same Falco rules regardless of which event arrived. Only the **output translation** is per-event.
 
@@ -36,10 +36,14 @@ Both hooks send the same wire envelope to the broker (`agent_name = "codex"`); t
 | Falco verdict | `PreToolUse` | `PermissionRequest` |
 |---------------|--------------|---------------------|
 | `allow` | `allow` | `allow` |
-| `deny` | `deny` (with reason) | `deny` (with reason) |
-| `ask` | `allow` (passes through to the approval flow) | `deny` (rule reason surfaced as the approval-denial message) |
+| `deny` | `deny` (with rule reason) | `deny` (with rule reason) |
+| `ask` | `deny` (with rule reason) | `deny` (with rule reason) |
 
-This preserves three-verdict UX on Codex without collapsing `ask` to `deny` at `PreToolUse`. The cost is two registered hooks per tool call instead of one.
+Codex's hook contract is binary allow/deny on both mount points — there is no equivalent of Claude's per-call "ask the user" UX. An earlier design tried to preserve ask semantics by routing PreToolUse `ask` to `allow` and catching it downstream at `PermissionRequest`, but `PermissionRequest` only fires when Codex's own `permission_mode` would have prompted (so `bypassPermissions`, `dontAsk`, and `--ask-for-approval never` would silently allow). Denying at the earliest mount point with the rule reason as the message is the only safe mapping; users see Prempti's reason via Codex's deny UI and can retry or change permission mode if they decide the action is acceptable. PermissionRequest is still mounted because it can fire standalone (network policy, sudo escalation, MCP approvals) without a corresponding PreToolUse.
+
+### Codex apply_patch: one event per touched path
+
+A single `apply_patch` invocation can touch multiple files. The plugin's broker parses the patch envelope from `tool_input.command` at receive time and emits one synthetic Falco event per (operation, path) tuple — see [`docs/CLAUDE.md`](../../CLAUDE.md) (the "Codex apply_patch: one event per touched path" section) and `plugins/coding-agents-plugin/src/apply_patch.rs` for the parser. The interceptor is unaware of the multiplex: it sends one wire request, gets one verdict back, exactly as for any other tool.
 
 ### Wire shape (Codex → interceptor)
 
@@ -121,10 +125,9 @@ Boolean values accept `1`, `true`, `yes`, `on` (case-insensitive, whitespace tri
 
 ## Known v1 limitations
 
-- **No `apply_patch` path resolution.** Codex's file-write tool is `apply_patch` (a patch-based input), not `Write`/`Edit`. The plugin's `tool.real_file_path` field is currently only populated for Claude Code's `Write`/`Edit`/`Read`, so path-based rules don't fire for Codex file writes. Bash rules work unchanged.
-- **`agent.model` and `agent.turn_id` not exposed.** Codex sends these in every `PreToolUse` event; the plugin currently ignores them. Will be added once a rule needs model-aware policy.
 - **Installer wiring deferred.** No `premptictl hook add codex` flow; manual configuration only.
-- **`permission_mode = "dontAsk"` interaction with `PermissionRequest` unverified.** Whether `dontAsk` suppresses `PermissionRequest` entirely or fires it passive-observer needs runtime confirmation.
+- **`permission_mode = "dontAsk"` interaction with `PermissionRequest` unverified.** Whether `dontAsk` suppresses `PermissionRequest` entirely or fires it passive-observer needs runtime confirmation. Not blocking — `PreToolUse` already denies in those modes (see above), so this affects only the additional surface area `PermissionRequest` would normally cover.
+- **`ask` is lossy.** Codex has no per-call user-confirmation UX at the hook layer, so Falco `ask` rules become `deny` with the rule reason as the message. Users see the reason and can retry or change permission mode, but can't approve a single call inline.
 
 ## Supported Codex hook events
 
