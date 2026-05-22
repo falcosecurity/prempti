@@ -184,10 +184,6 @@ fn handle_connection(
     // Broker assigns a unique correlation ID (monotonic u64 counter, always > 0).
     let correlation_id = broker.next_correlation_id();
 
-    // Serialize the event field back to bytes for the Falco event payload.
-    let raw_event = serde_json::to_vec(&request.event)
-        .map_err(|e| format!("failed to serialize event: {e}"))?;
-
     // Codex's apply_patch tool can touch multiple files in one invocation
     // (the Lark grammar at codex-rs/core/src/tools/handlers/apply_patch.lark
     // allows `hunk+`; an Update hunk can additionally carry a `*** Move to:`
@@ -201,6 +197,9 @@ fn handle_connection(
     let events: Vec<EventData> = match multiplex {
         Ok(None) => {
             // Single-event flow (every hook except codex apply_patch).
+            // Serialize the full event tree to bytes — no rewriting needed.
+            let raw_event = serde_json::to_vec(&request.event)
+                .map_err(|e| format!("failed to serialize event: {e}"))?;
             vec![EventData {
                 correlation_id,
                 agent_name,
@@ -222,12 +221,19 @@ fn handle_connection(
             // envelope) with `tool.real_file_path = Y` (per-event path)
             // could match X from hunk A against the path of hunk B.
             //
+            // Memory shape: we build a `base_event` ONCE with the original
+            // (potentially large) tool_input.command stripped, then per-hunk
+            // clone the small base and inject this hunk's command. This
+            // avoids cloning the full patch body N times — for a 60KB patch
+            // with 5 hunks, ~60KB resident peak instead of ~300KB.
+            //
             // The parser guarantees entries is non-empty (Lark grammar
             // requires `hunk+`; `parse_apply_patch` returns
             // `Err(NoHunks)` for an empty envelope).
+            let base_event = strip_command_for_hunk_base(&request.event);
             let mut events = Vec::with_capacity(entries.len());
             for entry in entries {
-                let per_event_raw = rewrite_event_with_hunk(&request.event, &entry.hunk_text)
+                let per_event_raw = rewrite_event_with_hunk(&base_event, &entry.hunk_text)
                     .map_err(|e| format!("re-serialize per-event event: {e}"))?;
                 events.push(EventData {
                     correlation_id,
@@ -332,20 +338,32 @@ fn try_parse_apply_patch_multiplex(
     Ok(Some(entries))
 }
 
-/// Build a per-event raw_event payload by cloning the original Codex hook
-/// event and replacing `tool_input.command` with a single-hunk envelope
-/// wrapping the given `hunk_text`. Re-serialized to bytes so the downstream
-/// source plugin sees ordinary single-event JSON shape.
+/// Build the "base event" reused across all synthetic per-hunk events: a
+/// clone of the original Codex hook event with `tool_input.command`
+/// stripped. The original command field holds the full patch body, which can
+/// be substantial (~tens of KB for multi-file refactors). Stripping it once
+/// here lets the per-hunk rewrite clone a small base + insert just that
+/// hunk's slice instead of cloning the whole patch body per event.
 ///
 /// Caller already verified the structure (`agent_name == "codex"` AND
 /// `tool_name == "apply_patch"` AND `tool_input.command` exists and is a
-/// string) before reaching this point, so the JSON shape is known; if the
-/// shape is somehow malformed we return Err and the caller fails closed.
+/// string) before reaching this point.
+fn strip_command_for_hunk_base(original: &serde_json::Value) -> serde_json::Value {
+    let mut base = original.clone();
+    if let Some(tool_input) = base.get_mut("tool_input").and_then(|v| v.as_object_mut()) {
+        tool_input.remove("command");
+    }
+    base
+}
+
+/// Inject a per-hunk command into the base event and serialize to bytes.
+/// `base_event` must come from `strip_command_for_hunk_base` so the
+/// per-hunk clone here doesn't pay for the original full patch body.
 fn rewrite_event_with_hunk(
-    original: &serde_json::Value,
+    base_event: &serde_json::Value,
     hunk_text: &str,
 ) -> Result<Vec<u8>, serde_json::Error> {
-    let mut event = original.clone();
+    let mut event = base_event.clone();
     let wrapped = format!("*** Begin Patch\n{hunk_text}*** End Patch\n");
     if let Some(tool_input) = event.get_mut("tool_input").and_then(|v| v.as_object_mut()) {
         tool_input.insert("command".to_string(), serde_json::Value::String(wrapped));
