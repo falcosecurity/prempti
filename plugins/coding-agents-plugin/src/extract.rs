@@ -107,6 +107,24 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
+    fn extract_agent_model(
+        &mut self,
+        mut req: ExtractRequest<Self>,
+    ) -> Result<CString, Error> {
+        let payload = self.get_payload(&mut req)?;
+        let val = req.context.agent_model(payload).unwrap_or("");
+        Ok(CString::new(val)?)
+    }
+
+    fn extract_agent_turn_id(
+        &mut self,
+        mut req: ExtractRequest<Self>,
+    ) -> Result<CString, Error> {
+        let payload = self.get_payload(&mut req)?;
+        let val = req.context.agent_turn_id(payload).unwrap_or("");
+        Ok(CString::new(val)?)
+    }
+
     fn extract_cwd(
         &mut self,
         mut req: ExtractRequest<Self>,
@@ -206,6 +224,12 @@ impl ExtractPlugin for CodingAgentPlugin {
         field("agent.transcript_path", &Self::extract_transcript_path)
             .with_display("Transcript Path")
             .with_description("Path to the session transcript file (empty when the agent reports null)"),
+        field("agent.model", &Self::extract_agent_model)
+            .with_display("Model")
+            .with_description("Model identifier reported by the coding agent (Codex-only; empty for Claude Code)"),
+        field("agent.turn_id", &Self::extract_agent_turn_id)
+            .with_display("Turn ID")
+            .with_description("Turn identifier within a session (Codex-only; finer than session_id; empty for Claude Code)"),
         field("agent.cwd", &Self::extract_cwd)
             .with_display("Working Directory")
             .with_description("Working directory, raw from Claude Code JSON"),

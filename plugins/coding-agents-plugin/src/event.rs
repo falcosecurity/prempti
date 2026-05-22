@@ -75,6 +75,9 @@ struct ParsedFields {
     session_id: String,
     permission_mode: String,
     transcript_path: String,
+    // Codex-only fields (empty for Claude Code).
+    agent_model: String,
+    agent_turn_id: String,
     // Raw paths (as reported by Claude Code)
     cwd: String,
     file_path: String,
@@ -181,6 +184,18 @@ impl ParsedEvent {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        // Codex emits `model` and `turn_id` in every PreToolUse / PermissionRequest
+        // payload; Claude Code does not. Default to empty when absent.
+        let agent_model = event
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let agent_turn_id = event
+            .get("turn_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let tool_name = event
             .get("tool_name")
             .and_then(|v| v.as_str())
@@ -214,6 +229,8 @@ impl ParsedEvent {
             session_id,
             permission_mode,
             transcript_path,
+            agent_model,
+            agent_turn_id,
             cwd,
             file_path,
             real_cwd,
@@ -258,6 +275,16 @@ impl ParsedEvent {
     pub fn transcript_path(&mut self, payload: &[u8]) -> Option<&str> {
         self.ensure_parsed(payload)
             .map(|f| f.transcript_path.as_str())
+    }
+
+    pub fn agent_model(&mut self, payload: &[u8]) -> Option<&str> {
+        self.ensure_parsed(payload)
+            .map(|f| f.agent_model.as_str())
+    }
+
+    pub fn agent_turn_id(&mut self, payload: &[u8]) -> Option<&str> {
+        self.ensure_parsed(payload)
+            .map(|f| f.agent_turn_id.as_str())
     }
 
     pub fn cwd(&mut self, payload: &[u8]) -> Option<&str> {
@@ -656,6 +683,9 @@ mod tests {
         assert_eq!(pe.session_id(&p), Some("sess-1"));
         assert_eq!(pe.permission_mode(&p), Some("default"));
         assert_eq!(pe.transcript_path(&p), Some("/tmp/t.jsonl"));
+        // Claude Code does not emit model / turn_id — both default to empty.
+        assert_eq!(pe.agent_model(&p), Some(""));
+        assert_eq!(pe.agent_turn_id(&p), Some(""));
         assert_eq!(pe.cwd(&p), Some("/nonexistent-cwd-999"));
         assert_eq!(pe.real_cwd(&p), Some("/nonexistent-cwd-999"));
         assert_eq!(pe.tool_name(&p), Some("Write"));
@@ -684,6 +714,8 @@ mod tests {
         assert_eq!(pe.session_id(&p), Some(""));
         assert_eq!(pe.permission_mode(&p), Some(""));
         assert_eq!(pe.transcript_path(&p), Some(""));
+        assert_eq!(pe.agent_model(&p), Some(""));
+        assert_eq!(pe.agent_turn_id(&p), Some(""));
         assert_eq!(pe.cwd(&p), Some(""));
         assert_eq!(pe.real_cwd(&p), Some(""));
         assert_eq!(pe.tool_name(&p), Some(""));
@@ -821,6 +853,9 @@ mod tests {
         assert_eq!(pe.tool_use_id(&p), Some("tu-1"));
         assert_eq!(pe.tool_name(&p), Some("Bash"));
         assert_eq!(pe.tool_input_command(&p), Some("ls -la"));
+        // Codex-only fields populated.
+        assert_eq!(pe.agent_model(&p), Some("gpt-5-codex"));
+        assert_eq!(pe.agent_turn_id(&p), Some("turn-1"));
     }
 
     #[test]
@@ -843,6 +878,9 @@ mod tests {
         assert_eq!(pe.hook_event_name(&p), Some("PermissionRequest"));
         assert_eq!(pe.tool_use_id(&p), Some(""));
         assert_eq!(pe.tool_input_command(&p), Some("rm -rf /"));
+        // PermissionRequest also carries model + turn_id.
+        assert_eq!(pe.agent_model(&p), Some("gpt-5-codex"));
+        assert_eq!(pe.agent_turn_id(&p), Some("turn-7"));
     }
 
     #[test]

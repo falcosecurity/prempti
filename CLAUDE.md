@@ -99,6 +99,8 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 | `tool.real_file_path` | string | Target file path, resolved to absolute canonical path. Relative paths resolved against `agent.cwd`. (Write/Edit/Read only) |
 | `agent.permission_mode` | string | Session permission mode reported by the agent (e.g., `default`, `acceptEdits`, `plan`, `bypassPermissions`; Codex also emits `dontAsk`) |
 | `agent.transcript_path` | string | Session transcript file path. Empty when the agent reports `null`. |
+| `agent.model` | string | Model identifier reported by the agent (Codex-only; empty for Claude Code) |
+| `agent.turn_id` | string | Turn identifier within a session (Codex-only; finer than `session_id`; empty for Claude Code) |
 
 This schema is agent-agnostic. The `agent.name` field distinguishes which coding agent generated the event.
 
