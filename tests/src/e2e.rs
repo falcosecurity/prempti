@@ -428,6 +428,23 @@ fn write_rules(rules_dir: &Path) {
   priority: WARNING
   source: coding_agent
   tags: [coding_agent_ask]
+
+# Cross-match sentinel for apply_patch multi-file content isolation.
+# The condition combines a content marker that only appears in hunk A
+# (HUNK-A-ONLY-MARKER) with a path that only belongs to hunk B
+# (.../crossmatch-b.txt). If per-hunk content isolation is broken (i.e.
+# every synthetic event still carries the FULL patch as tool.input), this
+# rule fires on the synthetic event for hunk B because tool.input contains
+# the leaked marker from hunk A. With the fix, hunk B's tool.input only
+# contains its own hunk text — the marker is not there — so the rule does
+# not fire.
+- rule: Codex apply_patch cross-match sentinel
+  desc: Pins per-hunk content isolation across synthetic apply_patch events
+  condition: agent.name = "codex" and tool.name = "apply_patch" and tool.input contains "HUNK-A-ONLY-MARKER" and tool.real_file_path endswith "crossmatch-b.txt"
+  output: "Cross-match sentinel matched (hunk A content leaked into hunk B's event) | correlation=%correlation.id"
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
 "#
     );
     std::fs::write(rules_dir.join("deny.yaml"), deny_rules).expect("failed to write deny rules");

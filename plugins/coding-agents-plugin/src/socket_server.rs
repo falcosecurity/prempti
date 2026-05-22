@@ -11,7 +11,7 @@ use uds_windows::{UnixListener, UnixStream};
 
 use crossbeam_channel::Sender;
 
-use crate::apply_patch::{self, PatchOp};
+use crate::apply_patch::{self, PatchEntry};
 use crate::broker::{Broker, BrokerStream};
 use crate::event::{EventData, InterceptorRequest};
 use crate::verdict::Verdict;
@@ -210,20 +210,35 @@ fn handle_connection(
                 raw_event,
             }]
         }
-        Ok(Some(ops)) => {
-            // Multi-event multiplex. The parser guarantees ops is non-empty
-            // (Lark grammar requires `hunk+`; `parse_apply_patch` returns
+        Ok(Some(entries)) => {
+            // Multi-event multiplex. Each synthetic event carries:
+            //   - per-event (op, path) for tool.patch_op / tool.file_path
+            //   - per-event raw_event with tool_input.command rewritten to
+            //     ONLY this hunk's slice, wrapped in a fresh envelope.
+            //
+            // The per-event rewrite matters: without it, every synthetic
+            // event would carry the full patch body, so rules combining
+            // `tool.input contains "X"` (content from any hunk in the
+            // envelope) with `tool.real_file_path = Y` (per-event path)
+            // could match X from hunk A against the path of hunk B.
+            //
+            // The parser guarantees entries is non-empty (Lark grammar
+            // requires `hunk+`; `parse_apply_patch` returns
             // `Err(NoHunks)` for an empty envelope).
-            ops.into_iter()
-                .map(|(op, path)| EventData {
+            let mut events = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let per_event_raw = rewrite_event_with_hunk(&request.event, &entry.hunk_text)
+                    .map_err(|e| format!("re-serialize per-event event: {e}"))?;
+                events.push(EventData {
                     correlation_id,
                     agent_name: agent_name.clone(),
                     agent_pid,
-                    patch_op: op.as_str().to_string(),
-                    patch_path: path,
-                    raw_event: raw_event.clone(),
-                })
-                .collect()
+                    patch_op: entry.op.as_str().to_string(),
+                    patch_path: entry.path,
+                    raw_event: per_event_raw,
+                });
+            }
+            events
         }
         Err(reason) => {
             // Fail-closed: a malformed apply_patch envelope can't be safely
@@ -282,14 +297,15 @@ fn handle_connection(
 /// Detect whether this request is a codex apply_patch invocation that needs
 /// path-based multiplexing. Returns:
 /// - `Ok(None)` — not a codex apply_patch event; the single-event flow applies.
-/// - `Ok(Some(ops))` — codex apply_patch with a valid envelope; emit one
-///   synthetic event per `(op, path)` tuple.
+/// - `Ok(Some(entries))` — codex apply_patch with a valid envelope; emit one
+///   synthetic event per `PatchEntry` (each carries an op, a path, and the
+///   per-hunk text slice for downstream rewriting).
 /// - `Err(reason)` — codex apply_patch but the envelope failed to parse;
 ///   caller must fail closed.
 fn try_parse_apply_patch_multiplex(
     agent_name: &str,
     event: &serde_json::Value,
-) -> Result<Option<Vec<(PatchOp, String)>>, String> {
+) -> Result<Option<Vec<PatchEntry>>, String> {
     if agent_name != "codex" {
         return Ok(None);
     }
@@ -305,14 +321,36 @@ fn try_parse_apply_patch_multiplex(
     // codex-rs/core/src/tools/handlers/apply_patch.rs:
     //   tool_input: serde_json::json!({ "command": command })
     // PermissionRequest carries the same shape. Missing or non-string is
-    // a wire-shape violation we treat as malformed.
+    // a wire-shape violation we treat as malformed. Wire-name verified at
+    // runtime 2026-05-22 against three real Codex 0.132.0 payloads.
     let command = event
         .get("tool_input")
         .and_then(|t| t.get("command"))
         .and_then(|c| c.as_str())
         .ok_or_else(|| "tool_input.command missing or not a string".to_string())?;
-    let ops = apply_patch::parse_apply_patch(command).map_err(|e| e.to_string())?;
-    Ok(Some(ops))
+    let entries = apply_patch::parse_apply_patch(command).map_err(|e| e.to_string())?;
+    Ok(Some(entries))
+}
+
+/// Build a per-event raw_event payload by cloning the original Codex hook
+/// event and replacing `tool_input.command` with a single-hunk envelope
+/// wrapping the given `hunk_text`. Re-serialized to bytes so the downstream
+/// source plugin sees ordinary single-event JSON shape.
+///
+/// Caller already verified the structure (`agent_name == "codex"` AND
+/// `tool_name == "apply_patch"` AND `tool_input.command` exists and is a
+/// string) before reaching this point, so the JSON shape is known; if the
+/// shape is somehow malformed we return Err and the caller fails closed.
+fn rewrite_event_with_hunk(
+    original: &serde_json::Value,
+    hunk_text: &str,
+) -> Result<Vec<u8>, serde_json::Error> {
+    let mut event = original.clone();
+    let wrapped = format!("*** Begin Patch\n{hunk_text}*** End Patch\n");
+    if let Some(tool_input) = event.get_mut("tool_input").and_then(|v| v.as_object_mut()) {
+        tool_input.insert("command".to_string(), serde_json::Value::String(wrapped));
+    }
+    serde_json::to_vec(&event)
 }
 
 /// Write a verdict response JSON to the interceptor and close the stream.

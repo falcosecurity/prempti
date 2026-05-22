@@ -102,84 +102,190 @@ const DELETE_FILE_PREFIX: &str = "*** Delete File: ";
 const UPDATE_FILE_PREFIX: &str = "*** Update File: ";
 const MOVE_TO_PREFIX: &str = "*** Move to: ";
 
-/// Extract the ordered `(operation, path)` tuples from an apply_patch envelope.
-///
-/// Each Add/Delete/Update hunk produces one tuple. An Update hunk with a
-/// `*** Move to:` line produces two tuples in sequence: `(Update, source)`
-/// followed by `(Move, target)`. The caller can use the position in the
-/// returned `Vec` plus the operation to disambiguate rename pairs if needed.
-pub fn parse_apply_patch(text: &str) -> Result<Vec<(PatchOp, String)>, ParseError> {
-    let mut ops: Vec<(PatchOp, String)> = Vec::new();
-    let mut in_envelope = false;
-    let mut saw_end = false;
-    // `*** Move to:` is only valid as the immediate consequence of an Update
-    // hunk, never on its own and never twice for one update. We track that
-    // here rather than via grammar recursion.
-    let mut last_op_was_update = false;
-
-    for raw_line in text.lines() {
-        // Tolerate CRLF by stripping a trailing '\r' before matching the
-        // anchored marker text. The upstream Lark grammar only specifies LF,
-        // but the model occasionally emits CRLF on Windows turns.
-        let line = raw_line.trim_end_matches('\r');
-
-        if line == BEGIN_PATCH {
-            in_envelope = true;
-            continue;
-        }
-        if line == END_PATCH {
-            saw_end = true;
-            break;
-        }
-        // Lines before Begin Patch (e.g. shell prompt prefix in the wire
-        // input) are ignored. Once we hit Begin Patch, we scan headers
-        // until End Patch — content lines (`+`, `-`, ` `, `@@`, etc.)
-        // don't match any of our header prefixes and are silently skipped.
-        if !in_envelope {
-            continue;
-        }
-
-        if let Some(path) = line.strip_prefix(ADD_FILE_PREFIX) {
-            push_op(&mut ops, PatchOp::Add, path)?;
-            last_op_was_update = false;
-        } else if let Some(path) = line.strip_prefix(DELETE_FILE_PREFIX) {
-            push_op(&mut ops, PatchOp::Delete, path)?;
-            last_op_was_update = false;
-        } else if let Some(path) = line.strip_prefix(UPDATE_FILE_PREFIX) {
-            push_op(&mut ops, PatchOp::Update, path)?;
-            last_op_was_update = true;
-        } else if let Some(path) = line.strip_prefix(MOVE_TO_PREFIX) {
-            if !last_op_was_update {
-                return Err(ParseError::OrphanMoveTo);
-            }
-            push_op(&mut ops, PatchOp::Move, path)?;
-            last_op_was_update = false;
-        }
-    }
-
-    if !in_envelope {
-        return Err(ParseError::MissingBeginPatch);
-    }
-    if !saw_end {
-        return Err(ParseError::MissingEndPatch);
-    }
-    if ops.is_empty() {
-        return Err(ParseError::NoHunks);
-    }
-    Ok(ops)
+/// One entry derived from the patch envelope: the (operation, path) pair the
+/// caller acts on, plus the per-hunk text slice the caller can use to rewrite
+/// downstream `tool_input.command` so rules matching on patch content only
+/// see this file's changes, not the whole envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchEntry {
+    pub op: PatchOp,
+    pub path: String,
+    /// The contiguous lines belonging to this entry's source hunk, including
+    /// the hunk header and any body lines, joined with `\n` and terminated
+    /// with `\n`. Does NOT include the surrounding `*** Begin Patch` /
+    /// `*** End Patch` envelope — the caller wraps those.
+    ///
+    /// For an Update hunk with a `*** Move to:` line, the Update entry and
+    /// the Move entry share the **same** `hunk_text` (they're two views of
+    /// one change).
+    pub hunk_text: String,
 }
 
-fn push_op(ops: &mut Vec<(PatchOp, String)>, op: PatchOp, path: &str) -> Result<(), ParseError> {
+/// Internal representation of a hunk found in the envelope.
+struct HunkSpan {
+    primary_op: PatchOp,
+    primary_path: String,
+    /// Optional `*** Move to:` target found inside the hunk. Only valid on
+    /// Update hunks.
+    move_to: Option<String>,
+    /// Inclusive line index of the hunk header in the source line vector.
+    start_line: usize,
+    /// Exclusive line index of where this hunk ends in the source line vector.
+    /// Set to the start of the next hunk header, or to the End-Patch line.
+    end_line: usize,
+}
+
+/// Extract the ordered `PatchEntry` list from an apply_patch envelope.
+///
+/// Each Add/Delete/Update hunk produces one entry. An Update hunk with a
+/// `*** Move to:` line produces two entries in sequence: `(Update, source)`
+/// followed by `(Move, target)`, both sharing the same `hunk_text`.
+///
+/// The `hunk_text` slice per entry is what the broker uses to rewrite
+/// `tool_input.command` for the synthetic Falco event, so content-matching
+/// rules see only the lines belonging to that hunk — not the whole patch
+/// envelope, which would cross-contaminate content from one file's hunk
+/// onto another file's per-event `tool.real_file_path`.
+pub fn parse_apply_patch(text: &str) -> Result<Vec<PatchEntry>, ParseError> {
+    // Split into lines, normalizing CRLF. The upstream Lark grammar only
+    // specifies LF but Codex occasionally emits CRLF on Windows turns. We
+    // keep ownership of each line as a `String` so the returned hunk_text
+    // borrows are detached from the caller's input lifetime.
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
+
+    // Phase 1: locate the envelope. The grammar requires Begin Patch and
+    // End Patch as anchored markers on their own lines; lines before Begin
+    // Patch (e.g. leading prose) are ignored.
+    let begin_idx = lines
+        .iter()
+        .position(|l| l == BEGIN_PATCH)
+        .ok_or(ParseError::MissingBeginPatch)?;
+    let end_offset = lines[begin_idx + 1..]
+        .iter()
+        .position(|l| l == END_PATCH)
+        .ok_or(ParseError::MissingEndPatch)?;
+    let end_idx = begin_idx + 1 + end_offset;
+
+    // Phase 2: scan body for hunk headers. Headers open new hunks; Move-to
+    // attaches to the most recent Update hunk.
+    let mut hunks: Vec<HunkSpan> = Vec::new();
+    for i in (begin_idx + 1)..end_idx {
+        let line = &lines[i];
+        if let Some(path) = line.strip_prefix(ADD_FILE_PREFIX) {
+            push_hunk(&mut hunks, PatchOp::Add, path, i)?;
+        } else if let Some(path) = line.strip_prefix(DELETE_FILE_PREFIX) {
+            push_hunk(&mut hunks, PatchOp::Delete, path, i)?;
+        } else if let Some(path) = line.strip_prefix(UPDATE_FILE_PREFIX) {
+            push_hunk(&mut hunks, PatchOp::Update, path, i)?;
+        } else if let Some(target) = line.strip_prefix(MOVE_TO_PREFIX) {
+            attach_move_to(&mut hunks, target)?;
+        }
+        // Other lines (`@@`, `+`, `-`, ` `, blank, `*** End of File`, etc.)
+        // are hunk body and don't open new hunks.
+    }
+
+    if hunks.is_empty() {
+        return Err(ParseError::NoHunks);
+    }
+
+    // Phase 3: compute each hunk's end line. A hunk ends where the next
+    // hunk's header begins, or at End-Patch for the last hunk.
+    let mut sentinel = end_idx;
+    for h in hunks.iter_mut().rev() {
+        h.end_line = sentinel;
+        sentinel = h.start_line;
+    }
+
+    // Phase 4: materialize entries. Each Update hunk with a Move-to emits
+    // both the Update (source) and the Move (target) entries, sharing the
+    // hunk_text. The order in the returned Vec is: hunk-order × within-hunk
+    // (Update before Move), which matches how synthetic events should be
+    // emitted to Falco.
+    let mut entries: Vec<PatchEntry> = Vec::with_capacity(hunks.len());
+    for h in &hunks {
+        let hunk_text = render_hunk_text(&lines, h.start_line, h.end_line);
+        entries.push(PatchEntry {
+            op: h.primary_op,
+            path: h.primary_path.clone(),
+            hunk_text: hunk_text.clone(),
+        });
+        if let Some(target) = &h.move_to {
+            entries.push(PatchEntry {
+                op: PatchOp::Move,
+                path: target.clone(),
+                hunk_text,
+            });
+        }
+    }
+
+    Ok(entries)
+}
+
+fn push_hunk(
+    hunks: &mut Vec<HunkSpan>,
+    op: PatchOp,
+    path: &str,
+    line_index: usize,
+) -> Result<(), ParseError> {
     if path.is_empty() {
         return Err(ParseError::EmptyPath);
     }
-    ops.push((op, path.to_string()));
+    hunks.push(HunkSpan {
+        primary_op: op,
+        primary_path: path.to_string(),
+        move_to: None,
+        start_line: line_index,
+        end_line: 0, // filled in Phase 3
+    });
     Ok(())
+}
+
+fn attach_move_to(hunks: &mut [HunkSpan], target: &str) -> Result<(), ParseError> {
+    let last = hunks.last_mut().ok_or(ParseError::OrphanMoveTo)?;
+    if !matches!(last.primary_op, PatchOp::Update) {
+        return Err(ParseError::OrphanMoveTo);
+    }
+    if last.move_to.is_some() {
+        // Second `*** Move to:` for the same Update hunk is malformed per
+        // grammar (`change_move?` allows zero or one).
+        return Err(ParseError::OrphanMoveTo);
+    }
+    if target.is_empty() {
+        return Err(ParseError::EmptyPath);
+    }
+    last.move_to = Some(target.to_string());
+    Ok(())
+}
+
+fn render_hunk_text(lines: &[String], start: usize, end: usize) -> String {
+    // Re-join the hunk's lines with LF and a trailing LF so the slice is a
+    // self-contained chunk. The broker wraps this with `*** Begin Patch` /
+    // `*** End Patch` markers when constructing the synthetic event's
+    // `tool_input.command`.
+    let mut s = String::new();
+    for line in &lines[start..end] {
+        s.push_str(line);
+        s.push('\n');
+    }
+    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Project entries down to (op, path) for the bulk of the existing
+    /// tests, which don't care about hunk_text. Per-hunk content has its
+    /// own dedicated tests further down.
+    fn op_paths(entries: &[PatchEntry]) -> Vec<(PatchOp, String)> {
+        entries
+            .iter()
+            .map(|e| (e.op, e.path.clone()))
+            .collect()
+    }
 
     fn ops(items: &[(PatchOp, &str)]) -> Vec<(PatchOp, String)> {
         items
@@ -200,7 +306,7 @@ mod tests {
 *** End Patch
 ";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[(PatchOp::Add, "src/hello.rs")])
         );
     }
@@ -212,7 +318,7 @@ mod tests {
 *** End Patch
 ";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[(PatchOp::Delete, "src/dead.rs")])
         );
     }
@@ -227,7 +333,7 @@ mod tests {
 *** End Patch
 ";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[(PatchOp::Update, "src/lib.rs")])
         );
     }
@@ -246,7 +352,7 @@ mod tests {
 *** End Patch
 ";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[
                 (PatchOp::Update, "old/path.rs"),
                 (PatchOp::Move, "new/path.rs"),
@@ -267,7 +373,7 @@ mod tests {
 *** End Patch
 ";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[
                 (PatchOp::Add, "a.txt"),
                 (PatchOp::Delete, "b.txt"),
@@ -280,7 +386,7 @@ mod tests {
     fn tolerates_crlf_line_endings() {
         let text = "*** Begin Patch\r\n*** Add File: a\r\n+x\r\n*** End Patch\r\n";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[(PatchOp::Add, "a")])
         );
     }
@@ -297,7 +403,7 @@ ignored line two
 *** End Patch
 ";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[(PatchOp::Add, "a")])
         );
     }
@@ -315,7 +421,7 @@ ignored line two
 *** End Patch
 ";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[(PatchOp::Update, "src/lib.rs")])
         );
     }
@@ -328,7 +434,7 @@ ignored line two
 *** End Patch
 ";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[(PatchOp::Add, "dir with space/file name.txt")])
         );
     }
@@ -346,7 +452,7 @@ ignored line two
 *** End Patch
 ";
         assert_eq!(
-            parse_apply_patch(text).unwrap(),
+            op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[(PatchOp::Update, "weird-*** End Patch -is-not-the-end.txt")])
         );
     }
@@ -458,6 +564,122 @@ ignored line two
             parse_apply_patch("").unwrap_err(),
             ParseError::MissingBeginPatch
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Per-hunk content slicing — the load-bearing claim for downstream
+    // rule isolation. Each entry must carry ONLY its hunk's lines, not
+    // the whole envelope, so content-matching rules combined with a
+    // per-event path don't cross-match across files in a multi-file
+    // patch.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn single_add_hunk_text_contains_header_and_body() {
+        let text = "*** Begin Patch
+*** Add File: a.txt
++marker-A
+*** End Patch
+";
+        let entries = parse_apply_patch(text).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].hunk_text,
+            "*** Add File: a.txt\n+marker-A\n"
+        );
+    }
+
+    #[test]
+    fn multi_file_hunk_texts_are_disjoint() {
+        // Each entry's hunk_text must contain only its file's lines.
+        // This is the test that pins the false-positive fix: hunk B's
+        // content must not leak into hunk A's event, and vice versa.
+        let text = "*** Begin Patch
+*** Add File: a.txt
++marker-A
+*** Add File: b.txt
++marker-B
+*** End Patch
+";
+        let entries = parse_apply_patch(text).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        let a = &entries[0];
+        assert_eq!(a.path, "a.txt");
+        assert!(a.hunk_text.contains("marker-A"));
+        assert!(
+            !a.hunk_text.contains("marker-B"),
+            "hunk A's text leaked content from hunk B: {:?}",
+            a.hunk_text
+        );
+
+        let b = &entries[1];
+        assert_eq!(b.path, "b.txt");
+        assert!(b.hunk_text.contains("marker-B"));
+        assert!(
+            !b.hunk_text.contains("marker-A"),
+            "hunk B's text leaked content from hunk A: {:?}",
+            b.hunk_text
+        );
+    }
+
+    #[test]
+    fn update_with_move_shares_one_hunk_text_across_two_entries() {
+        // The Update and Move entries are two views of one change: both
+        // should carry the same hunk_text including the Move-to line.
+        let text = "*** Begin Patch
+*** Update File: src.rs
+*** Move to: dst.rs
+@@
+- old
++ new
+*** End Patch
+";
+        let entries = parse_apply_patch(text).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].op, PatchOp::Update);
+        assert_eq!(entries[1].op, PatchOp::Move);
+        assert_eq!(entries[0].hunk_text, entries[1].hunk_text);
+        // The shared text contains the Move-to line and the change body.
+        assert!(entries[0].hunk_text.contains("*** Move to: dst.rs"));
+        assert!(entries[0].hunk_text.contains("- old"));
+        assert!(entries[0].hunk_text.contains("+ new"));
+    }
+
+    #[test]
+    fn delete_hunk_text_contains_header_only() {
+        // Delete hunks per the grammar carry no body — just the header.
+        let text = "*** Begin Patch
+*** Delete File: gone.txt
+*** End Patch
+";
+        let entries = parse_apply_patch(text).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].hunk_text, "*** Delete File: gone.txt\n");
+    }
+
+    #[test]
+    fn three_file_envelope_each_entry_gets_only_its_lines() {
+        let text = "*** Begin Patch
+*** Add File: a
++only-A
+*** Update File: b
+@@
++only-B
+*** Delete File: c
+*** End Patch
+";
+        let entries = parse_apply_patch(text).unwrap();
+        assert_eq!(entries.len(), 3);
+        let a = &entries[0];
+        let b = &entries[1];
+        let c = &entries[2];
+
+        assert!(a.hunk_text.contains("only-A") && !a.hunk_text.contains("only-B"));
+        assert!(b.hunk_text.contains("only-B") && !b.hunk_text.contains("only-A"));
+        // Delete c has only its header — no markers from a or b.
+        assert!(!c.hunk_text.contains("only-A") && !c.hunk_text.contains("only-B"));
+        assert_eq!(c.hunk_text, "*** Delete File: c\n");
     }
 
     // ------------------------------------------------------------------

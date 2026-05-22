@@ -344,6 +344,39 @@ fn codex_apply_patch_malformed_envelope_fails_closed() {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn codex_apply_patch_per_hunk_content_does_not_cross_match() {
+    // Pins the per-hunk content isolation fix. The "Codex apply_patch
+    // cross-match sentinel" rule (see tests/src/e2e.rs) fires only if
+    // hunk B's synthetic event carries content from hunk A. Without the
+    // fix, every synthetic event has tool_input.command = the whole
+    // patch envelope, so a content marker from hunk A leaks into hunk
+    // B's event and the rule fires (false-positive deny). With the fix,
+    // hunk B's event has tool_input.command = only hunk B's slice, and
+    // the rule never fires.
+    let h = require_falco!();
+    let patch = "\
+*** Begin Patch
+*** Add File: /tmp/myproject/crossmatch-a.txt
++HUNK-A-ONLY-MARKER
+*** Add File: /tmp/myproject/crossmatch-b.txt
++benign content for B
+*** End Patch
+";
+    let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-cross");
+    let r = h.run_hook_for(AgentKind::Codex, &input);
+    assert_codex_pretool_decision(&r, "allow");
+    // Defense in depth: also make sure the sentinel didn't fire (the
+    // allow assertion would also catch this, but an explicit check makes
+    // future regressions easier to diagnose).
+    assert!(
+        !r.stdout.contains("Cross-match sentinel matched"),
+        "cross-match sentinel fired — hunk A's content leaked into hunk B's event: stdout='{}'",
+        r.stdout.trim()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn codex_apply_patch_ssh_path_denies() {
     // The ssh-dir rule's condition is `is_write_tool and tool.real_file_path
     // contains "/.ssh/"`. apply_patch with Add to a path containing /.ssh/
