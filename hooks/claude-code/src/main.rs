@@ -96,7 +96,12 @@ const TIMEOUT_MIN_MS: u64 = 100;
 const TIMEOUT_MAX_MS: u64 = 30000;
 #[cfg(unix)]
 const SOCKET_SUFFIX: &str = "/.prempti/run/broker.sock";
-const INPUT_MAX: usize = 64 * 1024;
+/// Default cap on stdin bytes read from the agent. 4 MiB comfortably covers
+/// realistic tool calls. Overridable via `PREMPTI_INPUT_MAX_BYTES`. The
+/// matching broker-side cap is `max_request_bytes` in the plugin config.
+const INPUT_MAX_DEFAULT: usize = 4 * 1024 * 1024;
+const INPUT_MAX_MIN: usize = 4 * 1024;
+const INPUT_MAX_CEILING: usize = 64 * 1024 * 1024;
 const RESPONSE_MAX: u64 = 64 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -216,6 +221,22 @@ fn get_timeout() -> Duration {
     Duration::from_millis(ms)
 }
 
+/// Resolve the stdin read cap. Defaults to 4 MiB; overridable via
+/// `PREMPTI_INPUT_MAX_BYTES`. Unparseable values fall back to the default
+/// silently (rather than failing closed) so a typo in the env var never
+/// hard-blocks tool calls. Clamped to `[INPUT_MAX_MIN, INPUT_MAX_CEILING]`.
+fn get_input_max() -> usize {
+    parse_input_max(env::var("PREMPTI_INPUT_MAX_BYTES").ok().as_deref())
+}
+
+/// Pure-function form of `get_input_max` for testing. Accepts the raw
+/// env value (None = unset) and returns the resolved, clamped cap.
+fn parse_input_max(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
+        .map(|v| v.clamp(INPUT_MAX_MIN, INPUT_MAX_CEILING))
+        .unwrap_or(INPUT_MAX_DEFAULT)
+}
+
 // ---------------------------------------------------------------------------
 // Socket communication
 // ---------------------------------------------------------------------------
@@ -306,10 +327,15 @@ enum Error {
 // ---------------------------------------------------------------------------
 
 fn run() -> Result<(), Error> {
-    // Step 1: Read stdin (up to INPUT_MAX + 1 to detect overflow).
-    let mut input = Vec::with_capacity(INPUT_MAX);
+    // Step 1: Read stdin (up to input_max + 1 to detect overflow).
+    let input_max = get_input_max();
+    // Cap the initial allocation at 64 KiB regardless of the configured
+    // limit — most events are tiny, and we don't want to allocate
+    // multi-megabyte buffers eagerly. `read_to_end` grows the Vec as
+    // needed for the rare large patches.
+    let mut input = Vec::with_capacity(input_max.min(64 * 1024));
     let bytes_read = io::stdin()
-        .take((INPUT_MAX + 1) as u64)
+        .take((input_max + 1) as u64)
         .read_to_end(&mut input)
         .map_err(|e| Error::InputError(format!("failed to read stdin: {e}")))?;
 
@@ -317,8 +343,11 @@ fn run() -> Result<(), Error> {
         return Err(Error::InputError("empty stdin".into()));
     }
 
-    if bytes_read > INPUT_MAX {
-        return Err(Error::InputError("input too large (max 64KB)".into()));
+    if bytes_read > input_max {
+        return Err(Error::InputError(format!(
+            "input too large (max {} bytes; raise PREMPTI_INPUT_MAX_BYTES if intended)",
+            input_max
+        )));
     }
 
     // Step 2: Extract correlation ID (minimal parse — only tool_use_id).
@@ -515,5 +544,47 @@ mod tests {
             assert!(!env_bool(name), "{v:?} should be falsy");
         }
         env::remove_var(name);
+    }
+
+    // ------------------------------------------------------------------
+    // parse_input_max: env-driven stdin cap with clamping
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_input_max_unset_returns_default() {
+        assert_eq!(parse_input_max(None), INPUT_MAX_DEFAULT);
+    }
+
+    #[test]
+    fn parse_input_max_typo_falls_back_to_default() {
+        // Garbage in the env var must NOT hard-block tool calls; falling
+        // back to the default keeps standalone users out of a typo trap.
+        assert_eq!(parse_input_max(Some("not-a-number")), INPUT_MAX_DEFAULT);
+        assert_eq!(parse_input_max(Some("")), INPUT_MAX_DEFAULT);
+    }
+
+    #[test]
+    fn parse_input_max_clamps_below_min() {
+        assert_eq!(parse_input_max(Some("0")), INPUT_MAX_MIN);
+        assert_eq!(parse_input_max(Some("1")), INPUT_MAX_MIN);
+    }
+
+    #[test]
+    fn parse_input_max_clamps_above_ceiling() {
+        let huge = format!("{}", INPUT_MAX_CEILING * 8);
+        assert_eq!(parse_input_max(Some(&huge)), INPUT_MAX_CEILING);
+    }
+
+    #[test]
+    fn parse_input_max_honors_in_range_value() {
+        let target = 8 * 1024 * 1024; // 8 MiB
+        let s = format!("{target}");
+        assert_eq!(parse_input_max(Some(&s)), target);
+    }
+
+    #[test]
+    fn parse_input_max_trims_whitespace() {
+        let s = format!("  {}  ", 8 * 1024 * 1024);
+        assert_eq!(parse_input_max(Some(&s)), 8 * 1024 * 1024);
     }
 }

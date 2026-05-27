@@ -38,6 +38,16 @@ pub struct CodingAgentConfig {
     /// Tags that indicate evaluation is complete (seen).
     #[serde(default = "default_seen_tags")]
     pub seen_tags: Vec<String>,
+
+    /// Maximum size in bytes of a single wire request the broker will read
+    /// from an interceptor connection. Default 5 MiB (5 * 1024 * 1024).
+    /// Raise this if you see deny responses with reason `"read error"` and
+    /// the interceptor was forwarding a very large `apply_patch` envelope;
+    /// the matching limit on the interceptor side is
+    /// `PREMPTI_INPUT_MAX_BYTES`. Clamped to `[4 KiB, 64 MiB]` at use site
+    /// so a typo can't break the broker.
+    #[serde(default = "default_max_request_bytes")]
+    pub max_request_bytes: u64,
 }
 
 fn default_mode() -> String {
@@ -77,4 +87,13 @@ fn default_ask_tags() -> Vec<String> {
 
 fn default_seen_tags() -> Vec<String> {
     vec!["coding_agent_seen".to_string()]
+}
+
+fn default_max_request_bytes() -> u64 {
+    // 5 MiB: comfortably covers realistic apply_patch multi-file refactors
+    // (the largest captured Codex payloads in dev were ~1 KiB, but model-
+    // generated patches can easily exceed 64 KiB on big refactors). Leaves
+    // headroom over the interceptor's 4 MiB default to account for the
+    // {version, id, agent_name, agent_pid, event} envelope overhead.
+    5 * 1024 * 1024
 }

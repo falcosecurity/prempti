@@ -16,8 +16,20 @@ use crate::broker::{Broker, BrokerStream};
 use crate::event::{EventData, InterceptorRequest};
 use crate::verdict::Verdict;
 
-/// Max request size from an interceptor (64KB + envelope overhead).
-const MAX_REQUEST_SIZE: u64 = 128 * 1024;
+/// Hard lower bound on `max_request_bytes`. Below this even a trivial wire
+/// envelope wouldn't fit, so clamp the configured value to at least this.
+const MIN_REQUEST_BYTES: u64 = 4 * 1024;
+
+/// Hard upper bound on `max_request_bytes`. Protects against typos /
+/// hostile configs that would let a single connection allocate gigabytes
+/// of buffer.
+const MAX_REQUEST_BYTES_CEILING: u64 = 64 * 1024 * 1024;
+
+/// Clamp the configured cap into the supported range. Centralized so the
+/// start path and tests agree on the policy.
+fn clamp_max_request_bytes(configured: u64) -> u64 {
+    configured.clamp(MIN_REQUEST_BYTES, MAX_REQUEST_BYTES_CEILING)
+}
 
 /// Read timeout for interceptor connections (prevents slowloris).
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -89,15 +101,27 @@ fn prepare_listener(socket_path: &str) -> anyhow::Result<UnixListener> {
 /// error can be reported back to Falco as a clean plugin init failure.
 pub fn start(
     socket_path: String,
+    max_request_bytes: u64,
     event_tx: Sender<EventData>,
     broker: Arc<Broker>,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
     let listener = prepare_listener(&socket_path)?;
-    log::info!("broker listening on {}", socket_path);
+    let cap = clamp_max_request_bytes(max_request_bytes);
+    if cap != max_request_bytes {
+        log::warn!(
+            "broker: configured max_request_bytes ({max_request_bytes}) clamped to {cap} \
+             (supported range: {MIN_REQUEST_BYTES}..{MAX_REQUEST_BYTES_CEILING})"
+        );
+    }
+    log::info!(
+        "broker listening on {} (max_request_bytes = {})",
+        socket_path,
+        cap
+    );
 
     std::thread::Builder::new()
         .name("prempti-socket-server".to_string())
-        .spawn(move || run_server(listener, &socket_path, &event_tx, &broker))
+        .spawn(move || run_server(listener, &socket_path, cap, &event_tx, &broker))
         .map_err(|e| anyhow::anyhow!("failed to spawn socket server thread: {e}"))
 }
 
@@ -106,6 +130,7 @@ pub fn start(
 fn run_server(
     listener: UnixListener,
     _socket_path: &str,
+    max_request_bytes: u64,
     event_tx: &Sender<EventData>,
     broker: &Broker,
 ) {
@@ -135,7 +160,7 @@ fn run_server(
                 // the 8 KB Unix-socket sndbuf default.
                 let _ = stream.set_nonblocking(false);
                 let _ = stream.set_read_timeout(Some(CONNECTION_READ_TIMEOUT));
-                if let Err(e) = handle_connection(stream, event_tx, broker) {
+                if let Err(e) = handle_connection(stream, max_request_bytes, event_tx, broker) {
                     log::warn!("connection error: {}", e);
                 }
             }
@@ -154,12 +179,14 @@ fn run_server(
 
 fn handle_connection(
     stream: BrokerStream,
+    max_request_bytes: u64,
     event_tx: &Sender<EventData>,
     broker: &Broker,
 ) -> Result<(), String> {
-    // Read one newline-terminated JSON request.
+    // Read one newline-terminated JSON request, capped at the configured
+    // max so a runaway sender can't exhaust memory.
     let mut line = String::new();
-    BufReader::new((&stream).take(MAX_REQUEST_SIZE))
+    BufReader::new((&stream).take(max_request_bytes))
         .read_line(&mut line)
         .map_err(|e| format!("read error: {e}"))?;
 
@@ -383,6 +410,38 @@ fn write_response_and_close(mut stream: BrokerStream, response: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ----- clamp_max_request_bytes ---------------------------------------
+
+    #[test]
+    fn clamp_max_request_bytes_below_min_raises_to_min() {
+        // Configured 1 KiB → bumped to MIN. Protects against typos that
+        // would otherwise wedge the broker by capping every request below
+        // a viable envelope size.
+        assert_eq!(clamp_max_request_bytes(1_024), MIN_REQUEST_BYTES);
+        assert_eq!(clamp_max_request_bytes(0), MIN_REQUEST_BYTES);
+    }
+
+    #[test]
+    fn clamp_max_request_bytes_above_ceiling_caps_to_ceiling() {
+        let huge = MAX_REQUEST_BYTES_CEILING * 8;
+        assert_eq!(clamp_max_request_bytes(huge), MAX_REQUEST_BYTES_CEILING);
+    }
+
+    #[test]
+    fn clamp_max_request_bytes_passes_through_in_range_value() {
+        let target = 8 * 1024 * 1024;
+        assert_eq!(clamp_max_request_bytes(target), target);
+    }
+
+    #[test]
+    fn clamp_max_request_bytes_exactly_at_bounds_is_unchanged() {
+        assert_eq!(clamp_max_request_bytes(MIN_REQUEST_BYTES), MIN_REQUEST_BYTES);
+        assert_eq!(
+            clamp_max_request_bytes(MAX_REQUEST_BYTES_CEILING),
+            MAX_REQUEST_BYTES_CEILING
+        );
+    }
 
     fn temp_socket_path(label: &str) -> String {
         let dir = std::env::temp_dir();

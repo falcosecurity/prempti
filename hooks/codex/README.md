@@ -132,6 +132,7 @@ If you'd rather hand-roll the config — for example to bind it to a specific ma
 |----------|---------|-------------|
 | `PREMPTI_SOCKET` | `~/.prempti/run/broker.sock` (Unix) / `%LOCALAPPDATA%/prempti/run/broker.sock` (Windows) | Broker socket path |
 | `PREMPTI_TIMEOUT_MS` | `5000` | Socket timeout in ms |
+| `PREMPTI_INPUT_MAX_BYTES` | `4194304` (4 MiB) | Stdin cap. Clamped to `[4 KiB, 64 MiB]`. Raise this (and the plugin's `max_request_bytes`) to support large `apply_patch` envelopes. |
 | `PREMPTI_FAIL_OPEN` | `0` | When set to `1`/`true`, broker communication failures allow the tool call instead of denying it |
 
 Boolean values accept `1`, `true`, `yes`, `on` (case-insensitive, whitespace trimmed).

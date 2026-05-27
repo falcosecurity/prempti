@@ -373,6 +373,7 @@ make falco-windows          # Build only Falco (convenience target)
 |----------|---------|-------------|
 | `PREMPTI_SOCKET` | `~/.prempti/run/broker.sock` | Broker Unix socket path |
 | `PREMPTI_TIMEOUT_MS` | `5000` | Socket read timeout in milliseconds |
+| `PREMPTI_INPUT_MAX_BYTES` | `4194304` (4 MiB) | Interceptor stdin cap (claude + codex). Clamped to `[4 KiB, 64 MiB]`. Pair with the plugin's `max_request_bytes` `init_config` field on the broker side. |
 
 Boolean Prempti env vars are parsed by the `env_bool` helper in
 `hooks/claude-code/src/main.rs`: it accepts `1`, `true`, `yes`, `on`

@@ -191,7 +191,7 @@ See [`docs/plugins/coding-agents-plugin/SPEC.md`](../../plugins/coding-agents-pl
 
 | Category | Trigger | Behavior |
 |----------|---------|----------|
-| **Input error** | Empty stdin, invalid JSON, invalid UTF-8, oversized input (>64KB), unsupported `hook_event_name` (anything other than `PreToolUse` / `PermissionRequest`) | Exit code 2, stderr message |
+| **Input error** | Empty stdin, invalid JSON, invalid UTF-8, oversized input (default 4 MiB; configurable via `PREMPTI_INPUT_MAX_BYTES`), unsupported `hook_event_name` (anything other than `PreToolUse` / `PermissionRequest`) | Exit code 2, stderr message |
 | **Broker error** | Socket unavailable, write/read failure, timeout, malformed response, ID mismatch, invalid decision | Deny by default (fail-closed); allow if `PREMPTI_FAIL_OPEN=1` |
 
 ### Fail-closed by default
@@ -214,6 +214,7 @@ Same env vars as the Claude Code interceptor:
 |----------|----------------|-------------------|-------------|
 | `PREMPTI_SOCKET` | `$HOME/.prempti/run/broker.sock` | `%LOCALAPPDATA%/prempti/run/broker.sock` | Broker socket path |
 | `PREMPTI_TIMEOUT_MS` | `5000` | `5000` | Socket timeout in ms (clamped to 100–30000) |
+| `PREMPTI_INPUT_MAX_BYTES` | `4194304` (4 MiB) | `4194304` (4 MiB) | Cap on stdin bytes read from Codex per hook invocation. Clamped to `[4096, 67108864]` (64 MiB ceiling). Unparseable values fall back to the default. Pair with the plugin's `max_request_bytes` config so the broker doesn't truncate what the interceptor accepted. |
 | `PREMPTI_FAIL_OPEN` | `0` | `0` | When set to `1`/`true`, broker communication failures allow the tool call instead of denying it |
 
 Boolean values follow the project's `env_bool` convention: `1`, `true`, `yes`, `on` (case-insensitive, surrounding whitespace ignored) are truthy; everything else (including unset and empty) is falsy.
@@ -222,13 +223,13 @@ Boolean values follow the project's `env_bool` convention: `1`, `true`, `yes`, `
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Max stdin size | 64 KB | Inputs exceeding this are rejected (exit 2). Real Codex `apply_patch` envelopes for large multi-file refactors can exceed this — raising the cap is open work (see TODOs). |
+| Max stdin size | 4 MiB (default) | Configurable via `PREMPTI_INPUT_MAX_BYTES`; clamped to `[4 KiB, 64 MiB]`. Inputs exceeding the resolved cap are rejected with exit 2 and a stderr message naming the env var to raise. |
 | Max broker response | 64 KB | Responses exceeding this are truncated at read |
 | Socket timeout | 5s (default) | Covers connect + write + read |
 
 ## Known Limitations
 
-1. **64KB stdin cap.** Real `apply_patch` envelopes for multi-file refactors or single-file edits of large configs can exceed 64KB; today those hit `InputError → exit 2` and Codex hard-blocks before any Falco rule fires. Raising the cap (configurable plugin / interceptor limit) is tracked in TODOs.
+1. **`apply_patch` payloads above the configured cap are rejected.** The default 4 MiB stdin cap covers realistic multi-file refactors but is finite — `apply_patch` envelopes that exceed both the interceptor's `PREMPTI_INPUT_MAX_BYTES` and the broker's `max_request_bytes` are dropped (`InputError → exit 2`) before any Falco rule can fire. Raise both knobs in tandem if you need to support larger patches.
 2. **`permission_mode = "dontAsk"` × `PermissionRequest` interaction is unverified at runtime.** Not blocking — `PreToolUse` already denies on `ask` in all modes — but the exact firing semantics of `PermissionRequest` under `dontAsk` are inferred from upstream source, not observed.
 3. **`ask` is lossy.** Codex has no per-call user-confirmation UX at the hook layer, so Falco `ask` verdicts collapse to `deny + reason`. Users see the reason and can retry or change `permission_mode`, but cannot approve a single call inline.
 4. **Installer integration is partial.** `premptictl hook add codex` registers the hook in `~/.codex/hooks.json`; supervisor lifecycle integration (auto register on start, remove on stop alongside Claude's hook) and binary packaging in `installers/{linux,macos,windows}/` are still TODO.

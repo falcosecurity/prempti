@@ -111,6 +111,7 @@ impl Plugin for CodingAgentPlugin {
         // anything mutates shared state (stale socket file, HTTP port, etc).
         let socket_thread = Some(socket_server::start(
             config.socket_path.clone(),
+            config.max_request_bytes,
             event_tx,
             Arc::clone(&broker),
         )?);

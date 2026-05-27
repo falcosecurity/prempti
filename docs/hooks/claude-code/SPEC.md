@@ -148,7 +148,7 @@ Failures trigger `verdict_on_error` (fail-closed by default: deny).
 
 | Category | Trigger | Behavior |
 |----------|---------|----------|
-| **Input error** | Empty stdin, invalid JSON, invalid UTF-8, oversized input (>64KB) | Exit code 2, stderr message |
+| **Input error** | Empty stdin, invalid JSON, invalid UTF-8, oversized input (default 4 MiB; configurable via `PREMPTI_INPUT_MAX_BYTES`) | Exit code 2, stderr message |
 | **Broker error** | Socket unavailable, write/read failure, timeout, malformed response, ID mismatch, invalid decision | Deny by default; allow if `PREMPTI_FAIL_OPEN=1` |
 
 ### Fail-closed by default
@@ -165,13 +165,14 @@ If JSON serialization fails, the interceptor emits a hardcoded deny JSON literal
 |----------|----------------|-------------------|-------------|
 | `PREMPTI_SOCKET` | `$HOME/.prempti/run/broker.sock` | `%LOCALAPPDATA%/prempti/run/broker.sock` | Broker socket path |
 | `PREMPTI_TIMEOUT_MS` | `5000` | `5000` | Socket timeout in ms (clamped to 100–30000) |
+| `PREMPTI_INPUT_MAX_BYTES` | `4194304` (4 MiB) | `4194304` (4 MiB) | Cap on stdin bytes per hook invocation. Clamped to `[4096, 67108864]` (64 MiB ceiling). Unparseable values fall back to the default. Pair with the plugin's `max_request_bytes` config so the broker doesn't truncate what the interceptor accepted. |
 | `PREMPTI_FAIL_OPEN` | `0` | `0` | When set to `1`/`true`, broker communication failures allow the tool call instead of denying it |
 
 ## Limits
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Max stdin size | 64 KB | Inputs exceeding this are rejected (exit 2) |
+| Max stdin size | 4 MiB (default) | Configurable via `PREMPTI_INPUT_MAX_BYTES`; clamped to `[4 KiB, 64 MiB]`. Inputs exceeding the resolved cap are rejected with exit 2 and a stderr message naming the env var to raise. |
 | Max broker response | 64 KB | Responses exceeding this are truncated at read |
 | Socket timeout | 5s (default) | Covers connect+write+read |
 

@@ -29,6 +29,7 @@ The interceptor reads only `tool_use_id` from the input (for the wire protocol r
 |----------|---------|-------------|
 | `PREMPTI_SOCKET` | `~/.prempti/run/broker.sock` | Broker socket path |
 | `PREMPTI_TIMEOUT_MS` | `5000` | Socket timeout in ms |
+| `PREMPTI_INPUT_MAX_BYTES` | `4194304` (4 MiB) | Stdin cap. Clamped to `[4 KiB, 64 MiB]`. Raise (and the plugin's `max_request_bytes`) to support larger hook payloads. |
 | `PREMPTI_FAIL_OPEN` | `0` | When set to `1`/`true`, broker communication failures allow the tool call instead of denying it |
 
 ## Error Handling
