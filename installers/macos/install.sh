@@ -80,7 +80,7 @@ if [[ -n "$PACKAGE_ARCHS" ]]; then
 fi
 
 # Verify we have the package contents.
-for f in bin/falco bin/claude-interceptor bin/premptictl \
+for f in bin/falco bin/claude-interceptor bin/codex-interceptor bin/premptictl \
          share/libcoding_agent.dylib \
          config/falco.yaml config/falco.coding_agents_plugin.yaml \
          config/supervisor.yaml \
@@ -128,6 +128,7 @@ fi
 info "Installing binaries..."
 run install -m 755 "$SCRIPT_DIR/bin/falco" "$PREFIX/bin/falco"
 run install -m 755 "$SCRIPT_DIR/bin/claude-interceptor" "$PREFIX/bin/claude-interceptor"
+run install -m 755 "$SCRIPT_DIR/bin/codex-interceptor" "$PREFIX/bin/codex-interceptor"
 run install -m 755 "$SCRIPT_DIR/bin/premptictl" "$PREFIX/bin/premptictl"
 
 info "Installing plugin..."
@@ -192,6 +193,7 @@ echo ""
 echo "  Install prefix:  $PREFIX"
 echo "  Falco binary:    $PREFIX/bin/falco"
 echo "  Interceptor:     $PREFIX/bin/claude-interceptor"
+echo "  Codex hook:      $PREFIX/bin/codex-interceptor (experimental; opt-in via 'premptictl hook add codex')"
 echo "  Plugin:          $PREFIX/share/libcoding_agent.dylib"
 echo "  Config:          $PREFIX/config/"
 echo "  Rules:           $PREFIX/rules/"

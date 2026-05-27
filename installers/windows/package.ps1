@@ -118,7 +118,8 @@ if (-not $SkipRustBuild) {
     $ErrorActionPreference = $prevPref
 
     $crates = @(
-        @{ Path = 'hooks\claude-code';              Name = 'Interceptor' },
+        @{ Path = 'hooks\claude-code';              Name = 'Claude Code interceptor' },
+        @{ Path = 'hooks\codex';                    Name = 'Codex interceptor (experimental)' },
         @{ Path = 'plugins\coding-agents-plugin';    Name = 'Plugin' },
         @{ Path = 'tools\premptictl';    Name = 'CTL tool' }
     )
@@ -181,6 +182,7 @@ function Find-Artifact([string]$CrateDir, [string]$FileName) {
 }
 
 Copy-Item (Find-Artifact (Join-Path $RootDir 'hooks\claude-code') 'claude-interceptor.exe') (Join-Path $StageDir 'bin\') -Force
+Copy-Item (Find-Artifact (Join-Path $RootDir 'hooks\codex') 'codex-interceptor.exe') (Join-Path $StageDir 'bin\') -Force
 Copy-Item (Find-Artifact (Join-Path $RootDir 'tools\premptictl') 'premptictl.exe') (Join-Path $StageDir 'bin\') -Force
 Copy-Item (Find-Artifact (Join-Path $RootDir 'plugins\coding-agents-plugin') 'coding_agent.dll') (Join-Path $StageDir 'share\') -Force
 

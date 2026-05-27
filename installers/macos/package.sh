@@ -68,7 +68,7 @@ if [[ "$ARCH" == "universal" ]]; then
     cp -R "$ARM_DIR" "$BUILD_DIR"
 
     # Replace binaries with universal (fat) versions.
-    for bin in bin/falco bin/claude-interceptor bin/premptictl; do
+    for bin in bin/falco bin/claude-interceptor bin/codex-interceptor bin/premptictl; do
         echo "  lipo: $bin"
         lipo -create "$ARM_DIR/$bin" "$X86_DIR/$bin" -output "$BUILD_DIR/$bin"
     done
@@ -141,6 +141,7 @@ esac
 if [[ "$ARCH" != "$HOST_ARCH" ]]; then
     CARGO_TARGET_FLAG="--target $RUST_TARGET"
     INTERCEPTOR_BIN="target/$RUST_TARGET/release/claude-interceptor"
+    CODEX_INTERCEPTOR_BIN="target/$RUST_TARGET/release/codex-interceptor"
     PLUGIN_LIB="target/$RUST_TARGET/release/libcoding_agent.dylib"
     CTL_BIN="target/$RUST_TARGET/release/premptictl"
     # Ensure Rust target is installed.
@@ -148,6 +149,7 @@ if [[ "$ARCH" != "$HOST_ARCH" ]]; then
 else
     CARGO_TARGET_FLAG=""
     INTERCEPTOR_BIN="target/release/claude-interceptor"
+    CODEX_INTERCEPTOR_BIN="target/release/codex-interceptor"
     PLUGIN_LIB="target/release/libcoding_agent.dylib"
     CTL_BIN="target/release/premptictl"
 fi
@@ -157,9 +159,11 @@ BUILD_DIR="${ROOT_DIR}/build/${PACKAGE_NAME}"
 
 echo "=== Building Prempti ${VERSION} for darwin/${ARCH} ==="
 
-# Step 1: Build interceptor.
-echo "Building interceptor..."
+# Step 1: Build interceptors (Claude Code + experimental Codex).
+echo "Building Claude Code interceptor..."
 (cd "$ROOT_DIR/hooks/claude-code" && cargo build --release $CARGO_TARGET_FLAG)
+echo "Building Codex interceptor (experimental)..."
+(cd "$ROOT_DIR/hooks/codex" && cargo build --release $CARGO_TARGET_FLAG)
 
 # Step 2: Build plugin.
 echo "Building plugin..."
@@ -185,6 +189,7 @@ mkdir -p "$BUILD_DIR"/{bin,share,config,rules/default,rules/user,launchd}
 
 # Binaries.
 cp "$ROOT_DIR/$INTERCEPTOR_BIN" "$BUILD_DIR/bin/claude-interceptor"
+cp "$ROOT_DIR/$CODEX_INTERCEPTOR_BIN" "$BUILD_DIR/bin/codex-interceptor"
 cp "$ROOT_DIR/$CTL_BIN" "$BUILD_DIR/bin/premptictl"
 cp "$ROOT_DIR/$PLUGIN_LIB" "$BUILD_DIR/share/libcoding_agent.dylib"
 cp "$FALCO_BIN" "$BUILD_DIR/bin/falco"
@@ -226,6 +231,7 @@ rm -rf "$PKG_DIR"
 mkdir -p "$PKG_ROOT"/{bin,share,config,rules/default,rules/user,launchd,log}
 cp "$BUILD_DIR/bin/falco" "$PKG_ROOT/bin/"
 cp "$BUILD_DIR/bin/claude-interceptor" "$PKG_ROOT/bin/"
+cp "$BUILD_DIR/bin/codex-interceptor" "$PKG_ROOT/bin/"
 cp "$BUILD_DIR/bin/premptictl" "$PKG_ROOT/bin/"
 cp "$BUILD_DIR/share/libcoding_agent.dylib" "$PKG_ROOT/share/"
 cp "$BUILD_DIR/config/falco.yaml" "$PKG_ROOT/config/"

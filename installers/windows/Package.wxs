@@ -116,6 +116,9 @@
         <File Source="$(var.StageDir)\bin\claude-interceptor.exe" />
       </Component>
       <Component>
+        <File Source="$(var.StageDir)\bin\codex-interceptor.exe" />
+      </Component>
+      <Component>
         <File Source="$(var.StageDir)\bin\premptictl.exe" />
       </Component>
       <Component>
