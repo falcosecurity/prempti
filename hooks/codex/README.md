@@ -99,7 +99,9 @@ Register the interceptor with:
 premptictl hook add codex
 ```
 
-This writes a `~/.codex/hooks.json` file that mounts the `codex-interceptor` binary on both `PreToolUse` and `PermissionRequest` (matcher `.*`, 30s timeout). The file is self-contained — your `~/.codex/config.toml` is not touched. Remove with `premptictl hook remove codex`; status with `premptictl hook status codex`.
+This writes a `~/.codex/hooks.json` file that mounts the packaged `codex-interceptor` binary on both `PreToolUse` and `PermissionRequest` (matcher `.*`, 30s timeout). The file is self-contained — your `~/.codex/config.toml` is not touched. Remove with `premptictl hook remove codex`; status with `premptictl hook status codex`.
+
+The hook remains opt-in. Once enabled, the Prempti supervisor manages its lifecycle alongside the Claude Code hook: it re-asserts the JSON hook on service start and removes it on service stop so Codex does not fail closed against a dead broker. The opt-in marker remains until `premptictl hook remove codex`.
 
 Codex separately requires hook **trust** before it'll actually run a registered hook. Either pass `--dangerously-bypass-hook-trust` on every `codex` invocation, or use the `/hooks` slash command once in interactive mode to mark the hook as trusted.
 
@@ -145,7 +147,7 @@ Boolean values accept `1`, `true`, `yes`, `on` (case-insensitive, whitespace tri
 
 ## Known v1 limitations
 
-- **Installer wiring deferred.** No `premptictl hook add codex` flow; manual configuration only.
+- **Hook trust is not automated.** `premptictl hook add codex` writes the hook config and opt-in marker, but Codex still requires the user to trust the hook before it runs.
 - **`permission_mode = "dontAsk"` interaction with `PermissionRequest` unverified.** Whether `dontAsk` suppresses `PermissionRequest` entirely or fires it passive-observer needs runtime confirmation. Not blocking — `PreToolUse` already denies in those modes (see above), so this affects only the additional surface area `PermissionRequest` would normally cover.
 - **`ask` is lossy.** Codex has no per-call user-confirmation UX at the hook layer, so Falco `ask` rules become `deny` with the rule reason as the message. Users see the reason and can retry or change permission mode, but can't approve a single call inline.
 

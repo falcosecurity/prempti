@@ -232,7 +232,7 @@ Boolean values follow the project's `env_bool` convention: `1`, `true`, `yes`, `
 1. **`apply_patch` payloads above the configured cap are rejected.** The default 4 MiB stdin cap covers realistic multi-file refactors but is finite — `apply_patch` envelopes that exceed both the interceptor's `PREMPTI_INPUT_MAX_BYTES` and the broker's `max_request_bytes` are dropped (`InputError → exit 2`) before any Falco rule can fire. Raise both knobs in tandem if you need to support larger patches.
 2. **`permission_mode = "dontAsk"` × `PermissionRequest` interaction is unverified at runtime.** Not blocking — `PreToolUse` already denies on `ask` in all modes — but the exact firing semantics of `PermissionRequest` under `dontAsk` are inferred from upstream source, not observed.
 3. **`ask` is lossy.** Codex has no per-call user-confirmation UX at the hook layer, so Falco `ask` verdicts collapse to `deny + reason`. Users see the reason and can retry or change `permission_mode`, but cannot approve a single call inline.
-4. **Installer integration is partial.** `premptictl hook add codex` registers the hook in `~/.codex/hooks.json`; supervisor lifecycle integration (auto register on start, remove on stop alongside Claude's hook) and binary packaging in `installers/{linux,macos,windows}/` are still TODO.
+4. **Hook trust is explicit.** `premptictl hook add codex` installs the packaged hook config and opt-in marker, and the supervisor re-asserts/removes the JSON hook on start/stop. It does not grant Codex hook trust; users must trust the hook with Codex's `/hooks` flow or per-invocation trust bypass before it runs.
 
 ## Broker Responsibilities
 
@@ -253,7 +253,7 @@ Recommended:
 premptictl hook add codex
 ```
 
-This writes `~/.codex/hooks.json` registering the interceptor for both `PreToolUse` and `PermissionRequest` with matcher `.*` (regex; matches every tool name) and a 30-second timeout. Remove with `premptictl hook remove codex`; check state with `premptictl hook status codex`.
+This writes `~/.codex/hooks.json` registering the interceptor for both `PreToolUse` and `PermissionRequest` with matcher `.*` (regex; matches every tool name) and a 30-second timeout. It also records the Codex opt-in marker under the Prempti install prefix, so the supervisor re-asserts the JSON hook on service start and removes it on service stop. Remove with `premptictl hook remove codex`; check state with `premptictl hook status codex`.
 
 The hand-rolled equivalent is documented in [`hooks/codex/README.md`](../../../hooks/codex/README.md). Codex also accepts an inline `[hooks]` block in `~/.codex/config.toml`; both layers are loaded together.
 
