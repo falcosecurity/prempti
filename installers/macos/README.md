@@ -52,6 +52,61 @@ bash installers/macos/build-falco.sh --force          # Rebuild from scratch
 
 The build applies a patch (`falco-macos-http-output.patch`) to enable http_output on macOS with `MINIMAL_BUILD=ON`.
 
+#### http_output patch
+
+Falco's upstream CMakeLists.txt does not build `http_output` on macOS. Three barriers are patched:
+
+1. **Root CMakeLists.txt**: OpenSSL and curl are gated behind `NOT APPLE`. Patch adds an `if(APPLE)` block to include them.
+2. **userspace/falco/CMakeLists.txt**: `outputs_http.cpp` is only compiled when `Linux AND NOT MINIMAL_BUILD`. Patch adds an `if(APPLE)` block to compile it and link curl + OpenSSL.
+3. **falco_outputs.cpp**: The http output class is guarded by `!defined(MINIMAL_BUILD)`, bundling it with gRPC/webserver code. Patch adds a separate `#if defined(HAS_HTTP_OUTPUT) && defined(MINIMAL_BUILD)` guard to enable http output without gRPC.
+
+**Design choice**: `MINIMAL_BUILD=ON` + `HAS_HTTP_OUTPUT` preprocessor define. This avoids pulling in gRPC, protobuf, c-ares, cpp-httplib, and the webserver — only curl-based http output is enabled. The rejected alternative `MINIMAL_BUILD=OFF` would activate all non-minimal code paths (gRPC, webserver, metrics) via preprocessor guards in `start_webserver.cpp`, `start_grpc_server.cpp`, and `falco_outputs.cpp`, requiring all their dependencies.
+
+#### Bundled vs system dependencies
+
+Native macOS builds use **system libraries** for OpenSSL, curl, and zlib:
+
+- `USE_BUNDLED_OPENSSL=OFF` with `OPENSSL_ROOT_DIR` pointing to Homebrew
+- `USE_BUNDLED_CURL=OFF` (macOS ships curl)
+- `USE_BUNDLED_ZLIB=OFF` (macOS ships zlib)
+
+**Why not bundle everything**: Falco's bundled OpenSSL, curl, and zlib use autotools (`./config`, `./configure`) as ExternalProject builds. These autotools scripts do not respect CMake's `CMAKE_OSX_ARCHITECTURES`, causing architecture mismatch errors on macOS (e.g., `archive member 'adler32.o' not a mach-o file`, `invalid control bits in './libcrypto.a'`). System libraries avoid this entirely.
+
+All other bundled dependencies (TBB, nlohmann-json, jsoncpp, re2, valijson, cxxopts) are CMake-based and build correctly on macOS.
+
+#### Cross-compilation (x86_64 on Apple Silicon)
+
+Cross-compilation uses **Rosetta + x86_64 Homebrew** at `/usr/local`:
+
+```bash
+arch -x86_64 /usr/local/bin/cmake -B build-x86_64 -S . [flags]
+arch -x86_64 /usr/local/bin/cmake --build build-x86_64 --target falco
+```
+
+Both `arch -x86_64` (Rosetta) AND `CFLAGS="-arch x86_64"` are required:
+
+- `arch -x86_64` makes autotools scripts detect x86_64 via `uname -m` (OpenSSL's `./config` uses this to select `darwin64-x86_64-cc` vs `darwin64-arm64-cc`)
+- `CFLAGS="-arch x86_64"` forces Apple's universal compiler to produce x86_64 code (without it, the compiler picks its native arm64 slice)
+
+Rejected alternatives:
+
+- **`CMAKE_OSX_ARCHITECTURES` alone**: CMake ExternalProject sub-builds (jsoncpp, TBB, re2) spawn separate cmake processes that ignore the parent's `CMAKE_OSX_ARCHITECTURES`. Empirically verified: `lipo -info` on built jsoncpp showed arm64 despite x86_64 target.
+- **`CFLAGS="-arch x86_64"` without Rosetta**: Environment CFLAGS don't propagate to all ExternalProject sub-builds. OpenSSL's `./config` still detects arm64 via `uname -m` and selects ARM assembly, causing `"unsupported ARM architecture"` errors.
+- **`MACHINE=x86_64` env var**: OpenSSL's `./config` on macOS ignores the `MACHINE` environment variable for platform detection.
+- **Native cmake cross-compilation**: Even with toolchain files, ExternalProject sub-builds don't inherit toolchain settings.
+- **Bundling autotools deps for cross-compilation**: zlib and curl autotools builds produce test programs that can't link cross-arch. OpenSSL selects wrong assembly. Not viable without patching each dependency.
+
+#### Universal binary
+
+`make macos-universal` produces a fat arm64+x86_64 package:
+
+1. Rust components cross-compile natively (`cargo build --target x86_64-apple-darwin` works on ARM without Rosetta)
+2. Falco arm64 builds natively with system libs
+3. Falco x86_64 builds under Rosetta with x86_64 Homebrew
+4. `lipo -create` combines each binary pair into a universal fat binary
+
+Prerequisites: Rosetta, x86_64 Homebrew at `/usr/local` with cmake and openssl@3.
+
 ## Installation
 
 > **Migrating from `coding-agents-kit`?** Prempti does not migrate or remove existing `coding-agents-kit` installations. Uninstall `coding-agents-kit` first to avoid duplicate services or stale Claude Code hooks.

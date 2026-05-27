@@ -253,58 +253,9 @@ All paths on Linux/macOS use `${HOME}` expansion (Falco 0.43 supports `${VAR}` s
 
 ### macOS: Falco build from source
 
-Falco does not provide pre-built macOS binaries. The macOS build system (`installers/macos/build-falco.sh`) clones Falco 0.43.0, applies a patch, and builds from source.
+Falco does not ship pre-built macOS binaries. `installers/macos/build-falco.sh` clones Falco 0.43.0, applies `falco-macos-http-output.patch`, and builds with `MINIMAL_BUILD=ON` + `HAS_HTTP_OUTPUT` (no gRPC, no webserver, just curl-based http_output). System libraries (OpenSSL via Homebrew, system curl + zlib) instead of bundled — Falco's bundled autotools deps don't respect `CMAKE_OSX_ARCHITECTURES`. Cross-compile (x86_64 on Apple Silicon) requires both `arch -x86_64` (so autotools detects via `uname -m`) and `CFLAGS="-arch x86_64"` (so Apple's universal compiler emits x86_64).
 
-#### http_output patch
-
-Falco's upstream CMakeLists.txt does not build `http_output` on macOS. Three barriers were identified and patched (`installers/macos/falco-macos-http-output.patch`):
-
-1. **Root CMakeLists.txt**: OpenSSL and curl are gated behind `NOT APPLE`. Patch adds an `if(APPLE)` block to include them.
-2. **userspace/falco/CMakeLists.txt**: `outputs_http.cpp` is only compiled when `Linux AND NOT MINIMAL_BUILD`. Patch adds an `if(APPLE)` block to compile it and link curl + OpenSSL.
-3. **falco_outputs.cpp**: The http output class is guarded by `!defined(MINIMAL_BUILD)`, which bundles it with gRPC/webserver code. Patch adds a separate `#if defined(HAS_HTTP_OUTPUT) && defined(MINIMAL_BUILD)` guard to enable http output without gRPC.
-
-**Design choice**: `MINIMAL_BUILD=ON` + `HAS_HTTP_OUTPUT` preprocessor define. This avoids pulling in gRPC, protobuf, c-ares, cpp-httplib, and the webserver — only curl-based http output is enabled. Rejected alternative: `MINIMAL_BUILD=OFF` would activate all non-minimal code paths (gRPC, webserver, metrics) via preprocessor guards in `start_webserver.cpp`, `start_grpc_server.cpp`, and `falco_outputs.cpp`, requiring all their dependencies.
-
-#### Bundled vs system dependencies
-
-Native macOS builds use **system libraries** for OpenSSL, curl, and zlib:
-- `USE_BUNDLED_OPENSSL=OFF` with `OPENSSL_ROOT_DIR` pointing to Homebrew
-- `USE_BUNDLED_CURL=OFF` (macOS ships curl)
-- `USE_BUNDLED_ZLIB=OFF` (macOS ships zlib)
-
-**Why not bundle everything**: Falco's bundled OpenSSL, curl, and zlib use autotools (`./config`, `./configure`) as ExternalProject builds. These autotools scripts do not respect CMake's `CMAKE_OSX_ARCHITECTURES`, causing architecture mismatch errors on macOS (e.g., `archive member 'adler32.o' not a mach-o file`, `invalid control bits in './libcrypto.a'`). System libraries avoid this entirely.
-
-All other bundled dependencies (TBB, nlohmann-json, jsoncpp, re2, valijson, cxxopts) are CMake-based and build correctly on macOS.
-
-#### Cross-compilation (x86_64 on Apple Silicon)
-
-Cross-compilation uses **Rosetta + x86_64 Homebrew** at `/usr/local`:
-
-```
-arch -x86_64 /usr/local/bin/cmake -B build-x86_64 -S . [flags]
-arch -x86_64 /usr/local/bin/cmake --build build-x86_64 --target falco
-```
-
-Both `arch -x86_64` (Rosetta) AND `CFLAGS="-arch x86_64"` are required:
-- `arch -x86_64` makes autotools scripts detect x86_64 via `uname -m` (OpenSSL's `./config` uses this to select `darwin64-x86_64-cc` vs `darwin64-arm64-cc`)
-- `CFLAGS="-arch x86_64"` forces Apple's universal compiler to produce x86_64 code (without it, the compiler picks its native arm64 slice)
-
-**Rejected alternatives**:
-- **`CMAKE_OSX_ARCHITECTURES` alone**: CMake ExternalProject sub-builds (jsoncpp, TBB, re2) spawn separate cmake processes that ignore the parent's `CMAKE_OSX_ARCHITECTURES`. Empirically verified: `lipo -info` on built jsoncpp showed arm64 despite x86_64 target.
-- **`CFLAGS="-arch x86_64"` without Rosetta**: Environment CFLAGS don't propagate to all ExternalProject sub-builds. OpenSSL's `./config` still detects arm64 via `uname -m` and selects ARM assembly, causing `"unsupported ARM architecture"` errors.
-- **`MACHINE=x86_64` env var**: OpenSSL's `./config` on macOS ignores the `MACHINE` environment variable for platform detection.
-- **Native cmake cross-compilation**: Even with toolchain files, ExternalProject sub-builds don't inherit toolchain settings.
-- **Bundling autotools deps for cross-compilation**: zlib and curl autotools builds produce test programs that can't link cross-arch. OpenSSL selects wrong assembly. Not viable without patching each dependency.
-
-#### Universal binary
-
-`make macos-universal` produces a fat arm64+x86_64 package:
-1. Rust components cross-compile natively (`cargo build --target x86_64-apple-darwin` works on ARM without Rosetta)
-2. Falco arm64 builds natively with system libs
-3. Falco x86_64 builds under Rosetta with x86_64 Homebrew
-4. `lipo -create` combines each binary pair into a universal fat binary
-
-Prerequisites: Rosetta, x86_64 Homebrew at `/usr/local` with cmake and openssl@3.
+See [`installers/macos/README.md`](installers/macos/README.md) for the full rationale, rejected alternatives, and the universal-binary flow.
 
 ### macOS: service management (launchd)
 
@@ -332,41 +283,9 @@ The macOS implementation includes `is_service_loaded()` for idempotent start/sto
 
 ### Windows: Falco build from source
 
-Falco does not ship pre-built Windows binaries. The Windows build system (`installers/windows/build-falco.ps1`) clones Falco 0.43.0, applies a single patch, and builds with MSVC + vcpkg.
+Falco does not ship pre-built Windows binaries. `installers/windows/build-falco.ps1` clones Falco 0.43.0, applies `falco-windows-http-output.patch` (same `HAS_HTTP_OUTPUT` + `MINIMAL_BUILD=ON` pattern as macOS) and `falco-windows-cmake-generator.patch` (forwards generator/platform to nested libscap/libsinsp configure for ARM64 host correctness), and builds with MSVC + vcpkg using **static curl with the SChannel backend** — no OpenSSL on Windows. The patches also tolerate SChannel-specific curl limitations (`CURLE_NOT_BUILT_IN` on `CURLOPT_NOPROXY` / `CURLOPT_CAINFO` / `CURLOPT_CAPATH`) and fix the POSIX-only relative-path check in Falco's `configuration.h` so absolute Windows plugin paths (`C:/...`) resolve correctly.
 
-#### http_output patch
-
-Falco's upstream CMake configuration does not enable `http_output` on Windows (gated out, and `curl.cmake` tries to pull OpenSSL unconditionally). `installers/windows/falco-windows-http-output.patch` removes those barriers with the same `HAS_HTTP_OUTPUT` pattern used for macOS:
-
-1. **Root CMakeLists.txt**: wraps `find_package(CURL REQUIRED)` in a Windows branch that bypasses `curl.cmake` (which unconditionally includes OpenSSL).
-2. **userspace/falco/CMakeLists.txt**: compiles `outputs_http.cpp` on Windows and links `CURL::libcurl` + `ws2_32`. The imported `CURL::libcurl` target propagates `CURL_STATICLIB` and transitive deps (`crypt32`, `secur32`, …) automatically.
-3. **falco_outputs.cpp**: adds a separate `#if defined(HAS_HTTP_OUTPUT) && defined(MINIMAL_BUILD)` block so http output works without gRPC/webserver.
-4. **outputs_http.cpp**: wraps `CURLOPT_NOPROXY="*"` in a `_WIN32` block that tolerates `CURLE_NOT_BUILT_IN` — the vcpkg `curl` we build against uses the SChannel backend, which omits proxy support. Same tolerance is added around `CURLOPT_CAINFO` / `CURLOPT_CAPATH`: SChannel uses the Windows Certificate Store and does not implement these options, and we only target localhost anyway.
-5. **configuration.h** (plugin library_path): replaces the POSIX-only `path[0] != '/'` relative-path check with `std::filesystem::path::has_root_path()` so absolute Windows paths like `C:/.../coding_agent.dll` are recognized instead of being prepended with the default plugins directory.
-
-Equivalent to the macOS design choice: `MINIMAL_BUILD=ON` + `HAS_HTTP_OUTPUT` preprocessor define. No gRPC, no protobuf, no webserver — only curl-based http output.
-
-#### vcpkg + SChannel, no OpenSSL
-
-Windows uses **static curl from vcpkg with the SChannel backend** (`curl:x64-windows-static` / `curl:arm64-windows-static`). Rationale:
-
-- SChannel is the Windows-native TLS implementation; no need to bundle or link OpenSSL on Windows.
-- Static linking produces a self-contained `falco.exe` that runs without any redistributable DLL dependencies.
-- The curl/vcpkg `schannel` feature name is not required on recent baselines — the build only needs `libcurl.lib` under the selected triplet.
-
-The build script validates `VCPKG_ROOT` (or `VCPKG_INSTALLATION_ROOT`) and refuses to continue if the triplet's `libcurl.lib` is missing. A clean error is much better than a confusing CMake failure deep inside the Falco build.
-
-#### Nested CMake generator forwarding
-
-Falco's `falcosecurity-libs.cmake` spawns a nested `cmake` configure for libscap/libsinsp. Without explicit generator/platform forwarding, the nested run can pick a different Visual Studio generator/platform than the top-level build on ARM64 hosts, producing `VCTargetsPath` / platform mismatch errors at link time. `installers/windows/falco-windows-cmake-generator.patch` adds `-G "${CMAKE_GENERATOR}" -A "${CMAKE_GENERATOR_PLATFORM}"` to the nested configure. If Falco upstream ever changes that file, the patch fails loudly at `git apply --check` instead of silently regressing ARM64 builds.
-
-#### Git Bash caveats
-
-Several Windows-specific traps worth knowing:
-
-- **Path interpretation**: Git Bash's `/usr/bin/tar` interprets `C:` as a remote host. `build-falco.ps1` prepends `C:\Windows\System32` to `PATH` so native `tar.exe` is used instead.
-- **CRLF normalization**: `git apply` on Windows inherits `core.autocrlf`. `build-falco.ps1` clones with `core.autocrlf=false` and normalizes the patch file to LF before applying, otherwise the patch silently fails to match.
-- **Falco launched from Git Bash**: Falco can segfault when launched directly from a Git Bash shell because of stdin/stdout handle differences. The supervisor and `ctl start` spawn Falco via `std::process::Command` from a Windows console subsystem, which avoids the issue. When running Falco manually for rule validation, prefer PowerShell.
+See [`installers/windows/README.md`](installers/windows/README.md) for the http_output patch details, prerequisites, build steps, and known caveats (Git Bash path/CRLF traps, ARM64 host toolchain alignment).
 
 ### Windows: service management
 
