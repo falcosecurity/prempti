@@ -54,8 +54,14 @@ jobs:
       - name: Run interceptor tests
         run: make test-interceptor
 
+      - name: Run Codex interceptor tests
+        run: make test-codex-interceptor
+
       - name: Run e2e tests
         run: make test-e2e
+
+      - name: Run Codex e2e tests
+        run: make test-codex-e2e
 
   build-test-windows:
     name: Build & Test (Windows ${{ matrix.arch }})
@@ -119,8 +125,14 @@ jobs:
       - name: Run interceptor tests
         run: make test-interceptor
 
+      - name: Run Codex interceptor tests
+        run: make test-codex-interceptor
+
       - name: Run e2e tests
         run: make test-e2e
+
+      - name: Run Codex e2e tests
+        run: make test-codex-e2e
 
       - name: Install WiX Toolset
         run: |
@@ -198,8 +210,14 @@ jobs:
       - name: Run interceptor tests
         run: make test-interceptor
 
+      - name: Run Codex interceptor tests
+        run: make test-codex-interceptor
+
       - name: Run e2e tests
         run: make test-e2e
+
+      - name: Run Codex e2e tests
+        run: make test-codex-e2e
 
       - name: Build .pkg
         run: make macos-${{ matrix.arch }}
