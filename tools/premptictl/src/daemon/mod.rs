@@ -13,6 +13,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::hook;
+use crate::hook_codex;
 use config::SupervisorConfig;
 use control::{ControlEvent, SharedState};
 
@@ -55,6 +56,31 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
         }
     }
 
+    // Codex hook: opt-in via `premptictl hook add codex` (which writes the
+    // marker file we check here). Only manage the JSON hook lifecycle when
+    // the marker is present; otherwise leave the user's `~/.codex/hooks.json`
+    // untouched. The marker survives stop/start cycles; the JSON hook is
+    // re-asserted here on start and removed on stop (same failsafe pattern
+    // as Claude's hook — keeps Codex tool calls fail-closed only while the
+    // broker is actually running).
+    let manage_codex = hook_codex::is_enabled(&prefix);
+    if manage_codex {
+        match hook_codex::add(&prefix) {
+            Ok(hook_codex::AddResult::Added(p)) => {
+                eprintln!("supervisor: codex hook registered in {}", p.display());
+            }
+            Ok(hook_codex::AddResult::AlreadyRegistered) => {
+                eprintln!("supervisor: codex hook already registered");
+            }
+            Err(e) => {
+                eprintln!(
+                    "supervisor: failed to (re-)register codex hook: {e} \
+                     (continuing without it; Codex tool calls will run unmonitored)"
+                );
+            }
+        }
+    }
+
     // Reset the process-wide signal flag in case a prior invocation in the
     // same process (tests, embedded use) left it set.
     SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
@@ -64,6 +90,9 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
         Ok(c) => c,
         Err(e) => {
             let _ = hook::remove(&prefix);
+            if manage_codex {
+                let _ = hook_codex::remove(&prefix);
+            }
             cleanup_socket(&paths.supervisor_sock);
             return Err(e);
         }
@@ -166,6 +195,15 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
     // Best-effort cleanup. None of these failing should mask the exit code.
     if let Err(e) = hook::remove(&prefix) {
         eprintln!("supervisor: failed to remove hook: {e}");
+    }
+    // Mirror the Claude failsafe for Codex when the user opted in:
+    // remove the JSON hook so tool calls don't fail-closed against the
+    // dead broker. The marker stays so the next supervisor start
+    // re-asserts the hook.
+    if manage_codex {
+        if let Err(e) = hook_codex::remove(&prefix) {
+            eprintln!("supervisor: failed to remove codex hook: {e}");
+        }
     }
     cleanup_socket(&paths.supervisor_sock);
 

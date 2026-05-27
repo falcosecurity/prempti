@@ -19,6 +19,43 @@ use std::process;
 
 const PRE_TOOL_USE: &str = "PreToolUse";
 const PERMISSION_REQUEST: &str = "PermissionRequest";
+
+/// Marker file written under the install prefix to record that the user
+/// has opted into the Codex hook. The supervisor (`daemon::run`) uses
+/// presence of this file to decide whether to manage the Codex hook
+/// lifecycle alongside Claude's: re-assert on start, remove on stop. The
+/// marker survives stop/start cycles; the JSON hook does not, by design.
+/// Removed by `premptictl hook remove codex` to fully disable.
+const ENABLE_MARKER_BASENAME: &str = "codex-hook-enabled";
+
+fn enable_marker_path(prefix: &Path) -> PathBuf {
+    prefix.join("config").join(ENABLE_MARKER_BASENAME)
+}
+
+fn mark_enabled(prefix: &Path) -> Result<(), String> {
+    let marker = enable_marker_path(prefix);
+    if let Some(parent) = marker.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("error creating {}: {e}", parent.display()))?;
+    }
+    fs::write(&marker, b"")
+        .map_err(|e| format!("error writing marker {}: {e}", marker.display()))
+}
+
+fn mark_disabled(prefix: &Path) -> Result<(), String> {
+    let marker = enable_marker_path(prefix);
+    if !marker.exists() {
+        return Ok(());
+    }
+    fs::remove_file(&marker).map_err(|e| format!("error removing {}: {e}", marker.display()))
+}
+
+/// Whether the user has opted into the Codex hook for this install
+/// prefix. Read by the supervisor at start; the marker is created by
+/// `cli_add` and removed by `cli_remove`.
+pub fn is_enabled(prefix: &Path) -> bool {
+    enable_marker_path(prefix).exists()
+}
 /// Matcher regex applied to `tool_name` per Codex's hook config schema.
 /// The interceptor dispatches internally on `hook_event_name`, so we want
 /// every tool to reach it.
@@ -94,12 +131,11 @@ pub enum RemoveResult {
     NotFound,
 }
 
-/// Quick yes/no probe used by future supervisor integration to decide
-/// whether to manage the Codex hook lifecycle alongside Claude's. Not
-/// wired into the supervisor yet — Codex is opt-in via explicit
-/// `premptictl hook add codex`, not auto-managed on service start —
-/// so this is currently called only at the test boundary.
-#[allow(dead_code)]
+/// Whether the Codex JSON hook is currently registered in `~/.codex/hooks.json`.
+/// Distinct from `is_enabled` (the marker that records user intent): the
+/// supervisor removes the JSON on service stop but keeps the marker, so
+/// across a stop/start window `is_registered` may be false even when
+/// `is_enabled` is true.
 pub fn is_registered() -> bool {
     let path = codex_hooks_path();
     if !path.exists() {
@@ -276,10 +312,20 @@ pub fn cli_add(prefix: &Path) {
     match add(prefix) {
         Ok(AddResult::Added(path)) => {
             println!("Codex hook registered in {}", path.display());
+            if let Err(e) = mark_enabled(prefix) {
+                eprintln!("warning: hook registered but enable marker failed: {e}");
+                eprintln!("         (the supervisor won't re-assert this hook across service restarts)");
+            }
             print_warning();
         }
         Ok(AddResult::AlreadyRegistered) => {
             println!("Codex hook already registered.");
+            // Ensure the marker exists even if the JSON was already there —
+            // covers the case of a stale install where the marker was
+            // missed.
+            if let Err(e) = mark_enabled(prefix) {
+                eprintln!("warning: failed to record enable marker: {e}");
+            }
         }
         Err(msg) => {
             eprintln!("{msg}");
@@ -289,6 +335,11 @@ pub fn cli_add(prefix: &Path) {
 }
 
 pub fn cli_remove(prefix: &Path) {
+    // Drop the marker first so a racing supervisor start can't re-assert
+    // the JSON hook between our two operations.
+    if let Err(e) = mark_disabled(prefix) {
+        eprintln!("warning: failed to remove enable marker: {e}");
+    }
     match remove(prefix) {
         Ok(RemoveResult::Removed(path)) => {
             println!("Codex hook removed from {}", path.display());
@@ -303,17 +354,18 @@ pub fn cli_remove(prefix: &Path) {
     }
 }
 
-pub fn cli_status() {
-    let path = codex_hooks_path();
-    if !path.exists() {
-        println!("Codex hook: not registered (no hooks.json).");
-        return;
-    }
-    let data = fs::read_to_string(&path).unwrap_or_default();
-    if data.contains("codex-interceptor") {
-        println!("Codex hook: registered.");
-    } else {
-        println!("Codex hook: not registered.");
+pub fn cli_status(prefix: &Path) {
+    let registered = is_registered();
+    let enabled = is_enabled(prefix);
+    match (registered, enabled) {
+        (true, true) => println!("Codex hook: registered, supervisor-managed."),
+        (true, false) => println!(
+            "Codex hook: registered (no enable marker — supervisor will not re-assert across restarts)."
+        ),
+        (false, true) => println!(
+            "Codex hook: enabled marker present but JSON missing (expected briefly between supervisor stop and next start)."
+        ),
+        (false, false) => println!("Codex hook: not registered."),
     }
 }
 
@@ -515,6 +567,63 @@ mod tests {
             groups[0]["hooks"][0]["command"].as_str().unwrap(),
             "python my-pre-tool-rule.py"
         );
+    }
+
+    // ----- enable marker lifecycle ------------------------------------
+
+    fn temp_prefix(label: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "prempti-hookcodex-{}-{}-{}",
+            std::process::id(),
+            label,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&p);
+        p
+    }
+
+    #[test]
+    fn enable_marker_path_is_under_config_dir() {
+        let prefix = PathBuf::from("/some/install");
+        let m = enable_marker_path(&prefix);
+        assert_eq!(m, PathBuf::from("/some/install/config/codex-hook-enabled"));
+    }
+
+    #[test]
+    fn is_enabled_false_when_prefix_missing() {
+        let prefix = temp_prefix("absent");
+        // Prefix dir doesn't exist; nothing to read.
+        assert!(!is_enabled(&prefix));
+    }
+
+    #[test]
+    fn mark_enabled_then_is_enabled_returns_true() {
+        let prefix = temp_prefix("mark-enable");
+        mark_enabled(&prefix).expect("mark_enabled");
+        assert!(is_enabled(&prefix));
+        // Cleanup.
+        let _ = fs::remove_dir_all(&prefix);
+    }
+
+    #[test]
+    fn mark_disabled_then_is_enabled_returns_false() {
+        let prefix = temp_prefix("mark-disable");
+        mark_enabled(&prefix).expect("mark_enabled");
+        assert!(is_enabled(&prefix));
+        mark_disabled(&prefix).expect("mark_disabled");
+        assert!(!is_enabled(&prefix));
+        let _ = fs::remove_dir_all(&prefix);
+    }
+
+    #[test]
+    fn mark_disabled_is_idempotent_when_marker_absent() {
+        let prefix = temp_prefix("disable-absent");
+        // Never enabled; disabling should still succeed (no-op).
+        mark_disabled(&prefix).expect("idempotent disable");
+        assert!(!is_enabled(&prefix));
     }
 
     #[test]

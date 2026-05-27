@@ -186,6 +186,7 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
     // restore after the restart cycle.
     let was_running = is_service_running();
     let hook_was_registered = hook::is_registered();
+    let codex_hook_was_enabled = hook_codex::is_enabled(prefix);
 
     fs::write(&config_path, new_data).unwrap_or_else(|e| {
         eprintln!("error writing {}: {e}", config_path.display());
@@ -202,23 +203,29 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
     print_restart_warning();
     eprintln!();
 
-    service_restart_inner(prefix, hook_was_registered);
+    service_restart_inner(prefix, hook_was_registered, codex_hook_was_enabled);
 
     println!();
     println!("Mode set to: {mode}");
 }
 
-/// Stop the service, re-register the hook to keep the gap fail-closed, then
+/// Stop the service, re-register hooks to keep the gap fail-closed, then
 /// start the service again. Shared by `ctl restart` and `ctl mode`.
-fn service_restart_inner(prefix: &PathBuf, restore_hook: bool) {
+fn service_restart_inner(prefix: &PathBuf, restore_hook: bool, restore_codex_hook: bool) {
     service_stop(false);
 
     // The supervisor removes the hook on stop; without re-adding it here,
     // the gap between stop and start would let tool calls through
-    // unchecked. `hook::add` is idempotent.
+    // unchecked. `hook::add` is idempotent. Mirror the same failsafe for
+    // the Codex hook when the user has opted in (enable marker present).
     if restore_hook {
         if let Err(e) = hook::add(prefix) {
             eprintln!("warning: failed to re-register hook during restart: {e}");
+        }
+    }
+    if restore_codex_hook {
+        if let Err(e) = hook_codex::add(prefix) {
+            eprintln!("warning: failed to re-register codex hook during restart: {e}");
         }
     }
 
@@ -227,9 +234,10 @@ fn service_restart_inner(prefix: &PathBuf, restore_hook: bool) {
 
 fn service_restart(prefix: &PathBuf) {
     let restore_hook = hook::is_registered();
+    let restore_codex_hook = hook_codex::is_enabled(prefix);
     println!("Restarting service...");
     eprintln!();
-    service_restart_inner(prefix, restore_hook);
+    service_restart_inner(prefix, restore_hook, restore_codex_hook);
     println!();
     println!("Service restarted.");
 }
@@ -967,13 +975,17 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
             .status();
     }
 
-    // 2. Remove the hook (safety net).
+    // 2. Remove the hooks (safety net).
     // The service's ExecStopPost (Linux), launcher trap (macOS), or launcher
-    // PowerShell `finally` block (Windows) should have removed the hook
-    // already. But if the service wasn't running or the stop hooks didn't
-    // fire, the hook would stay registered and brick Claude Code.
+    // PowerShell `finally` block (Windows) should have removed the Claude
+    // hook already. But if the service wasn't running or the stop hooks
+    // didn't fire, the hook would stay registered and brick Claude Code.
+    // The Codex hook gets the same treatment — plus removal of the enable
+    // marker so uninstall is a full reset.
     println!("Removing Claude Code hook...");
     hook::cli_remove(prefix);
+    println!("Removing Codex hook (if registered)...");
+    hook_codex::cli_remove(prefix);
 
     // 3. Remove the installation directory.
     if prefix.exists() {
@@ -1871,7 +1883,7 @@ fn main() {
         ["hook", "status"] | ["hook", "status", "claude"] => hook::cli_status(),
         ["hook", "add", "codex"] => hook_codex::cli_add(&prefix),
         ["hook", "remove", "codex"] => hook_codex::cli_remove(&prefix),
-        ["hook", "status", "codex"] => hook_codex::cli_status(),
+        ["hook", "status", "codex"] => hook_codex::cli_status(&prefix),
         ["mode"] => mode_get(&prefix),
         ["mode", mode] => mode_set(&prefix, mode),
         ["start"] => service_start(&prefix),
