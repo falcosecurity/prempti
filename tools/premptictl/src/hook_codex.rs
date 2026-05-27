@@ -142,7 +142,9 @@ pub fn is_registered() -> bool {
         return false;
     }
     fs::read_to_string(&path)
-        .map(|data| data.contains("codex-interceptor"))
+        .ok()
+        .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+        .map(|settings| has_owned_codex_interceptor_hook(&settings))
         .unwrap_or(false)
 }
 
@@ -178,7 +180,7 @@ pub fn add(prefix: &Path) -> Result<AddResult, String> {
 
 /// Ensure our hook is registered under `hooks.<event>[].hooks[]`. Returns
 /// true when a new entry was appended, false when our hook was already
-/// present (ownership detected via substring on `codex-interceptor`).
+/// present.
 fn ensure_event_hook(settings: &mut serde_json::Value, event: &str, hook_cmd: &str) -> bool {
     let hooks = settings
         .as_object_mut()
@@ -197,7 +199,7 @@ fn ensure_event_hook(settings: &mut serde_json::Value, event: &str, hook_cmd: &s
                 for h in group_hooks {
                     if h.get("command")
                         .and_then(|c| c.as_str())
-                        .is_some_and(|c| c.contains("codex-interceptor"))
+                        .is_some_and(|c| is_owned_codex_interceptor_command(c, hook_cmd))
                     {
                         return false;
                     }
@@ -215,6 +217,32 @@ fn ensure_event_hook(settings: &mut serde_json::Value, event: &str, hook_cmd: &s
         }]
     }));
     true
+}
+
+fn has_owned_codex_interceptor_hook(settings: &serde_json::Value) -> bool {
+    let Some(hooks) = settings.get("hooks").and_then(|h| h.as_object()) else {
+        return false;
+    };
+    for event in [PRE_TOOL_USE, PERMISSION_REQUEST] {
+        let Some(groups) = hooks.get(event).and_then(|p| p.as_array()) else {
+            continue;
+        };
+        for group in groups {
+            let Some(group_hooks) = group.get("hooks").and_then(|h| h.as_array()) else {
+                continue;
+            };
+            for hook in group_hooks {
+                if hook
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| is_owned_codex_interceptor_command(c, ""))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 pub fn remove(prefix: &Path) -> Result<RemoveResult, String> {
@@ -454,6 +482,35 @@ mod tests {
     }
 
     #[test]
+    fn add_does_not_treat_arbitrary_user_hook_as_registered() {
+        let mut settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": ".*",
+                    "hooks": [{"type": "command", "command": "python my-codex-interceptor.py"}]
+                }]
+            }
+        });
+        let added_pre = ensure_event_hook(&mut settings, PRE_TOOL_USE, "$HOME/.prempti/bin/codex-interceptor");
+        assert!(added_pre, "user hook name must not block Prempti registration");
+
+        let groups = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(
+            groups.len(),
+            2,
+            "user hook group and Prempti hook group should coexist"
+        );
+        assert_eq!(
+            groups[0]["hooks"][0]["command"].as_str().unwrap(),
+            "python my-codex-interceptor.py"
+        );
+        assert_eq!(
+            groups[1]["hooks"][0]["command"].as_str().unwrap(),
+            "$HOME/.prempti/bin/codex-interceptor"
+        );
+    }
+
+    #[test]
     fn add_recovers_partial_registration_state() {
         // Half-registered: PreToolUse has our hook, PermissionRequest doesn't.
         // ensure_event_hook should add the missing half without disturbing
@@ -472,6 +529,35 @@ mod tests {
         assert!(added_pr, "PermissionRequest was missing, should be added");
         assert!(settings["hooks"]["PermissionRequest"].is_array());
         assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn registered_probe_ignores_arbitrary_user_hook_names() {
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": ".*",
+                    "hooks": [
+                        {"type": "command", "command": "python my-codex-interceptor.py"},
+                        {"type": "command", "command": "echo codex-interceptor || true"}
+                    ]
+                }]
+            }
+        });
+        assert!(!has_owned_codex_interceptor_hook(&settings));
+    }
+
+    #[test]
+    fn registered_probe_detects_owned_codex_hook() {
+        let settings = json!({
+            "hooks": {
+                "PermissionRequest": [{
+                    "matcher": ".*",
+                    "hooks": [{"type": "command", "command": "/opt/prempti/bin/codex-interceptor"}]
+                }]
+            }
+        });
+        assert!(has_owned_codex_interceptor_hook(&settings));
     }
 
     // ----- strip_owned_hooks: mixed-with-user preservation -----------
