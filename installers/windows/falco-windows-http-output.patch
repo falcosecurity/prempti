@@ -1,198 +1,38 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b678374..bec393f 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -143,10 +143,17 @@ if(NOT DEFINED FALCO_COMPONENT_NAME)
- endif()
+diff --git a/userspace/falco/CMakeLists.txt b/userspace/falco/CMakeLists.txt
+index 72b1629..aaa58bf 100644
+--- a/userspace/falco/CMakeLists.txt
++++ b/userspace/falco/CMakeLists.txt
+@@ -92,6 +92,14 @@ if(BUILD_HTTP_OUTPUT)
+ 	endif()
  
- if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
--	set(CMAKE_INSTALL_PREFIX
--		/usr
--		CACHE PATH "Default install path" FORCE
--	)
+ 	list(APPEND FALCO_LIBRARIES "${CURL_LIBRARIES}")
++
++	# HTTP output on Windows (Prempti)
++	# Static vcpkg libcurl + curl_global_init() pull in Winsock (WSAStartup); the
++	# ${CURL_LIBRARIES} variable from find_package(CURL) does not reliably propagate
++	# the ws2_32 system dependency for a static link, so link it explicitly.
 +	if(WIN32)
-+		set(CMAKE_INSTALL_PREFIX
-+			"C:/Program Files/${CMAKE_PROJECT_NAME}"
-+			CACHE PATH "Default install path" FORCE
-+		)
-+	else()
-+		set(CMAKE_INSTALL_PREFIX
-+			/usr
-+			CACHE PATH "Default install path" FORCE
-+		)
++		list(APPEND FALCO_LIBRARIES ws2_32)
 +	endif()
  endif()
  
- set(CMD_MAKE make)
-@@ -197,6 +204,12 @@ if(NOT WIN32
- 	include(cpp-httplib)
- endif()
- 
-+# HTTP output on Windows (Prempti)
-+# Bypass curl.cmake (its unconditional include(openssl) fails on Windows).
-+if(WIN32)
-+	find_package(CURL REQUIRED)
-+endif()
-+
- include(cxxopts)
- 
- # One TBB
-diff --git a/userspace/falco/CMakeLists.txt b/userspace/falco/CMakeLists.txt
-index 5ae5b83..8428f83 100644
---- a/userspace/falco/CMakeLists.txt
-+++ b/userspace/falco/CMakeLists.txt
-@@ -130,6 +130,15 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux" AND NOT MINIMAL_BUILD)
- 	)
- endif()
- 
-+# HTTP output on Windows (Prempti)
-+# CURL::libcurl imported target propagates CURL_STATICLIB define and
-+# transitive dependencies (crypt32, secur32, etc.) automatically.
-+if(WIN32)
-+	target_sources(falco_application PRIVATE outputs_http.cpp)
-+	target_link_libraries(falco_application CURL::libcurl ws2_32)
-+	target_compile_definitions(falco_application PRIVATE HAS_HTTP_OUTPUT)
-+endif()
-+
- if(EMSCRIPTEN)
- 	target_compile_options(falco_application PRIVATE "-sDISABLE_EXCEPTION_CATCHING=0")
- endif()
-diff --git a/userspace/falco/configuration.h b/userspace/falco/configuration.h
-index 10238cc..6085255 100644
---- a/userspace/falco/configuration.h
-+++ b/userspace/falco/configuration.h
-@@ -31,6 +31,7 @@ limitations under the License.
- #include <set>
- #include <iostream>
- #include <fstream>
-+#include <filesystem>
- 
- #include "config_falco.h"
- #include "yaml_helper.h"
-@@ -420,9 +421,34 @@ struct convert<falco_configuration::plugin_config> {
- 			return false;
- 		}
- 		rhs.m_library_path = node["library_path"].as<std::string>();
--		if(!rhs.m_library_path.empty() && rhs.m_library_path.at(0) != '/') {
--			// prepend share dir if path is not absolute
--			rhs.m_library_path = std::string(FALCO_ENGINE_PLUGINS_DIR) + rhs.m_library_path;
-+		if(!rhs.m_library_path.empty() &&
-+		   !std::filesystem::path(rhs.m_library_path).has_root_path()) {
-+			// Relative path: resolve against the plugins directory
-+			// and verify the result stays within it.
-+			auto full_path = std::filesystem::path(FALCO_ENGINE_PLUGINS_DIR) / rhs.m_library_path;
-+			// lexically_normal resolves . and .. purely lexically,
-+			// without filesystem access (unlike weakly_canonical which
-+			// leaves .. unresolved for non-existent path components).
-+			auto normalized = full_path.lexically_normal();
-+			auto plugins_dir = std::filesystem::path(FALCO_ENGINE_PLUGINS_DIR).lexically_normal();
-+			auto rel = normalized.lexically_relative(plugins_dir);
-+			if(rel.empty()) {
-+				throw YAML::Exception(node["library_path"].Mark(),
-+				                      "plugin library_path '" +
-+				                              node["library_path"].as<std::string>() +
-+				                              "' resolves outside the plugins directory (" +
-+				                              std::string(FALCO_ENGINE_PLUGINS_DIR) + ")");
-+			}
-+			for(const auto& component : rel) {
-+				if(component == "..") {
-+					throw YAML::Exception(node["library_path"].Mark(),
-+					                      "plugin library_path '" +
-+					                              node["library_path"].as<std::string>() +
-+					                              "' resolves outside the plugins directory (" +
-+					                              std::string(FALCO_ENGINE_PLUGINS_DIR) + ")");
-+				}
-+			}
-+			rhs.m_library_path = normalized.string();
- 		}
- 
- 		if(node["init_config"] && !node["init_config"].IsNull()) {
-diff --git a/userspace/falco/falco_outputs.cpp b/userspace/falco/falco_outputs.cpp
-index 0023756..f77ff91 100644
---- a/userspace/falco/falco_outputs.cpp
-+++ b/userspace/falco/falco_outputs.cpp
-@@ -36,6 +36,10 @@ limitations under the License.
- #include "outputs_http.h"
- #include "outputs_grpc.h"
- #endif
-+#if defined(HAS_HTTP_OUTPUT) && defined(MINIMAL_BUILD)
-+#include "outputs_http.h"
-+#include <curl/curl.h>
-+#endif
- 
- static const char *s_internal_source = "internal";
- 
-@@ -104,6 +108,13 @@ void falco_outputs::add_output(const falco::outputs::config &oc) {
- 	} else if(oc.name == "grpc") {
- 		oo = std::make_unique<falco::outputs::output_grpc>();
- 	}
-+#endif
-+#if defined(HAS_HTTP_OUTPUT) && defined(MINIMAL_BUILD)
-+	else if(oc.name == "http") {
-+		// Explicit init required on Windows for thread-safe Winsock setup.
-+		curl_global_init(CURL_GLOBAL_DEFAULT);
-+		oo = std::make_unique<falco::outputs::output_http>();
-+	}
- #endif
- 	else {
- 		throw falco_exception("Output not supported: " + oc.name);
+ if(NOT EMSCRIPTEN AND NOT MINIMAL_BUILD)
 diff --git a/userspace/falco/outputs_http.cpp b/userspace/falco/outputs_http.cpp
-index 9ef60d7..51ceea6 100644
+index 47d2e39..d4a7f5d 100644
 --- a/userspace/falco/outputs_http.cpp
 +++ b/userspace/falco/outputs_http.cpp
-@@ -66,6 +66,19 @@ bool falco::outputs::output_http::init(const config &oc,
- 	CHECK_RES(curl_easy_setopt(m_curl, CURLOPT_URL, unquotedUrl.c_str()));
- 
+@@ -72,6 +72,14 @@ bool falco::outputs::output_http::init(const config &oc,
  	CHECK_RES(curl_easy_setopt(m_curl, CURLOPT_USERAGENT, m_oc.options["user_agent"].c_str()));
-+
-+#ifdef _WIN32
-+	// Bypass system/environment proxy settings for localhost alert delivery.
-+	// Tolerate CURLE_NOT_BUILT_IN: curl built without proxy support (e.g.
-+	// SChannel backend) has no proxy to bypass — the option is a no-op.
-+	{
-+		CURLcode noproxy_res = curl_easy_setopt(m_curl, CURLOPT_NOPROXY, "*");
-+		if(noproxy_res != CURLE_OK && noproxy_res != CURLE_NOT_BUILT_IN) {
-+			res = noproxy_res;
-+		}
-+	}
-+#endif
-+
  	CHECK_RES(curl_easy_setopt(m_curl, CURLOPT_POSTFIELDSIZE, -1L));
  
- 	if(m_oc.options["insecure"] == std::string("true")) {
-@@ -78,6 +91,27 @@ bool falco::outputs::output_http::init(const config &oc,
- 		CHECK_RES(curl_easy_setopt(m_curl, CURLOPT_SSLKEY, m_oc.options["client_key"].c_str()));
- 	}
- 
 +#ifdef _WIN32
-+	// On Windows with SChannel, CA path/cert options are not supported —
-+	// SChannel uses the Windows Certificate Store automatically.
-+	// Tolerate CURLE_NOT_BUILT_IN for CA options (plain HTTP to localhost
-+	// does not need CA verification at all).
-+	{
-+		auto win_ca_setopt = [&](CURLoption opt, const char* val) {
-+			CURLcode r = curl_easy_setopt(m_curl, opt, val);
-+			if(r != CURLE_OK && r != CURLE_NOT_BUILT_IN) {
-+				res = r;
-+			}
-+		};
-+		if(!m_oc.options["ca_cert"].empty()) {
-+			win_ca_setopt(CURLOPT_CAINFO, m_oc.options["ca_cert"].c_str());
-+		} else if(!m_oc.options["ca_bundle"].empty()) {
-+			win_ca_setopt(CURLOPT_CAINFO, m_oc.options["ca_bundle"].c_str());
-+		} else {
-+			win_ca_setopt(CURLOPT_CAPATH, m_oc.options["ca_path"].c_str());
-+		}
-+	}
-+#else
- 	if(!m_oc.options["ca_cert"].empty()) {
- 		CHECK_RES(curl_easy_setopt(m_curl, CURLOPT_CAINFO, m_oc.options["ca_cert"].c_str()));
- 	} else if(!m_oc.options["ca_bundle"].empty()) {
-@@ -85,6 +119,7 @@ bool falco::outputs::output_http::init(const config &oc,
- 	} else {
- 		CHECK_RES(curl_easy_setopt(m_curl, CURLOPT_CAPATH, m_oc.options["ca_path"].c_str()));
- 	}
++	// HTTP output on Windows (Prempti)
++	// Bypass system/environment proxy settings for localhost alert delivery.
++	// CHECK_RES tolerates CURLE_NOT_BUILT_IN, so a curl built without proxy
++	// support (e.g. the SChannel backend) treats this as a harmless no-op.
++	CHECK_RES(curl_easy_setopt(m_curl, CURLOPT_NOPROXY, "*"));
 +#endif
- 
- 	if(m_oc.options["echo"] == std::string("false")) {
- 		// If echo==true, libcurl defaults to fwrite to stdout, ie: echoing
++
+ 	if(m_oc.options["insecure"] == std::string("true")) {
+ 		CHECK_RES(curl_easy_setopt(m_curl, CURLOPT_SSL_VERIFYPEER, 0L));
+ 		CHECK_RES(curl_easy_setopt(m_curl, CURLOPT_SSL_VERIFYHOST, 0L));

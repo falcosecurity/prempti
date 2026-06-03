@@ -9,7 +9,7 @@
     Requires vcpkg with curl installed (SChannel backend, static).
 
 .PARAMETER Version
-    Falco version tag to build (default: 0.43.0).
+    Falco version tag to build (default: 0.44.0).
 
 .PARAMETER OutputDir
     Directory for the built falco.exe (default: build/falco-VERSION-windows-ARCH).
@@ -21,7 +21,7 @@
     Rebuild even if cached build exists.
 #>
 param(
-    [string]$Version = '0.43.0',
+    [string]$Version = '0.44.0',
     [string]$OutputDir = '',
     [string]$Arch = 'x64',
     [switch]$Force
@@ -130,13 +130,13 @@ if (-not (Test-Path (Join-Path $SrcDir 'CMakeLists.txt'))) {
 # ---------------------------------------------------------------------------
 
 $PatchDir = $ScriptDir  # patches are alongside this script
+# Since Falco 0.44 only the ws2_32 link + CURLOPT_NOPROXY remain Prempti-specific.
+# http_output (now the BUILD_HTTP_OUTPUT option, passed below), the SChannel
+# CURLE_NOT_BUILT_IN tolerance, the plugin library_path fix (falcosecurity/falco#3850),
+# and the nested-CMake generator/platform forwarding are all upstream now, so the
+# old falco-windows-cmake-generator.patch was dropped.
 $patches = @(
-    (Join-Path $PatchDir 'falco-windows-http-output.patch'),
-    # Forward the top-level CMake generator + platform to the nested
-    # falcosecurity-libs configure. Without this, ARM64 hosts can end up
-    # with a mismatched Visual Studio generator/platform pair in the nested
-    # build and fail with "VCTargetsPath" / platform errors at link time.
-    (Join-Path $PatchDir 'falco-windows-cmake-generator.patch')
+    (Join-Path $PatchDir 'falco-windows-http-output.patch')
 )
 
 foreach ($patchPath in $patches) {
@@ -224,6 +224,7 @@ if %ERRORLEVEL% neq 0 exit /b 1
     -DCMAKE_TOOLCHAIN_FILE="$VcpkgToolchain" ^
     -DVCPKG_TARGET_TRIPLET=$VcpkgTriplet ^
     -DMINIMAL_BUILD=ON ^
+    -DBUILD_HTTP_OUTPUT=ON ^
     -DBUILD_FALCO_MODERN_BPF=OFF ^
     -DBUILD_WARNINGS_AS_ERRORS=OFF ^
     -DBUILD_FALCO_UNIT_TESTS=OFF ^
