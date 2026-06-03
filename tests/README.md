@@ -64,7 +64,7 @@ The harness (`tests/src/e2e.rs`) auto-discovers the Falco binary under `build/fa
 Example (Windows PowerShell):
 
 ```powershell
-$env:FALCO = "C:\Users\me\repos\prempti\build\falco-0.43.0-windows-arm64\falco.exe"
+$env:FALCO = "C:\Users\me\repos\prempti\build\falco-0.44.0-windows-arm64\falco.exe"
 make test-e2e
 ```
 

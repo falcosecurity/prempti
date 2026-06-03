@@ -139,7 +139,7 @@ if (-not $SkipRustBuild) {
 # Build Falco
 # ---------------------------------------------------------------------------
 
-$FalcoDir = Join-Path $BuildDir "falco-0.43.0-windows-$Arch"
+$FalcoDir = Join-Path $BuildDir "falco-0.44.0-windows-$Arch"
 
 if ([string]::IsNullOrWhiteSpace($FalcoExe)) {
     if (-not $SkipFalcoBuild) {

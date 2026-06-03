@@ -280,7 +280,7 @@ Check these locations in order. The "installed" locations are written by the pla
 
 1. **Installed binary**: `$env:LOCALAPPDATA\prempti\bin\falco.exe`
 2. **System PATH**: `falco.exe` (rare on Windows — `PATH` usually points to the installed bin dir via the post-install step)
-3. **Development build**: `build\falco-0.43.0-windows-<arch>\falco.exe` (built via `make falco-windows-x64` / `falco-windows-arm64`)
+3. **Development build**: `build\falco-0.44.0-windows-<arch>\falco.exe` (built via `make falco-windows-x64` / `falco-windows-arm64`)
 
 ### Running validation
 

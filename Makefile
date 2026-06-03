@@ -2,7 +2,7 @@
 # source of truth: bumping [workspace.package].version propagates to every
 # build step automatically.
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-FALCO_VERSION := 0.43.0
+FALCO_VERSION := 0.44.0
 ARCH := $(shell uname -m)
 
 .PHONY: all build build-interceptor build-codex-interceptor build-plugin build-ctl \

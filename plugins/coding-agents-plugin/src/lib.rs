@@ -136,7 +136,7 @@ impl Plugin for CodingAgentPlugin {
     }
 
     // Note: `set_config()` is defined in the C plugin API and the Rust SDK,
-    // but Falco 0.43 never calls it. Config changes come via process restart
+    // but Falco 0.44 never calls it. Config changes come via process restart
     // (driven by `premptictl`), which produces a fresh plugin
     // instance with the updated config in `Plugin::new()`.
 }

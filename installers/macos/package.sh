@@ -15,7 +15,7 @@ ROOT_DIR="$(cd -- "$SCRIPT_DIR/../.." &>/dev/null && pwd)"
 
 # Read version from workspace Cargo.toml (single source of truth).
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_DIR/Cargo.toml" | head -1)"
-FALCO_VERSION="0.43.0"
+FALCO_VERSION="0.44.0"
 TARGET_ARCH=""
 
 # Parse arguments.

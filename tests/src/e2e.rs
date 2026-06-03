@@ -31,8 +31,8 @@ pub fn find_falco() -> Option<PathBuf> {
         vec![
             root.join("build/stage-windows-x64/bin/falco.exe"),
             root.join("build/stage-windows-arm64/bin/falco.exe"),
-            root.join("build/falco-0.43.0-windows-x64/falco.exe"),
-            root.join("build/falco-0.43.0-windows-arm64/falco.exe"),
+            root.join("build/falco-0.44.0-windows-x64/falco.exe"),
+            root.join("build/falco-0.44.0-windows-arm64/falco.exe"),
         ]
     } else if cfg!(target_os = "macos") {
         let arch = if cfg!(target_arch = "aarch64") {
@@ -40,14 +40,14 @@ pub fn find_falco() -> Option<PathBuf> {
         } else {
             "x86_64"
         };
-        vec![root.join(format!("build/falco-0.43.0-darwin-{arch}/falco"))]
+        vec![root.join(format!("build/falco-0.44.0-darwin-{arch}/falco"))]
     } else {
         let arch = if cfg!(target_arch = "aarch64") {
             "aarch64"
         } else {
             "x86_64"
         };
-        vec![root.join(format!("build/falco-0.43.0-{arch}/usr/bin/falco"))]
+        vec![root.join(format!("build/falco-0.44.0-{arch}/usr/bin/falco"))]
     };
     for c in candidates {
         if c.exists() {
