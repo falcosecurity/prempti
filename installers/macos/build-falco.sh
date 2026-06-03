@@ -3,21 +3,22 @@
 #
 # build-falco.sh — Build Falco from source for macOS with http_output support.
 #
-# Falco's upstream CMakeLists.txt does not build http_output on macOS (the
-# OpenSSL/curl dependencies and outputs_http.cpp are gated behind NOT APPLE).
-# This script clones Falco, applies a minimal patch to enable http_output
-# (curl-based) while keeping MINIMAL_BUILD=ON to avoid pulling in gRPC,
-# protobuf, and the webserver, then builds the falco binary.
+# Falco does not ship pre-built macOS binaries, so we build from source. Since
+# Falco 0.44 the curl-based http_output channel is a first-class, OS-agnostic
+# build option (BUILD_HTTP_OUTPUT), so no source patch is needed: we keep
+# MINIMAL_BUILD=ON (no gRPC/webserver/metrics) and opt http_output back in with
+# -DBUILD_HTTP_OUTPUT=ON (it defaults OFF under MINIMAL_BUILD). The broker needs
+# http_output to receive Falco alerts on localhost.
 #
-# Usage: bash build-falco.sh [--version 0.43.0] [--output-dir DIR] [--arch ARCH] [--force]
+# Usage: bash build-falco.sh [--version 0.44.0] [--output-dir DIR] [--arch ARCH] [--force]
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 ROOT_DIR="$(cd -- "$SCRIPT_DIR/../.." &>/dev/null && pwd)"
 
-FALCO_VERSION="0.43.0"
-FALCO_TAG="0.43.0"
+FALCO_VERSION="0.44.0"
+FALCO_TAG="0.44.0"
 OUTPUT_DIR=""
 FORCE=false
 TARGET_ARCH=""
@@ -36,7 +37,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [--version VERSION] [--output-dir DIR] [--arch ARCH] [--force]"
             echo ""
             echo "Options:"
-            echo "  --version VERSION   Falco version/tag to build (default: 0.43.0)"
+            echo "  --version VERSION   Falco version/tag to build (default: 0.44.0)"
             echo "  --output-dir DIR    Directory for the built falco binary"
             echo "                      Default: ROOT/build/falco-VERSION-darwin-ARCH/"
             echo "  --arch ARCH         Target architecture: aarch64 or x86_64"
@@ -152,33 +153,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Patch: enable http_output on macOS
+# http_output: native since Falco 0.44 (no patch needed)
 # ---------------------------------------------------------------------------
 #
-# Falco 0.43 gates http_output behind two barriers:
-#   1. Root CMakeLists.txt: OpenSSL + curl are NOT included on APPLE.
-#   2. userspace/falco/CMakeLists.txt: outputs_http.cpp is only compiled
-#      when (Linux AND NOT MINIMAL_BUILD).
-#   3. falco_outputs.cpp: the http output class is compiled only when
-#      !MINIMAL_BUILD (preprocessor guard).
-#
-# Strategy: keep MINIMAL_BUILD=ON (no gRPC/webserver/metrics) but add a
-# HAS_HTTP_OUTPUT define to selectively re-enable just the http output.
-#
-# The patch file is at installers/macos/falco-macos-http-output.patch
-#
-
-PATCH_MARKER="Prempti"
-
-if ! grep -q "$PATCH_MARKER" "$SRC_DIR/CMakeLists.txt"; then
-    echo "=== Applying http_output patches ==="
-    cd "$SRC_DIR"
-    git apply --verbose "$SCRIPT_DIR/falco-macos-http-output.patch"
-    cd "$ROOT_DIR"
-    echo "  Patches applied successfully"
-else
-    echo "Patches already applied"
-fi
+# Falco 0.43 gated curl-based http_output behind `NOT APPLE` and compiled
+# outputs_http.cpp only under `Linux AND NOT MINIMAL_BUILD`, so Prempti carried
+# a patch to re-enable it. Falco 0.44 reworked http_output into a first-class,
+# OS-agnostic build option (BUILD_HTTP_OUTPUT, falcosecurity/falco#3827) that
+# defines HAS_HTTP_OUTPUT and pulls in curl. It defaults OFF under MINIMAL_BUILD,
+# so we just opt in with -DBUILD_HTTP_OUTPUT=ON below — no source patch required.
 
 # ---------------------------------------------------------------------------
 # Build
@@ -197,6 +180,7 @@ CMAKE_COMMON_FLAGS=(
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_OSX_ARCHITECTURES="$CMAKE_OSX_ARCH"
     -DMINIMAL_BUILD=ON
+    -DBUILD_HTTP_OUTPUT=ON
     -DUSE_BUNDLED_DEPS=ON
     -DUSE_BUNDLED_OPENSSL=OFF
     -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT"
