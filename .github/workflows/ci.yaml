@@ -193,7 +193,7 @@ jobs:
           path: |
             build/falco-*-darwin-*
             build/falco-src-*
-          key: falco-macos-${{ matrix.arch }}-${{ hashFiles('installers/macos/build-falco.sh', 'installers/macos/falco-macos-http-output.patch') }}
+          key: falco-macos-${{ matrix.arch }}-${{ hashFiles('installers/macos/build-falco.sh') }}
 
       - name: Build
         run: make build
