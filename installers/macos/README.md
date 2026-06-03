@@ -50,17 +50,13 @@ bash installers/macos/build-falco.sh --arch x86_64   # Cross-compile for Intel
 bash installers/macos/build-falco.sh --force          # Rebuild from scratch
 ```
 
-The build applies a patch (`falco-macos-http-output.patch`) to enable http_output on macOS with `MINIMAL_BUILD=ON`.
+The build enables http_output on macOS with `MINIMAL_BUILD=ON` + `-DBUILD_HTTP_OUTPUT=ON` — no source patch needed since Falco 0.44.
 
-#### http_output patch
+#### http_output (native since Falco 0.44)
 
-Falco's upstream CMakeLists.txt does not build `http_output` on macOS. Three barriers are patched:
+Falco 0.43 did not build `http_output` on macOS — OpenSSL/curl were gated behind `NOT APPLE` and `outputs_http.cpp` compiled only under `Linux AND NOT MINIMAL_BUILD` — so prempti carried a patch to re-enable it. Falco 0.44 reworked http_output into a first-class, OS-agnostic build option (`BUILD_HTTP_OUTPUT`, upstreamed from prempti via falcosecurity/falco#3827) that defines `HAS_HTTP_OUTPUT` and pulls in curl. The patch is gone; the build just opts in.
 
-1. **Root CMakeLists.txt**: OpenSSL and curl are gated behind `NOT APPLE`. Patch adds an `if(APPLE)` block to include them.
-2. **userspace/falco/CMakeLists.txt**: `outputs_http.cpp` is only compiled when `Linux AND NOT MINIMAL_BUILD`. Patch adds an `if(APPLE)` block to compile it and link curl + OpenSSL.
-3. **falco_outputs.cpp**: The http output class is guarded by `!defined(MINIMAL_BUILD)`, bundling it with gRPC/webserver code. Patch adds a separate `#if defined(HAS_HTTP_OUTPUT) && defined(MINIMAL_BUILD)` guard to enable http output without gRPC.
-
-**Design choice**: `MINIMAL_BUILD=ON` + `HAS_HTTP_OUTPUT` preprocessor define. This avoids pulling in gRPC, protobuf, c-ares, cpp-httplib, and the webserver — only curl-based http output is enabled. The rejected alternative `MINIMAL_BUILD=OFF` would activate all non-minimal code paths (gRPC, webserver, metrics) via preprocessor guards in `start_webserver.cpp`, `start_grpc_server.cpp`, and `falco_outputs.cpp`, requiring all their dependencies.
+**Design choice**: `MINIMAL_BUILD=ON` + `-DBUILD_HTTP_OUTPUT=ON`. `BUILD_HTTP_OUTPUT` defaults ON for normal builds but OFF under `MINIMAL_BUILD`, so we enable it explicitly. This keeps gRPC, protobuf, c-ares, cpp-httplib, and the webserver out — only curl-based http output is built. The rejected alternative `MINIMAL_BUILD=OFF` would activate all non-minimal code paths (webserver, metrics) and require all their dependencies.
 
 #### Bundled vs system dependencies
 
@@ -183,6 +179,5 @@ launchd invokes `premptictl daemon --prefix <prefix>` directly — no shell wrap
 |------|---------|
 | `package.sh` | Build script: compiles Rust components and Falco, creates tar.gz and .pkg |
 | `install.sh` | Installer: copies files, sets up launchd, kicks off the supervisor |
-| `build-falco.sh` | Builds Falco from source with http_output patch |
-| `falco-macos-http-output.patch` | CMake patch enabling http_output on macOS |
+| `build-falco.sh` | Builds Falco from source with native http_output (`-DBUILD_HTTP_OUTPUT=ON`) |
 | `dev.falcosecurity.prempti.plist` | launchd user agent template (invokes `ctl daemon`) |

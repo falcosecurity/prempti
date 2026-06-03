@@ -37,16 +37,17 @@ claude-interceptor.exe ──Unix socket──▶ Plugin broker (in Falco)
 | Interceptor → broker | Unix domain socket | Unix domain socket (via `uds_windows` crate) |
 | Broker | Embedded in plugin | Embedded in plugin |
 | Plugin | .so / .dylib loaded by Falco | .dll loaded by Falco |
-| Alert delivery | Falco `http_output` (curl) | Falco `http_output` (curl, patched in) |
+| Alert delivery | Falco `http_output` (curl) | Falco `http_output` (curl, native since 0.44) |
 | Processes | 1 (Falco) | 1 (Falco) |
 
 ### http_output on Windows
 
-Falco's upstream build excludes `http_output` on Windows (CMake and preprocessor guards). A single patch (`falco-windows-http-output.patch`) enables it using the same `HAS_HTTP_OUTPUT` pattern as the macOS patch. System curl is provided via vcpkg with SChannel backend (no OpenSSL dependency). The patch also handles SChannel-specific curl limitations:
+Falco 0.44 builds `http_output` on Windows natively via the `BUILD_HTTP_OUTPUT` CMake option (it defaults OFF under `MINIMAL_BUILD`, so `build-falco.ps1` passes `-DBUILD_HTTP_OUTPUT=ON`). System curl is provided via vcpkg with the SChannel backend (no OpenSSL dependency). Most of prempti's former Windows fixes are now upstream (falcosecurity/falco#3827, #3882, #3850): the generalized `CURLE_NOT_BUILT_IN` tolerance for SChannel's missing `CURLOPT_CAINFO` / `CURLOPT_CAPATH`, the `USE_BUNDLED_CURL`-off Windows curl handling, and the `library_path` absoluteness fix that recognizes `C:/...` as an absolute path.
 
-- **NOPROXY**: Adds `CURLOPT_NOPROXY="*"` to bypass system/environment proxy settings for localhost alert delivery. Tolerates `CURLE_NOT_BUILT_IN` because the SChannel curl backend may omit proxy support.
-- **CA path**: Wraps the CA certificate path/bundle options in a Windows-specific block that tolerates `CURLE_NOT_BUILT_IN`. SChannel uses the Windows Certificate Store automatically and does not support `CURLOPT_CAPATH` / `CURLOPT_CAINFO`.
-- **Plugin path resolution**: Replaces the POSIX-only `path[0] != '/'` check with `std::filesystem::path::has_root_path()` so that Windows absolute paths (`C:/...`) are recognized correctly and not prepended with the default plugins directory.
+`falco-windows-http-output.patch` now carries only two prempti-specific bits that are not upstream:
+
+- **NOPROXY**: Adds `CURLOPT_NOPROXY="*"` to bypass system/environment proxy settings for localhost alert delivery. Inherits Falco 0.44's `CURLE_NOT_BUILT_IN` tolerance, so a curl backend without proxy support (SChannel) treats it as a harmless no-op.
+- **ws2_32**: Links Winsock explicitly. Static vcpkg libcurl + `curl_global_init()` pull in `WSAStartup`, and the `${CURL_LIBRARIES}` variable from `find_package(CURL)` does not reliably propagate the `ws2_32` system dependency for a static link.
 
 ## Prerequisites
 
@@ -132,7 +133,7 @@ powershell -ExecutionPolicy Bypass -File installers\windows\package.ps1
 
 This single command:
 1. Compiles all Rust crates for the native architecture (interceptor, plugin DLL, ctl)
-2. Clones and builds Falco 0.43.0 from source with patches (~10 min first time, cached after)
+2. Clones and builds Falco 0.44.0 from source with a slim `ws2_32`/`NOPROXY` patch (~10 min first time, cached after)
 3. Stages all files and produces the MSI installer
 
 Output: `build/out/prempti-<version>-windows-<arch>.msi`

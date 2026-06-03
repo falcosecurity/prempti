@@ -249,11 +249,11 @@ Config is split into two files:
 - **`falco.yaml`**: base settings (engine, output, webserver, `config_files` pointing to the plugin fragment)
 - **`falco.coding_agents_plugin.yaml`**: plugin definition, `init_config`, `load_plugins`, `rules_files`, `rule_matching: all`, `http_output`
 
-All paths on Linux/macOS use `${HOME}` expansion (Falco 0.43 supports `${VAR}` syntax in all YAML scalar values), so the same config works across users as long as the install lives at `$HOME/.prempti`. Linux and macOS installers only support this default path; the Windows MSI regenerates both config files at install time via `postinstall.ps1`, which is how its `WixUI_InstallDir`-selected `INSTALLDIR` actually flows through to Falco.
+All paths on Linux/macOS use `${HOME}` expansion (Falco 0.44 supports `${VAR}` syntax in all YAML scalar values), so the same config works across users as long as the install lives at `$HOME/.prempti`. Linux and macOS installers only support this default path; the Windows MSI regenerates both config files at install time via `postinstall.ps1`, which is how its `WixUI_InstallDir`-selected `INSTALLDIR` actually flows through to Falco.
 
 ### macOS: Falco build from source
 
-Falco does not ship pre-built macOS binaries. `installers/macos/build-falco.sh` clones Falco 0.43.0, applies `falco-macos-http-output.patch`, and builds with `MINIMAL_BUILD=ON` + `HAS_HTTP_OUTPUT` (no gRPC, no webserver, just curl-based http_output). System libraries (OpenSSL via Homebrew, system curl + zlib) instead of bundled — Falco's bundled autotools deps don't respect `CMAKE_OSX_ARCHITECTURES`. Cross-compile (x86_64 on Apple Silicon) requires both `arch -x86_64` (so autotools detects via `uname -m`) and `CFLAGS="-arch x86_64"` (so Apple's universal compiler emits x86_64).
+Falco does not ship pre-built macOS binaries. `installers/macos/build-falco.sh` clones Falco 0.44.0 and builds with `MINIMAL_BUILD=ON` + `-DBUILD_HTTP_OUTPUT=ON` (no gRPC, no webserver, just curl-based http_output). Since 0.44 the curl-based http_output is a first-class, OS-agnostic build option (`BUILD_HTTP_OUTPUT`, upstreamed from prempti via falcosecurity/falco#3827) that defaults OFF under `MINIMAL_BUILD`, so no source patch is needed — we just opt in. System libraries (OpenSSL via Homebrew, system curl + zlib) instead of bundled — Falco's bundled autotools deps don't respect `CMAKE_OSX_ARCHITECTURES`. Cross-compile (x86_64 on Apple Silicon) requires both `arch -x86_64` (so autotools detects via `uname -m`) and `CFLAGS="-arch x86_64"` (so Apple's universal compiler emits x86_64).
 
 See [`installers/macos/README.md`](installers/macos/README.md) for the full rationale, rejected alternatives, and the universal-binary flow.
 
@@ -283,7 +283,7 @@ The macOS implementation includes `is_service_loaded()` for idempotent start/sto
 
 ### Windows: Falco build from source
 
-Falco does not ship pre-built Windows binaries. `installers/windows/build-falco.ps1` clones Falco 0.43.0, applies `falco-windows-http-output.patch` (same `HAS_HTTP_OUTPUT` + `MINIMAL_BUILD=ON` pattern as macOS) and `falco-windows-cmake-generator.patch` (forwards generator/platform to nested libscap/libsinsp configure for ARM64 host correctness), and builds with MSVC + vcpkg using **static curl with the SChannel backend** — no OpenSSL on Windows. The patches also tolerate SChannel-specific curl limitations (`CURLE_NOT_BUILT_IN` on `CURLOPT_NOPROXY` / `CURLOPT_CAINFO` / `CURLOPT_CAPATH`) and fix the POSIX-only relative-path check in Falco's `configuration.h` so absolute Windows plugin paths (`C:/...`) resolve correctly.
+Falco does not ship pre-built Windows binaries. `installers/windows/build-falco.ps1` clones Falco 0.44.0, builds with `MINIMAL_BUILD=ON` + `-DBUILD_HTTP_OUTPUT=ON`, and uses MSVC + vcpkg with **static curl on the SChannel backend** — no OpenSSL on Windows. Falco 0.44 upstreamed most of prempti's former Windows patches (falcosecurity/falco#3827, #3882, #3850): the `BUILD_HTTP_OUTPUT` option, the generalized `CURLE_NOT_BUILT_IN` tolerance for SChannel's missing `CURLOPT_CAINFO` / `CURLOPT_CAPATH`, the `USE_BUNDLED_CURL`-off Windows curl handling, and the `library_path` absoluteness fix so `C:/...` plugin paths resolve correctly. The old `falco-windows-cmake-generator.patch` was dropped entirely — 0.44 now forwards the CMake generator/platform/toolset to the nested libs configure itself. What remains in `falco-windows-http-output.patch` is just two prempti-specific bits: linking `ws2_32` for the static-curl `WSAStartup`, and adding `CURLOPT_NOPROXY="*"` to bypass proxies for localhost alert delivery.
 
 See [`installers/windows/README.md`](installers/windows/README.md) for the http_output patch details, prerequisites, build steps, and known caveats (Git Bash path/CRLF traps, ARM64 host toolchain alignment).
 
@@ -317,9 +317,9 @@ All three platforms share `ctl health` (synthetic event through the full pipelin
 
 ## Technology Stack
 
-- **Falco 0.43** — rule engine, running in `nodriver` mode (no kernel instrumentation)
+- **Falco 0.44** — rule engine, running in `nodriver` mode (no kernel instrumentation)
 - **Rust** — interceptor and plugin (using `falco_plugin` crate v0.5.0)
-- **Platforms** — Linux (official Falco builds), macOS (Falco built from source with http_output patch, system OpenSSL+curl), Windows (Falco built from source with http_output patch, static curl via vcpkg, SChannel backend)
+- **Platforms** — Linux (official Falco builds), macOS (Falco built from source, native http_output via `BUILD_HTTP_OUTPUT`, system OpenSSL+curl), Windows (Falco built from source, native http_output + a slim `ws2_32`/`NOPROXY` patch, static curl via vcpkg, SChannel backend)
 
 ## Build & Development
 
