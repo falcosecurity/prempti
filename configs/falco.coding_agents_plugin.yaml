@@ -6,12 +6,12 @@ plugins:
     library_path: ${HOME}/.prempti/share/libcoding_agent.so
     init_config:
       # Operational mode. One of:
-      #   guardrails (default): verdicts enforced (deny/ask/allow).
-      #   monitor:              rules evaluated and logged, but all
-      #                         verdicts resolve as allow after the
-      #                         synchronous rule-eval wait.
+      #   guardrails (default): verdicts enforced (deny/ask/allow|defer).
+      #   monitor:              rules evaluated and logged, but every
+      #                         verdict resolves as defer (Prempti steps
+      #                         aside) after the synchronous rule-eval wait.
       #   passthrough (EXPERIMENTAL, embedding-only): every interceptor
-      #                         request resolves as allow immediately at
+      #                         request resolves as defer immediately at
       #                         register, without waiting for rule
       #                         evaluation. Events are still enqueued for
       #                         Falco so observability via http_output /
@@ -20,6 +20,13 @@ plugins:
       #                         that handles alerts via its own pipeline.
       # Changed via: premptictl mode <guardrails|monitor|passthrough>
       mode: guardrails
+      # Action when a tool call matches no deny/ask rule (guardrails mode only):
+      #   allow (default): Prempti approves, skipping the agent's own prompt.
+      #   defer:           Prempti steps aside; the agent's own permission
+      #                    system decides, prompting if it normally would.
+      # Ignored in monitor/passthrough (those always resolve as defer).
+      # Changed via: premptictl default-action <allow|defer>
+      default_action: allow
       socket_path: ${HOME}/.prempti/run/broker.sock
       http_port: 2802
 

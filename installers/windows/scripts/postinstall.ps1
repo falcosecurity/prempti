@@ -109,6 +109,10 @@ plugins:
     library_path: $($ShareDir -replace '\\', '/')/coding_agent.dll
     init_config:
       mode: guardrails
+      # No-rule-match floor (guardrails only): allow (default) approves and
+      # skips the agent prompt; defer steps aside to the agent's own flow.
+      # Changed via: premptictl default-action <allow|defer>
+      default_action: allow
       socket_path: "$($Prefix -replace '\\', '/')/run/broker.sock"
       http_port: 2802
 
