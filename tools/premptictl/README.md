@@ -25,10 +25,19 @@ premptictl hook status    # Check if the hook is registered
 ```bash
 premptictl mode                # Show current mode
 premptictl mode guardrails     # Switch to guardrails (deny/ask enforced)
-premptictl mode monitor        # Switch to monitor (all verdicts allow, alerts logged)
+premptictl mode monitor        # Switch to monitor (all verdicts defer, alerts logged)
+premptictl mode passthrough    # Switch to passthrough (Experimental, embedding-only)
 ```
 
-Mode changes rewrite the plugin config YAML and then restart the service (stop + start). The brief restart window is fail-closed.
+### No-rule-match floor
+
+```bash
+premptictl default-action          # Show the floor (guardrails mode)
+premptictl default-action allow    # No matching rule → Prempti approves (skips agent prompt)
+premptictl default-action defer    # No matching rule → defer to the agent's own permission flow
+```
+
+Both `mode` and `default-action` rewrite the plugin config YAML and then restart the service (stop + start). The brief restart window is fail-closed. `default-action` applies in guardrails mode only.
 
 ### Service Management
 

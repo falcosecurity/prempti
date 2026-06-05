@@ -8,7 +8,7 @@
 
 ## Overview
 
-The Claude Code interceptor is a stateless CLI binary invoked by Claude Code's `PreToolUse` hook on every tool call. It reads the hook JSON from stdin, wraps it in a wire-protocol envelope, sends it to the plugin broker via Unix domain socket, receives a verdict (allow/deny/ask), and writes the hook response to stdout.
+The Claude Code interceptor is a stateless CLI binary invoked by Claude Code's `PreToolUse` hook on every tool call. It reads the hook JSON from stdin, wraps it in a wire-protocol envelope, sends it to the plugin broker via Unix domain socket, receives a verdict (allow/deny/ask/defer), and writes the hook response to stdout.
 
 The interceptor is a **thin passthrough** — it does not interpret tool call content, extract fields, or evaluate policies. All semantic processing (field extraction, path resolution, policy evaluation) happens in the plugin broker. This design keeps the interceptor simple, agent-agnostic, and easy to maintain.
 
@@ -60,7 +60,7 @@ The interceptor reads `tool_use_id` for correlation and passes the entire JSON a
 
 ### Output (stdout)
 
-The interceptor writes a single JSON line to stdout:
+For an `allow`, `deny`, or `ask` verdict the interceptor writes a single JSON line to stdout:
 
 ```json
 {
@@ -72,13 +72,15 @@ The interceptor writes a single JSON line to stdout:
 }
 ```
 
-**Critical invariant**: The interceptor must ALWAYS produce valid JSON on stdout when exiting with code 0. Empty stdout with exit 0 causes Claude Code to silently allow the tool call.
+For a `defer` verdict — the no-rule-match floor when the plugin's `default_action` is `defer`, and the resolution under `monitor` / `passthrough` modes — the interceptor writes **nothing** and exits 0. Claude Code treats exit 0 with no output as "no decision; the normal permission flow applies" (its allowlist/settings decide and it prompts if it normally would). This is deliberately **not** `permissionDecision: "defer"`: per the Claude Code hooks docs that value is a `-p` / Agent SDK feature that pauses the tool call for a wrapper to resume, which would hang an interactive session.
+
+**Critical invariant**: On a broker *error* the interceptor fails closed — it emits an explicit `deny` (unless `PREMPTI_FAIL_OPEN=1`), never empty stdout. The only path that intentionally emits empty stdout is the `defer` verdict above. Empty stdout is **not** a silent allow: per the Claude Code hooks docs, exit 0 with no output continues through the normal permission flow (deny rules still apply, ask rules still prompt).
 
 ### Exit Codes
 
 | Code | Meaning | Claude Code behavior |
 |------|---------|---------------------|
-| 0    | Success | Parse stdout JSON for verdict |
+| 0    | Success | Parse stdout JSON for verdict; empty stdout = no decision (normal permission flow) |
 | 2    | Blocking error | Block tool call, feed stderr to Claude as feedback |
 | Other | Non-blocking error | Log to verbose output, allow tool call |
 
@@ -131,14 +133,14 @@ The `event` field contains the entire Claude Code hook input verbatim. The broke
 ```json
 {
   "id": "<tool_use_id>",
-  "decision": "allow|deny|ask",
+  "decision": "allow|deny|ask|defer",
   "reason": "optional explanation"
 }
 ```
 
 **Validation**: The interceptor verifies that:
 - `id` matches the request's correlation ID
-- `decision` is one of `allow`, `deny`, `ask`
+- `decision` is one of `allow`, `deny`, `ask`, `defer` (`defer` renders as empty stdout — see [Output](#output-stdout))
 
 Failures trigger `verdict_on_error` (fail-closed by default: deny).
 

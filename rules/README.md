@@ -44,7 +44,7 @@ Rules use tags to communicate verdicts to the plugin broker:
 | `coding_agent_ask` | Require user confirmation |
 | `coding_agent_seen` | Signal evaluation complete (used only by `seen.yaml`) |
 
-When multiple rules match the same event, verdict escalation applies: **deny > ask > allow**.
+When multiple rules match the same event, verdict escalation applies: **deny > ask > {allow | defer}**. The lowest tier is the no-rule-match floor set by the plugin's `default_action` (`allow` by default, or `defer` to hand the decision to the agent's own permission system); a single instance uses one floor uniformly.
 
 ## Writing Rules
 

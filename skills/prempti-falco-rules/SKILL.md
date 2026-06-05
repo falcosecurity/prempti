@@ -67,7 +67,7 @@ Every rule needs these fields:
 
 All Falco priorities are valid: `EMERGENCY`, `ALERT`, `CRITICAL`, `ERROR`, `WARNING`, `NOTICE`, `INFORMATIONAL` (or `INFO`), `DEBUG`.
 
-When multiple rules match the same event, verdicts escalate: **deny > ask > allow**.
+When multiple rules match the same event, verdicts escalate: **deny > ask > {allow | defer}**. The lowest tier is the no-rule-match floor (`default_action`: `allow` by default, or `defer` to defer to the agent's own permission system) — deny/ask rules are unaffected by it.
 
 ### Output Convention
 

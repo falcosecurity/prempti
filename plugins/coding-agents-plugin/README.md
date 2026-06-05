@@ -59,10 +59,11 @@ init_config:
 
 ## Operational Modes
 
-- **Guardrails** (default): Rules evaluated, verdicts enforced
-- **Monitor**: Rules evaluated and logged, all verdicts resolve as allow
+- **Guardrails** (default): Rules evaluated, verdicts enforced. The no-rule-match floor is `default_action` (`allow` — Prempti approves; or `defer` — Prempti steps aside to the agent's own permission flow).
+- **Monitor**: Rules evaluated and logged, all verdicts resolve as `defer` (Prempti steps aside)
+- **Passthrough** (Experimental): resolves as `defer` immediately at register, before rule evaluation
 
-Switch via `premptictl mode <guardrails|monitor>`.
+Switch mode via `premptictl mode <guardrails|monitor|passthrough>` and the floor via `premptictl default-action <allow|defer>`.
 
 ## Required Falco Configuration
 

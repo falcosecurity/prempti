@@ -17,7 +17,7 @@ The plugin is the central component of Prempti — it bridges the interceptor (s
 1. **Broker embedded in plugin**: No separate broker process. Falco is the only long-running process.
 2. **Verdict via HTTP alerts**: All verdict signals flow through Falco's `http_output`. No parsing capability needed.
 3. **Fail-closed**: If the broker cannot process an event, it responds deny.
-4. **Monitor mode**: Rules evaluate and log, but all verdicts resolve as allow.
+4. **Monitor mode**: Rules evaluate and log, but all verdicts resolve as defer (passthrough too); guardrails uses the `default_action` floor.
 
 ## Sequence Diagram
 
@@ -166,7 +166,8 @@ Tracks pending requests and resolves verdicts. Shared via `Arc<Broker>` across a
 - **Correlation ID**: Monotonic `AtomicU64` counter (starts at 1, always > 0)
 - **Wire ID**: The interceptor's original request `id` (stored per-request, used in the verdict response)
 - **`expected_events` counter**: `AtomicU64` per pending request, set at register time. `1` for ordinary single-event flows (every hook except Codex `apply_patch`), `N` for the multi-file `apply_patch` multiplex. `apply_seen` decrements; the broker only resolves on the last seen (the call that brings the counter to 0). `apply_deny` short-circuits regardless of remaining seens.
-- **Monitor mode**: `AtomicBool`, set from plugin config on init
+- **Mode flags**: `monitor_mode` and `passthrough` `AtomicBool`s, set from plugin config on init
+- **No-match floor**: `default_action` (`allow` | `defer`) stored as an `AtomicBool`, set from plugin config; consulted only on the guardrails no-deny/ask resolution path
 
 ### Verdict Resolution
 
@@ -176,13 +177,17 @@ Tags in Falco alerts determine the verdict:
 |-----|---------|---------|----------|
 | `coding_agent_deny` | configurable | Deny | Resolve immediately, remove from pending (short-circuits any pending `expected_events`) |
 | `coding_agent_ask` | configurable | Ask | Escalate (deny > ask), stage verdict, wait for all expected seens |
-| `coding_agent_seen` | configurable | Seen | Decrement `expected_events`; resolve with best verdict when it reaches 0 (allow if no deny/ask staged) |
+| `coding_agent_seen` | configurable | Seen | Decrement `expected_events`; resolve with best verdict when it reaches 0 (the no-match floor — `allow` or `defer` per `default_action` — if no deny/ask staged) |
 
-Escalation: `deny > ask > allow`. Multiple rules can match the same event (`rule_matching: all`). For Codex `apply_patch` multi-event multiplex, escalation also runs **across** the N synthetic events sharing one `correlation.id`: one deny on any one event wins; one ask on any one event becomes the final verdict if no deny lands; all-allow only if every event's seen arrived without a deny or ask alert.
+Escalation: `deny > ask > {allow | defer}`. `allow` and `defer` are the two possible no-match floors (a single plugin instance uses one floor uniformly, so they never compete). Multiple rules can match the same event (`rule_matching: all`). For Codex `apply_patch` multi-event multiplex, escalation also runs **across** the N synthetic events sharing one `correlation.id`: one deny on any one event wins; one ask on any one event becomes the final verdict if no deny lands; the floor (`allow` or `defer`) applies only if every event's seen arrived without a deny or ask alert.
+
+#### No-rule-match floor (`default_action`)
+
+When an event matches no deny/ask rule, the broker resolves it with the configured floor — `default_action: allow` (the default; Prempti actively approves) or `default_action: defer` (Prempti steps aside; the agent's own permission system decides). The floor governs **guardrails** mode only. `monitor` and `passthrough` always resolve as `defer` regardless of `default_action`, keeping the active-approval shape out of the non-enforcing modes. Interceptors render `allow` as an explicit approval that skips the agent prompt, and `defer` as "no decision" (empty stdout for Claude Code; fall-through at Codex's `PermissionRequest`).
 
 **Alert ordering guarantee**: Falco enqueues alerts in rule-load order, the output worker delivers in FIFO order. Deny/ask alerts (from rules loaded before `seen.yaml`) always arrive before the seen alert for any given event. For multi-event flows, ordering between events is preserved by Falco's single-producer single-consumer output queue, so the broker sees all deny/ask alerts for event K before the seen alert for event K+1.
 
-**Monitor mode**: `apply_deny` and `apply_ask` log but don't resolve. `apply_seen` decrements `expected_events` and resolves as allow when it reaches 0 (so multi-event monitor still waits for all seens before responding).
+**Monitor mode**: `apply_deny` and `apply_ask` log but don't resolve. `apply_seen` decrements `expected_events` and resolves as **defer** when it reaches 0 (so multi-event monitor still waits for all seens before responding). **Passthrough mode**: resolves as **defer** immediately at register, before any rule evaluation. Both modes ignore `default_action`.
 
 ### Verdict Reason Format
 
@@ -207,7 +212,8 @@ Plugin config via `falco.yaml` → `init_config`:
 
 ```yaml
 init_config:
-  mode: guardrails         # "guardrails" or "monitor"
+  mode: guardrails         # "guardrails" | "monitor" | "passthrough"
+  default_action: allow    # "allow" | "defer" — no-rule-match floor (guardrails only)
   socket_path: ${HOME}/.prempti/run/broker.sock   # Linux / macOS
   http_port: 2802
   deny_tags: [coding_agent_deny]
@@ -215,13 +221,14 @@ init_config:
   seen_tags: [coding_agent_seen]
 ```
 
-All fields have defaults. `${HOME}` is expanded by Falco before reaching the plugin.
+All fields have defaults (`mode: guardrails`, `default_action: allow`). Both are validated at plugin init — an unrecognized value is a clean init error, not a silent fallback. `${HOME}` is expanded by Falco before reaching the plugin. Change them via `premptictl mode <…>` / `premptictl default-action <allow|defer>` (which rewrite the fragment and restart the service), or edit the fragment directly and `premptictl restart`.
 
 Windows defaults (rendered by `postinstall.ps1` with absolute paths and forward slashes — `%LOCALAPPDATA%` is not expanded by Falco):
 
 ```yaml
 init_config:
   mode: guardrails
+  default_action: allow
   socket_path: C:/Users/<user>/AppData/Local/prempti/run/broker.sock
   http_port: 2802
 ```

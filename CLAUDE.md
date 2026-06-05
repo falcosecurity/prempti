@@ -29,7 +29,7 @@ The project targets **Claude Code** as its primary integration on **Linux, macOS
 2. **Event delivery** — The interceptor sends the event to the plugin's embedded broker via Unix domain socket.
 3. **Rule evaluation** — The plugin feeds the event to Falco's rule engine via the source plugin API (`next_batch`). Falco evaluates all loaded rules.
 4. **Alert feedback** — Matching rules generate alerts. Falco delivers them back to the plugin's embedded broker via `http_output` (localhost).
-5. **Verdict resolution** — The broker determines the verdict from rule tags (`deny`, `ask`, or allow-by-default) and responds to the interceptor.
+5. **Verdict resolution** — The broker determines the verdict from rule tags (`deny`, `ask`, or the no-match floor `allow`/`defer` per `default_action`) and responds to the interceptor.
 6. **Verdict delivery** — The interceptor communicates the verdict to the coding agent using the standard hook response format.
 
 ### Components
@@ -57,11 +57,11 @@ Rule verdicts are encoded in the `tags:` field of Falco rules, not in the `outpu
 
 - `tags: [coding_agent_deny]` — block the tool call
 - `tags: [coding_agent_ask]` — require user confirmation
-- No deny/ask tag — allow (no explicit allow tag needed)
+- No deny/ask tag — the **no-rule-match floor** (`default_action`, see "Operational modes"): `allow` (default; Prempti approves) or `defer` (Prempti steps aside)
 
-There is no allow tag because the absence of a verdict IS the allow verdict. Rules only fire when their condition matches — a tool call that doesn't match any deny or ask rule simply produces no deny/ask alert, and the broker resolves it as allow via batch-completion.
+There is no allow tag because the absence of a deny/ask verdict IS the floor. Rules only fire when their condition matches — a tool call that doesn't match any deny or ask rule simply produces no deny/ask alert, and the broker resolves it via batch-completion with the configured floor (`allow` or `defer`).
 
-The broker parses the `tags` array from Falco's JSON alert output. Verdict escalation applies when multiple rules match: deny > ask > allow.
+The broker parses the `tags` array from Falco's JSON alert output. Verdict escalation applies when multiple rules match: deny > ask > {allow | defer} (the floor is uniform per plugin instance, so allow and defer never compete).
 
 ### Catch-all seen rule + HTTP verdict resolution
 
@@ -174,11 +174,15 @@ Note: Falco's alert delivery is asynchronous — alerts are pushed to an interna
 ### Operational modes
 
 Three plugin modes, switchable without reinstallation via `premptictl mode <guardrails|monitor|passthrough>`:
-- **Guardrails** (default) — verdicts enforced (deny/ask/allow).
-- **Monitor** — rules evaluated and logged, but all verdicts resolve to allow after the synchronous rule-eval wait. Would-deny / would-ask log lines still fire.
-- **Passthrough** (Experimental, embedding-only) — every interceptor request is resolved as `allow` immediately at register, without waiting for rule evaluation. Events are still enqueued for Falco, so alerts continue to flow through `http_output` / `falco.log` and any observability pipeline hanging off them. No would-deny / would-ask log lines, because rule evaluation is decoupled from the verdict. Use only when embedding Prempti inside a host agent that has its own alert pipeline and does not want the hook's latency tied to Falco's rule loop.
+- **Guardrails** (default) — verdicts enforced (deny / ask / floor). The no-rule-match floor is `default_action` (below).
+- **Monitor** — rules evaluated and logged, but all verdicts resolve to `defer` after the synchronous rule-eval wait (Prempti steps aside; would-deny / would-ask log lines still fire). `default_action` is ignored.
+- **Passthrough** (Experimental, embedding-only) — every interceptor request is resolved as `defer` immediately at register, without waiting for rule evaluation. Events are still enqueued for Falco, so alerts continue to flow through `http_output` / `falco.log` and any observability pipeline hanging off them. No would-deny / would-ask log lines, because rule evaluation is decoupled from the verdict. `default_action` is ignored. Use only when embedding Prempti inside a host agent that has its own alert pipeline and does not want the hook's latency tied to Falco's rule loop.
 
 The three modes are mutually exclusive — `mode:` is a single string, so only one is active at a time.
+
+**No-rule-match floor (`default_action`)** — orthogonal to mode, switchable via `premptictl default-action <allow|defer>`. It governs how the broker resolves an event that matches **no** deny/ask rule, in **guardrails mode only**:
+- `allow` (default) — Prempti actively approves: Claude Code gets `permissionDecision: "allow"` (skips its own prompt); Codex gets `{"behavior":"allow"}` at `PermissionRequest`. No regression from prior releases.
+- `defer` — Prempti steps aside: Claude Code gets empty stdout + exit 0 (its normal permission flow applies, prompting if it normally would); Codex's `PermissionRequest` gets no output (its own approval flow decides). This is also what `monitor` and `passthrough` always emit, which keeps the active-approval shape confined to guardrails mode. `defer` is a fourth wire verdict alongside `allow`/`deny`/`ask`; deny/ask are unaffected by `default_action`. Note `defer` is **not** rendered as Claude's `permissionDecision: "defer"` (a `-p`/Agent-SDK value that pauses the call for resume) — empty stdout is the documented "let the agent's own permission system decide" path.
 
 Mode changes are applied via an explicit service restart driven by `ctl mode`: it rewrites the plugin config fragment, stops the service, re-registers the interceptor hook (so the brief restart window stays fail-closed rather than passing tool calls through unchecked), and starts the service again. Behavior is identical on Linux, macOS, and Windows. The same flow applies to any other config edit: edits made directly to `falco.yaml` or any included config / rule file take effect on the next `ctl start` (or `ctl mode`) — Falco's own `watch_config_files` is disabled deliberately because it is Linux-only upstream.
 
@@ -313,7 +317,7 @@ Windows has no user-level systemd or launchd equivalent, so Prempti uses a **Pow
 | `disable` | `systemctl --user disable` | `launchctl unload -w <plist>` | `reg delete <Run key>` |
 | `status` | `systemctl --user status` | `launchctl list <label>` | `tasklist /FI "IMAGENAME eq falco.exe"` |
 
-All three platforms share `ctl health` (synthetic event through the full pipeline), `ctl hook add / remove / status`, `ctl mode`, and `ctl logs` with per-OS tail implementations (`tail -n N [-f]` on Linux/macOS vs `Get-Content -Tail N [-Wait]` on Windows). `--tail` defaults to 100 lines; pass an explicit value to override.
+All three platforms share `ctl health` (synthetic event through the full pipeline), `ctl hook add / remove / status`, `ctl mode`, `ctl default-action`, and `ctl logs` with per-OS tail implementations (`tail -n N [-f]` on Linux/macOS vs `Get-Content -Tail N [-Wait]` on Windows). `--tail` defaults to 100 lines; pass an explicit value to override.
 
 ## Technology Stack
 
