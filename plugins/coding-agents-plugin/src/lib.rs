@@ -93,9 +93,24 @@ impl Plugin for CodingAgentPlugin {
             }
         }
 
+        // Validate the no-rule-match floor the same way. A typo here would
+        // otherwise silently fall through to the `allow` default (the
+        // `config.default_action == "defer"` test below is false), hiding the
+        // mistake — and the wrong direction (force-allow when the user wanted
+        // to defer) is exactly the one worth surfacing.
+        match config.default_action.as_str() {
+            "allow" | "defer" => {}
+            other => {
+                return Err(anyhow::anyhow!(
+                    "invalid plugin default_action '{other}': must be 'allow' or 'defer'"
+                ));
+            }
+        }
+
         log::info!(
-            "coding_agent plugin initialized (mode={}, socket_path={}, http_port={})",
+            "coding_agent plugin initialized (mode={}, default_action={}, socket_path={}, http_port={})",
             config.mode,
+            config.default_action,
             config.socket_path,
             config.http_port,
         );
@@ -105,6 +120,10 @@ impl Plugin for CodingAgentPlugin {
         let broker = Arc::new(Broker::new());
         broker.set_monitor_mode(config.mode == "monitor");
         broker.set_passthrough(config.mode == "passthrough");
+        // Guardrails-only floor; set unconditionally — the broker consults it
+        // only on the guardrails no-match path (monitor/passthrough always
+        // defer), so setting it in those modes is a harmless no-op.
+        broker.set_default_action(config.default_action == "defer");
 
         // Bring up the socket server first so its bind-time check cleanly
         // rejects a second Falco trying to share the same socket *before*

@@ -19,6 +19,20 @@ pub struct CodingAgentConfig {
     #[serde(default = "default_mode")]
     pub mode: String,
 
+    /// Action when a tool call matches no deny/ask rule (the "no-rule-match
+    /// floor"). One of:
+    /// - `allow` (default): Prempti actively approves, skipping the agent's
+    ///   own permission prompt.
+    /// - `defer`: Prempti steps aside; the agent's own permission system
+    ///   decides (Claude Code's normal permission flow / Codex's
+    ///   `PermissionRequest`), prompting if it normally would.
+    ///
+    /// Applies in `guardrails` mode only. In `monitor` and `passthrough`
+    /// modes every request resolves as `defer` regardless of this setting.
+    /// deny / ask verdicts are unaffected either way.
+    #[serde(default = "default_default_action")]
+    pub default_action: String,
+
     /// Broker listen address (Unix domain socket path on all platforms).
     #[serde(default = "default_socket_path")]
     pub socket_path: String,
@@ -52,6 +66,10 @@ pub struct CodingAgentConfig {
 
 fn default_mode() -> String {
     "guardrails".to_string()
+}
+
+fn default_default_action() -> String {
+    "allow".to_string()
 }
 
 fn default_socket_path() -> String {

@@ -44,10 +44,15 @@ static NEXT_CORRELATION_ID: AtomicU64 = AtomicU64::new(1);
 pub struct Broker {
     /// Maps correlation ID → pending request.
     pending: DashMap<u64, PendingRequest>,
-    /// When true, all verdicts resolve as allow (monitor mode).
+    /// When true, all verdicts resolve as defer (monitor mode).
     monitor_mode: AtomicBool,
-    /// When true, resolve all requests as allow immediately on register.
+    /// When true, resolve all requests as defer immediately on register.
     passthrough: AtomicBool,
+    /// The no-rule-match floor: when true, events matching no deny/ask rule
+    /// resolve as `defer` (Prempti steps aside); when false, as `allow`
+    /// (Prempti approves). Consulted in guardrails mode only — monitor and
+    /// passthrough always resolve as defer regardless of this flag.
+    default_defer: AtomicBool,
     /// Shutdown signal for background threads.
     shutdown: AtomicBool,
 }
@@ -76,6 +81,7 @@ impl Broker {
             pending: DashMap::new(),
             monitor_mode: AtomicBool::new(false),
             passthrough: AtomicBool::new(false),
+            default_defer: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
         }
     }
@@ -99,8 +105,9 @@ impl Broker {
         NEXT_CORRELATION_ID.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Set monitor mode. When enabled, all verdicts resolve as allow after
-    /// the synchronous rule-eval wait. Independent of passthrough mode.
+    /// Set monitor mode. When enabled, all verdicts resolve as defer after
+    /// the synchronous rule-eval wait — Prempti steps aside but still logs
+    /// would-deny / would-ask. Independent of passthrough mode.
     pub fn set_monitor_mode(&self, enabled: bool) {
         self.monitor_mode.store(enabled, Ordering::Relaxed);
         log::info!(
@@ -110,7 +117,7 @@ impl Broker {
     }
 
     /// Set passthrough mode. When enabled, all interceptor requests are resolved
-    /// as "allow" immediately upon registration, without waiting for rule evaluation.
+    /// as "defer" immediately upon registration, without waiting for rule evaluation.
     /// Events are still enqueued for the Falco engine to process.
     pub fn set_passthrough(&self, enabled: bool) {
         self.passthrough.store(enabled, Ordering::Relaxed);
@@ -125,6 +132,28 @@ impl Broker {
         self.passthrough.load(Ordering::Relaxed)
     }
 
+    /// Set the no-rule-match floor (`default_action`). When `defer` is true,
+    /// events matching no deny/ask rule resolve as `defer` (Prempti steps
+    /// aside, the agent's own permission system decides); when false, as
+    /// `allow` (Prempti approves, skipping the agent prompt). Applies in
+    /// guardrails mode only — monitor and passthrough always resolve as defer.
+    pub fn set_default_action(&self, defer: bool) {
+        self.default_defer.store(defer, Ordering::Relaxed);
+        log::info!(
+            "broker default_action: {}",
+            if defer { "defer" } else { "allow" }
+        );
+    }
+
+    /// The guardrails no-rule-match floor verdict, per `default_action`.
+    fn default_verdict(&self) -> Verdict {
+        if self.default_defer.load(Ordering::Relaxed) {
+            Verdict::Defer
+        } else {
+            Verdict::Allow
+        }
+    }
+
     /// Returns true if monitor mode is active.
     fn is_monitor(&self) -> bool {
         self.monitor_mode.load(Ordering::Relaxed)
@@ -137,7 +166,7 @@ impl Broker {
     /// hooks, N for codex apply_patch multi-file multiplex. Values below 1 are
     /// clamped to 1 so misuse can't deadlock the interceptor.
     ///
-    /// In passthrough mode, the request is resolved as "allow" immediately without
+    /// In passthrough mode, the request is resolved as "defer" immediately without
     /// being added to the pending map.
     pub fn register(
         &self,
@@ -147,7 +176,7 @@ impl Broker {
         expected_events: u64,
     ) {
         if self.is_passthrough() {
-            let response = Verdict::Allow.to_response_json(&wire_id);
+            let response = Verdict::Defer.to_response_json(&wire_id);
             let mut s = stream;
             let _ = writeln!(s, "{}", response);
             let _ = s.flush();
@@ -201,8 +230,9 @@ impl Broker {
     /// correlation ID. For single-event flows the broker resolves immediately;
     /// for multi-event flows (codex apply_patch multiplex) the broker waits
     /// for `expected_events` seen alerts before resolving with the escalated
-    /// verdict (deny > ask > allow). In monitor mode the verdict is always
-    /// downgraded to allow.
+    /// verdict (deny > ask > floor). The no-rule-match floor is `allow` or
+    /// `defer` per the configured `default_action`; in monitor mode the
+    /// verdict is always resolved as defer (Prempti steps aside).
     ///
     /// `apply_deny` may short-circuit and `resolve` away the entry before all
     /// seens arrive; subsequent calls hit an empty pending map and become
@@ -225,7 +255,7 @@ impl Broker {
         }
 
         if self.is_monitor() {
-            self.resolve(correlation_id, Verdict::Allow);
+            self.resolve(correlation_id, Verdict::Defer);
             return;
         }
         if let Some((_, pending)) = self.pending.remove(&correlation_id) {
@@ -234,7 +264,7 @@ impl Broker {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
-                .unwrap_or(Verdict::Allow);
+                .unwrap_or_else(|| self.default_verdict());
             let response = verdict.to_response_json(&pending.wire_id);
             let mut stream = pending.stream.lock().unwrap_or_else(|e| e.into_inner());
             let _ = writeln!(stream, "{}", response);
@@ -372,6 +402,7 @@ mod tests {
 
     #[test]
     fn seen_with_no_verdict_resolves_as_allow() {
+        // Default floor (default_action unset) is allow.
         let broker = Broker::new();
         let peer = register_with(&broker, 1, "wire-1");
         broker.apply_seen(1);
@@ -379,6 +410,43 @@ mod tests {
         assert_eq!(resp["decision"], "allow");
         assert_eq!(resp["id"], "wire-1");
         assert_eq!(broker.pending_count(), 0);
+    }
+
+    #[test]
+    fn default_action_defer_resolves_no_match_as_defer() {
+        // Guardrails no-rule-match floor follows default_action = defer.
+        let broker = Broker::new();
+        broker.set_default_action(true);
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "defer");
+        assert_eq!(resp["id"], "wire-1");
+        assert_eq!(broker.pending_count(), 0);
+    }
+
+    #[test]
+    fn default_action_defer_does_not_affect_deny() {
+        // default_action only governs the no-match floor — deny still wins.
+        let broker = Broker::new();
+        broker.set_default_action(true);
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_deny(1, "blocked".to_string());
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "deny");
+        assert_eq!(resp["reason"], "blocked");
+    }
+
+    #[test]
+    fn default_action_defer_does_not_affect_ask() {
+        let broker = Broker::new();
+        broker.set_default_action(true);
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_ask(1, "confirm".to_string());
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "ask");
+        assert_eq!(resp["reason"], "confirm");
     }
 
     #[test]
@@ -440,10 +508,10 @@ mod tests {
         let peer = register_with(&broker, 1, "wire-1");
         broker.apply_deny(1, "would-block".to_string());
         expect_no_response(&peer);
-        // Seen then drives the allow verdict.
+        // Seen then drives the defer verdict (monitor steps aside).
         broker.apply_seen(1);
         let resp = read_response_json(&peer);
-        assert_eq!(resp["decision"], "allow");
+        assert_eq!(resp["decision"], "defer");
     }
 
     #[test]
@@ -454,7 +522,19 @@ mod tests {
         broker.apply_ask(1, "would-ask".to_string());
         broker.apply_seen(1);
         let resp = read_response_json(&peer);
-        assert_eq!(resp["decision"], "allow");
+        assert_eq!(resp["decision"], "defer");
+    }
+
+    #[test]
+    fn monitor_mode_defers_even_with_default_action_allow() {
+        // default_action is a guardrails-only floor; monitor always defers.
+        let broker = Broker::new();
+        broker.set_monitor_mode(true);
+        broker.set_default_action(false); // allow floor — must be ignored
+        let peer = register_with(&broker, 1, "wire-1");
+        broker.apply_seen(1);
+        let resp = read_response_json(&peer);
+        assert_eq!(resp["decision"], "defer");
     }
 
     #[test]
@@ -516,13 +596,15 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_allows_immediately_and_skips_pending() {
+    fn passthrough_defers_immediately_and_skips_pending() {
         let broker = Broker::new();
         broker.set_passthrough(true);
+        broker.set_default_action(false); // allow floor — must be ignored
         let peer = register_with(&broker, 1, "wire-1");
-        // Allow JSON is on the wire right away — no apply_* call needed.
+        // Defer JSON is on the wire right away — no apply_* call needed.
+        // Passthrough always steps aside, regardless of default_action.
         let resp = read_response_json(&peer);
-        assert_eq!(resp["decision"], "allow");
+        assert_eq!(resp["decision"], "defer");
         assert_eq!(resp["id"], "wire-1");
         // Pending map must stay empty: passthrough short-circuits before insert.
         assert_eq!(broker.pending_count(), 0);
@@ -598,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_event_monitor_mode_resolves_at_last_seen_as_allow() {
+    fn multi_event_monitor_mode_resolves_at_last_seen_as_defer() {
         let broker = Broker::new();
         broker.set_monitor_mode(true);
         let peer = register_with_count(&broker, 1, "wire-1", 2);
@@ -612,7 +694,7 @@ mod tests {
         expect_no_response(&peer);
         broker.apply_seen(1);
         let resp = read_response_json(&peer);
-        assert_eq!(resp["decision"], "allow");
+        assert_eq!(resp["decision"], "defer");
     }
 
     #[test]
