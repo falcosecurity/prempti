@@ -18,11 +18,15 @@
 //! Prempti plugin broker.
 //!
 //! Mounts on two Codex hook events:
-//! - `PreToolUse`: broker `deny` → Codex `deny`; broker `ask` → Codex `allow`
-//!   (let through to the approval flow); broker `allow` → Codex `allow`.
-//! - `PermissionRequest`: broker `deny` → Codex `deny`; broker `ask` → Codex
-//!   `deny` with the rule reason as the message (user sees it via Codex's
-//!   approval UX); broker `allow` → Codex `allow`.
+//! - `PreToolUse`: broker `deny` → Codex `deny`; `allow` / `defer` → Codex
+//!   `allow` (proceed to the PermissionRequest gate); `ask` → Codex `deny`
+//!   (Codex has no per-call confirmation UX — see `translate_verdict`).
+//! - `PermissionRequest` (Codex's approval gate): broker `deny` → `deny` with
+//!   the rule reason as the message; `ask` → `deny`; `allow` →
+//!   `{"behavior":"allow"}` (Prempti approves, skipping Codex's own prompt);
+//!   `defer` → no output (Codex's own approval flow decides). The `allow` vs
+//!   `defer` split is the plugin's `default_action` no-rule-match floor:
+//!   `allow` approves here, `defer` steps aside.
 //!
 //! Codex's hook input is snake_case; its hook output is camelCase. The
 //! interceptor does not interpret the input — it forwards the raw bytes to
@@ -183,6 +187,7 @@ enum BrokerDecision {
     Allow,
     Deny,
     Ask,
+    Defer,
 }
 
 impl BrokerDecision {
@@ -191,6 +196,7 @@ impl BrokerDecision {
             "allow" => Some(Self::Allow),
             "deny" => Some(Self::Deny),
             "ask" => Some(Self::Ask),
+            "defer" => Some(Self::Defer),
             _ => None,
         }
     }
@@ -200,6 +206,7 @@ impl BrokerDecision {
 enum CodexVerdict {
     Allow,
     Deny,
+    Defer,
 }
 
 /// Map (Codex event, broker decision) → Codex verdict.
@@ -213,13 +220,20 @@ enum CodexVerdict {
 /// allow). The only correct mapping is to deny at the earliest mount point
 /// with the rule reason surfaced as the deny message, on both mounts.
 ///
+/// `defer` (the no-rule-match floor when `default_action = defer`, and the
+/// resolution under monitor/passthrough) carries through as its own verdict:
+/// it proceeds at `PreToolUse` like `allow`, but at `PermissionRequest` it
+/// emits no output so Codex's own approval flow decides, rather than being
+/// told to approve.
+///
 /// The `event` parameter is kept in the signature so the matrix is explicit
 /// for future Codex events that may differentiate; today every `(event,
-/// Ask)` cell resolves the same way.
+/// decision)` cell resolves the same way.
 fn translate_verdict(_event: CodexEvent, broker: BrokerDecision) -> CodexVerdict {
     match broker {
         BrokerDecision::Allow => CodexVerdict::Allow,
         BrokerDecision::Deny | BrokerDecision::Ask => CodexVerdict::Deny,
+        BrokerDecision::Defer => CodexVerdict::Defer,
     }
 }
 
@@ -229,7 +243,9 @@ fn translate_verdict(_event: CodexEvent, broker: BrokerDecision) -> CodexVerdict
 
 fn render_pre_tool_use(verdict: CodexVerdict, reason: &str) -> Result<String, serde_json::Error> {
     let decision_str = match verdict {
-        CodexVerdict::Allow => "allow",
+        // Allow and Defer both proceed at this mount; the PermissionRequest
+        // gate distinguishes them (allow → behavior:allow, defer → no output).
+        CodexVerdict::Allow | CodexVerdict::Defer => "allow",
         CodexVerdict::Deny => "deny",
     };
     let output = PreToolUseOutput {
@@ -242,16 +258,33 @@ fn render_pre_tool_use(verdict: CodexVerdict, reason: &str) -> Result<String, se
     serde_json::to_string(&output)
 }
 
-/// Render a `PermissionRequest` deny output.
+/// Render a `PermissionRequest` allow output: `{"behavior":"allow"}`.
 ///
-/// Only deny has a wire shape on this mount. Allow MUST NOT emit
-/// `{"behavior":"allow"}` — per Codex's hook docs that response tells Codex
-/// to **skip its own approval prompt entirely**, which would auto-bypass the
-/// approval UX the user has configured. A broker `allow` only means "no
-/// Prempti rule matched", not "definitely approve". The safe representation
-/// of that on PermissionRequest is no output at all (Codex's contract:
-/// empty stdout + exit 0 = no objection, normal approval flow proceeds).
-/// See `write_verdict` for the no-output path.
+/// Per Codex's hook docs this tells Codex to **skip its own approval prompt** —
+/// Prempti is actively approving the call. This is the no-rule-match rendering
+/// when the plugin's `default_action = allow` (the default). It mirrors the
+/// Claude interceptor's `permissionDecision: "allow"`, which likewise skips the
+/// agent's prompt. The alternative, `defer`, emits no output and lets Codex's
+/// own approval flow decide (see `write_verdict`). Earlier the allow path also
+/// emitted nothing (commit 8297274) to avoid bypassing Codex's prompt;
+/// `default_action` makes that an explicit, configurable choice rather than a
+/// hardcoded floor — `allow` approves here, `defer` restores the fall-through.
+fn render_permission_request_allow() -> Result<String, serde_json::Error> {
+    let output = PermissionRequestOutput {
+        hook_specific_output: PermissionRequestHookSpecificOutput {
+            hook_event_name: EVENT_PERMISSION_REQUEST,
+            decision: PermissionRequestDecision {
+                behavior: "allow",
+                message: None,
+            },
+        },
+    };
+    serde_json::to_string(&output)
+}
+
+/// Render a `PermissionRequest` deny output: `{"behavior":"deny", "message": …}`.
+/// The rule reason rides along as the message so the user sees it via Codex's
+/// approval UX. `ask` verdicts also land here (translated to deny).
 fn render_permission_request_deny(reason: &str) -> Result<String, serde_json::Error> {
     let output = PermissionRequestOutput {
         hook_specific_output: PermissionRequestHookSpecificOutput {
@@ -265,28 +298,29 @@ fn render_permission_request_deny(reason: &str) -> Result<String, serde_json::Er
     serde_json::to_string(&output)
 }
 
-/// Write a verdict to stdout. PreToolUse always emits an explicit decision;
-/// PermissionRequest emits a deny JSON only for Deny verdicts and emits
-/// nothing for Allow (see `render_permission_request_deny` doc for why).
-/// On serialization or write failure, falls back to a hardcoded deny
-/// literal — for the deny path only, because emitting "fail-closed deny" by
-/// mistake is the right direction; for the allow path there is no risk of
-/// silent auto-approval since we emit nothing.
+/// Write a verdict to stdout, shaped per mount point (see the body for the full
+/// matrix). PreToolUse always emits an explicit decision; at PermissionRequest,
+/// `defer` emits nothing (Codex's own approval flow decides), `allow` emits
+/// `{"behavior":"allow"}`, and `deny` emits a deny carrying the reason. On
+/// serialization or write failure, falls back to a hardcoded deny literal for
+/// the mount — fail-closed, which is the safe direction even for an allow that
+/// failed to serialize.
 fn write_verdict(event: CodexEvent, verdict: CodexVerdict, reason: &str) {
-    // PermissionRequest + Allow: deliberately no output. Codex falls through
-    // to its normal approval flow (user prompt, mode-driven auto-approve,
-    // etc.) instead of being told to skip approval.
-    if matches!(
-        (event, verdict),
-        (CodexEvent::PermissionRequest, CodexVerdict::Allow)
-    ) {
-        return;
-    }
+    let rendered = match (event, verdict) {
+        // PreToolUse always emits an explicit decision: Allow/Defer → "allow"
+        // (proceed to the PermissionRequest gate), Deny → "deny".
+        (CodexEvent::PreToolUse, _) => render_pre_tool_use(verdict, reason),
 
-    let rendered = match event {
-        CodexEvent::PreToolUse => render_pre_tool_use(verdict, reason),
-        // PermissionRequest reaches here only on Deny (Allow short-circuited above).
-        CodexEvent::PermissionRequest => render_permission_request_deny(reason),
+        // PermissionRequest is Codex's approval gate:
+        //  - Defer: deliberately no output — Codex's own approval flow decides
+        //    (the no-match floor when default_action = defer, and the
+        //    monitor/passthrough resolution).
+        //  - Allow: {"behavior":"allow"} — Prempti approves, skipping Codex's
+        //    own prompt (the no-match floor when default_action = allow).
+        //  - Deny: {"behavior":"deny", message} with the rule reason.
+        (CodexEvent::PermissionRequest, CodexVerdict::Defer) => return,
+        (CodexEvent::PermissionRequest, CodexVerdict::Allow) => render_permission_request_allow(),
+        (CodexEvent::PermissionRequest, CodexVerdict::Deny) => render_permission_request_deny(reason),
     };
 
     match rendered {
@@ -318,7 +352,13 @@ fn verdict_deny(event: CodexEvent, reason: &str) -> ! {
 /// standalone/default behavior consistent with the Claude Code interceptor.
 fn verdict_on_error(event: CodexEvent, reason: &str) -> ! {
     if env_bool("PREMPTI_FAIL_OPEN") {
-        write_verdict(event, CodexVerdict::Allow, reason);
+        // Fail-open resolves as `defer`, not `allow`: this keeps a broker
+        // outage byte-identical to the pre-default_action behavior (PreToolUse
+        // "allow", PermissionRequest no output) and ensures Prempti never
+        // *actively approves* — skipping Codex's own prompt — precisely when
+        // its policy engine is the thing that's down. `default_action` governs
+        // only the successful no-match path, not this error path.
+        write_verdict(event, CodexVerdict::Defer, reason);
         process::exit(0);
     } else {
         verdict_deny(event, reason);
@@ -650,6 +690,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn defer_carries_through_on_both_mounts() {
+        // Defer is its own verdict (no-match floor when default_action = defer,
+        // and the monitor/passthrough resolution). It proceeds like allow at
+        // PreToolUse but emits no output at PermissionRequest.
+        assert_eq!(
+            translate_verdict(CodexEvent::PreToolUse, BrokerDecision::Defer),
+            CodexVerdict::Defer
+        );
+        assert_eq!(
+            translate_verdict(CodexEvent::PermissionRequest, BrokerDecision::Defer),
+            CodexVerdict::Defer
+        );
+    }
+
     // -------- event parsing -----------------------------------------------
 
     #[test]
@@ -689,6 +744,7 @@ mod tests {
         assert_eq!(BrokerDecision::parse("allow"), Some(BrokerDecision::Allow));
         assert_eq!(BrokerDecision::parse("deny"), Some(BrokerDecision::Deny));
         assert_eq!(BrokerDecision::parse("ask"), Some(BrokerDecision::Ask));
+        assert_eq!(BrokerDecision::parse("defer"), Some(BrokerDecision::Defer));
     }
 
     #[test]
@@ -720,11 +776,28 @@ mod tests {
         );
     }
 
-    // No `render_permission_request_allow` exists: PermissionRequest + Allow
-    // emits no output by design (so Codex falls through to its normal
-    // approval flow instead of being told to skip it). The "no output"
-    // behavior is exercised at the E2E layer where the binary's stdout is
-    // observable; here we just pin the deny render shape.
+    #[test]
+    fn pre_tool_use_defer_renders_allow() {
+        // At PreToolUse, defer proceeds like allow ("allow"); the
+        // PermissionRequest gate is where allow and defer diverge.
+        let json = render_pre_tool_use(CodexVerdict::Defer, "").expect("render");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "allow");
+    }
+
+    #[test]
+    fn permission_request_allow_output_shape() {
+        // default_action = allow → Prempti approves at the gate, skipping
+        // Codex's own prompt. `message` is omitted on allow.
+        let json = render_permission_request_allow().expect("render");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PermissionRequest");
+        assert_eq!(v["hookSpecificOutput"]["decision"]["behavior"], "allow");
+        assert!(
+            v["hookSpecificOutput"]["decision"].get("message").is_none(),
+            "allow must omit the message field"
+        );
+    }
 
     #[test]
     fn permission_request_deny_includes_message() {
