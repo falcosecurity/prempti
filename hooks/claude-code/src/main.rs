@@ -109,8 +109,10 @@ const RESPONSE_MAX: u64 = 64 * 1024;
 // ---------------------------------------------------------------------------
 
 /// Write a verdict JSON to stdout. If serialization or write fails, falls back
-/// to a hardcoded deny literal to avoid empty stdout (which Claude Code treats
-/// as "allow").
+/// to a hardcoded deny literal — fail-closed. Empty stdout is deliberately not
+/// the fallback here: Claude Code treats exit 0 with no output as "no decision;
+/// the normal permission flow applies" (per the hooks docs), not as deny. The
+/// only place we emit empty stdout on purpose is the `defer` verdict in `run`.
 fn write_verdict(decision: &str, reason: &str) {
     let output = HookOutput {
         hook_specific_output: HookSpecificOutput {
@@ -398,11 +400,22 @@ fn run() -> Result<(), Error> {
         return Err(Error::BrokerError("broker response ID mismatch".into()));
     }
 
-    if !matches!(response.decision.as_str(), "allow" | "deny" | "ask") {
+    if !matches!(response.decision.as_str(), "allow" | "deny" | "ask" | "defer") {
         return Err(Error::BrokerError("invalid broker decision".into()));
     }
 
     // Step 7: Write verdict.
+    //
+    // `defer` is the no-rule-match "step aside" floor: emit no decision and
+    // exit 0, which Claude Code treats as "no decision; the normal permission
+    // flow applies" — its allowlist/settings decide and it prompts if it
+    // normally would. This is deliberately NOT `permissionDecision: "defer"`:
+    // that value is a `-p`/Agent SDK feature that pauses the tool call for a
+    // wrapper to resume, and would hang an interactive session. Empty stdout
+    // is the documented fall-through.
+    if response.decision == "defer" {
+        return Ok(());
+    }
     write_verdict(&response.decision, &response.reason);
     Ok(())
 }
