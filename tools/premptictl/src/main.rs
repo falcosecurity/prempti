@@ -1120,6 +1120,71 @@ fn uninstall(prefix: &PathBuf, keep_user_rules: bool) {
 // Health check
 // ---------------------------------------------------------------------------
 
+/// Classify the Claude interceptor's stdout (on exit 0) from the synthetic
+/// health event into a health message. Pure so every branch — including the
+/// `defer` empty-stdout case — is unit-testable without a live broker.
+/// Returns `Ok(msg)` for a healthy pipeline, `Err(msg)` for a failure.
+fn classify_health_stdout(stdout: &str) -> Result<String, String> {
+    let trimmed = stdout.trim();
+
+    // A `defer` verdict renders as empty stdout + exit 0. The broker resolves
+    // a no-match event as defer in monitor mode, passthrough mode, and
+    // guardrails + `default_action: defer` — so the synthetic health event
+    // (which matches no deny/ask rule) lands here in those configurations.
+    // The broker DID respond (a broker outage fails closed to an explicit
+    // deny, not empty stdout), so the pipeline is healthy: Prempti chose to
+    // step aside.
+    if trimmed.is_empty() {
+        return Ok("OK: pipeline healthy (synthetic event → defer / no decision)".to_string());
+    }
+
+    let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => {
+            return Err(format!(
+                "FAIL: interceptor returned malformed JSON\n  Output: {trimmed}"
+            ));
+        }
+    };
+
+    let decision = parsed
+        .pointer("/hookSpecificOutput/permissionDecision")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let reason = parsed
+        .pointer("/hookSpecificOutput/permissionDecisionReason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if decision.is_empty() {
+        return Err(format!(
+            "FAIL: interceptor returned unexpected output\n  Output: {trimmed}"
+        ));
+    }
+
+    // Denies caused by infrastructure failure (not real rule matches) indicate
+    // a broken pipeline. Detect both forms of broker failure:
+    // - "broker response timeout": socket connected but no verdict arrived
+    // - "broker unavailable": connection refused (service not running)
+    if decision == "deny"
+        && (reason.contains("broker response timeout") || reason.contains("broker unavailable"))
+    {
+        return Err(format!(
+            "FAIL: broker unreachable or timed out while waiting for verdict\n  Reason: {reason}"
+        ));
+    }
+
+    Ok(match decision {
+        "allow" => "OK: pipeline healthy (synthetic event → allow)".to_string(),
+        "deny" => "OK: pipeline healthy (synthetic event → deny)\n  \
+                   Note: a deny rule matched the health-check event.\n  \
+                   This is expected if you have rules matching Bash commands."
+            .to_string(),
+        "ask" => "OK: pipeline healthy (synthetic event → ask)".to_string(),
+        _ => format!("OK: pipeline responded (unexpected verdict)\n  Response: {trimmed}"),
+    })
+}
+
 fn health(prefix: &PathBuf) {
     #[cfg(unix)]
     let interceptor = prefix.join("bin/claude-interceptor");
@@ -1153,8 +1218,11 @@ fn health(prefix: &PathBuf) {
         process::exit(1);
     }
 
-    // Send a synthetic event through the full pipeline.
-    // Uses a harmless Bash "echo" command that should resolve as allow.
+    // Send a synthetic event through the full pipeline. Uses a harmless Bash
+    // "echo" command that matches no deny/ask rule, so it resolves via the
+    // no-match floor: allow (permissionDecision JSON) under guardrails +
+    // default_action: allow, or defer (empty stdout) under monitor /
+    // passthrough / default_action: defer. Both mean the pipeline is healthy.
     let test_event = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo health-check"},"session_id":"health-check","cwd":"/tmp","tool_use_id":"health-check"}"#;
 
     let output = Command::new(&interceptor)
@@ -1176,55 +1244,12 @@ fn health(prefix: &PathBuf) {
     match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            let parsed: serde_json::Value = match serde_json::from_str(stdout.trim()) {
-                Ok(v) => v,
-                Err(_) => {
-                    eprintln!("FAIL: interceptor returned malformed JSON");
-                    eprintln!("  Output: {}", stdout.trim());
+            match classify_health_stdout(&stdout) {
+                Ok(msg) => println!("{msg}"),
+                Err(msg) => {
+                    eprintln!("{msg}");
                     process::exit(1);
                 }
-            };
-
-            let decision = parsed
-                .pointer("/hookSpecificOutput/permissionDecision")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let reason = parsed
-                .pointer("/hookSpecificOutput/permissionDecisionReason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            if decision.is_empty() {
-                eprintln!("FAIL: interceptor returned unexpected output");
-                eprintln!("  Output: {}", stdout.trim());
-                process::exit(1);
-            }
-
-            // Denies caused by infrastructure failure (not real rule matches)
-            // indicate a broken pipeline. Detect both forms of broker failure:
-            // - "broker response timeout": socket connected but no verdict arrived
-            // - "broker unavailable": connection refused (service not running)
-            if decision == "deny"
-                && (reason.contains("broker response timeout")
-                    || reason.contains("broker unavailable"))
-            {
-                eprintln!("FAIL: broker unreachable or timed out while waiting for verdict");
-                eprintln!("  Reason: {}", reason);
-                process::exit(1);
-            }
-
-            // Parse to show a cleaner message.
-            if decision == "allow" {
-                println!("OK: pipeline healthy (synthetic event → allow)");
-            } else if decision == "deny" {
-                println!("OK: pipeline healthy (synthetic event → deny)");
-                println!("  Note: a deny rule matched the health-check event.");
-                println!("  This is expected if you have rules matching Bash commands.");
-            } else if decision == "ask" {
-                println!("OK: pipeline healthy (synthetic event → ask)");
-            } else {
-                println!("OK: pipeline responded (unexpected verdict)");
-                println!("  Response: {}", stdout.trim());
             }
         }
         Ok(out) => {
@@ -1848,6 +1873,73 @@ mod default_action_tests {
         let out = rewrite_default_action_in_yaml(yaml, "defer").unwrap();
         assert!(out.contains("  mode: monitor\n"), "mode preserved: {out}");
         assert!(out.contains("  default_action: defer\n"));
+    }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::classify_health_stdout;
+
+    #[test]
+    fn allow_is_healthy() {
+        let out = classify_health_stdout(
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":""}}"#,
+        )
+        .expect("allow is healthy");
+        assert!(out.contains("allow"), "got: {out}");
+    }
+
+    #[test]
+    fn defer_empty_stdout_is_healthy() {
+        // Regression guard: a `defer` verdict renders as empty stdout, which
+        // must read as healthy (Prempti stepped aside), not malformed JSON.
+        // Whitespace-only counts as empty.
+        let out = classify_health_stdout("").expect("empty stdout is healthy defer");
+        assert!(out.contains("defer"), "got: {out}");
+        let out_ws = classify_health_stdout("  \n").expect("whitespace stdout is healthy defer");
+        assert!(out_ws.contains("defer"), "got: {out_ws}");
+    }
+
+    #[test]
+    fn ask_is_healthy() {
+        let out = classify_health_stdout(
+            r#"{"hookSpecificOutput":{"permissionDecision":"ask","permissionDecisionReason":"confirm"}}"#,
+        )
+        .expect("ask is healthy");
+        assert!(out.contains("ask"), "got: {out}");
+    }
+
+    #[test]
+    fn rule_deny_is_healthy() {
+        // A real rule-match deny means the pipeline works end to end.
+        let out = classify_health_stdout(
+            r#"{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"Deny rm -rf: blocked"}}"#,
+        )
+        .expect("rule deny is healthy");
+        assert!(out.contains("deny"), "got: {out}");
+    }
+
+    #[test]
+    fn infra_deny_is_failure() {
+        // A fail-closed deny caused by a broker outage must report FAIL.
+        let err = classify_health_stdout(
+            r#"{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"broker unavailable"}}"#,
+        )
+        .expect_err("infra deny is failure");
+        assert!(err.contains("broker unreachable"), "got: {err}");
+    }
+
+    #[test]
+    fn malformed_json_is_failure() {
+        let err = classify_health_stdout("this is not json").expect_err("malformed is failure");
+        assert!(err.contains("malformed JSON"), "got: {err}");
+    }
+
+    #[test]
+    fn json_without_decision_is_failure() {
+        let err = classify_health_stdout(r#"{"hookSpecificOutput":{}}"#)
+            .expect_err("missing decision is failure");
+        assert!(err.contains("unexpected output"), "got: {err}");
     }
 }
 
