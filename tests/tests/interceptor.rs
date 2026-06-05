@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use prempti_tests::interceptor::{
-    assert_decision, assert_reason_contains, run_interceptor, run_with_mock,
+    assert_decision, assert_empty_stdout, assert_reason_contains, run_interceptor, run_with_mock,
 };
 use prempti_tests::mock_broker::{self, MockMode};
 
@@ -25,6 +25,17 @@ fn ask_verdict() {
     let r = run_with_mock(MockMode::Ask, SAMPLE, "ask");
     assert_decision(&r, "ask");
     assert_reason_contains(&r, "requires confirmation");
+}
+
+#[test]
+fn defer_verdict_emits_empty_stdout() {
+    // The `defer` no-match floor (default_action = defer, and monitor/
+    // passthrough) renders as exit 0 with empty stdout, which Claude Code
+    // treats as "no decision; the normal permission flow applies" — NOT a
+    // forced allow, and NOT permissionDecision:"defer" (a -p/SDK-only value
+    // that would pause the tool call).
+    let r = run_with_mock(MockMode::Defer, SAMPLE, "defer");
+    assert_empty_stdout(&r);
 }
 
 #[test]

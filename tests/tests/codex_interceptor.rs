@@ -53,6 +53,15 @@ fn pretool_ask_becomes_deny_with_reason() {
     assert_reason_contains(&r, "requires confirmation");
 }
 
+#[test]
+fn pretool_defer_proceeds_like_allow() {
+    // At PreToolUse, defer (the no-match floor under default_action = defer,
+    // and the monitor/passthrough resolution) proceeds via "allow"; the
+    // PermissionRequest gate is where allow and defer diverge.
+    let r = run_with_mock_for(CODEX, MockMode::Defer, PRE_TOOL_USE, "codex-pre-defer");
+    assert_codex_pretool_decision(&r, "allow");
+}
+
 // ---------------------------------------------------------------------------
 // PreToolUse: broker error paths (fail-closed)
 // ---------------------------------------------------------------------------
@@ -117,14 +126,21 @@ fn pretool_fail_open_yields_allow_when_broker_unreachable() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn permreq_allow_emits_no_output() {
-    // Broker `allow` on PermissionRequest only means "no Prempti rule
-    // matched". Emitting `{"behavior":"allow"}` would tell Codex to SKIP
-    // its own approval prompt — auto-bypassing the user's configured
-    // approval UX. The safe wire shape for "no Prempti objection" is empty
-    // stdout + exit 0: Codex's hook contract treats that as "no opinion,
-    // fall through to normal approval flow".
+fn permreq_allow_emits_behavior_allow() {
+    // Broker `allow` is the no-match floor when default_action = allow:
+    // Prempti actively approves, emitting `{"behavior":"allow"}` so Codex
+    // skips its own approval prompt (mirrors Claude's permissionDecision
+    // "allow"). The contrasting `defer` floor emits no output instead.
     let r = run_with_mock_for(CODEX, MockMode::Allow, PERMISSION_REQUEST, "codex-pr-allow");
+    assert_codex_permreq_behavior(&r, "allow");
+}
+
+#[test]
+fn permreq_defer_emits_no_output() {
+    // Broker `defer` (no-match floor under default_action = defer, and the
+    // monitor/passthrough resolution): emit nothing so Codex's own approval
+    // flow decides. Empty stdout + exit 0 is Codex's "no opinion" contract.
+    let r = run_with_mock_for(CODEX, MockMode::Defer, PERMISSION_REQUEST, "codex-pr-defer");
     assert_codex_permreq_no_output(&r);
 }
 
@@ -162,10 +178,12 @@ fn permreq_broker_unreachable_fail_closed() {
 
 #[test]
 fn permreq_fail_open_emits_no_output_when_broker_unreachable() {
-    // Same no-output semantics as the happy-path allow: a broker outage
-    // with PREMPTI_FAIL_OPEN=1 still must NOT auto-bypass Codex's
-    // approval prompt; "no Prempti objection" is the strongest claim we
-    // can safely make on PermissionRequest.
+    // Fail-open resolves as `defer`, not `allow`: a broker outage with
+    // PREMPTI_FAIL_OPEN=1 lets the call proceed but must NOT have Prempti
+    // actively approve (skip Codex's prompt) when its policy engine is the
+    // thing that's down. Defer → no output → Codex's own approval decides.
+    // This keeps the error path byte-identical to the pre-default_action
+    // behavior.
     let sock = mock_broker::temp_socket_path("codex-pr-failopen");
     let r = run_interceptor_for(
         CODEX,
@@ -187,10 +205,10 @@ fn permreq_without_tool_use_id_still_completes() {
     // upstream schema does not include tool_use_id for). Failure here would
     // mean the broker received a request whose id couldn't be echoed back
     // and the interceptor rejected it as a mismatch; that would surface as
-    // a fail-closed deny on stdout rather than the clean no-output we
-    // expect for broker = allow.
+    // a fail-closed deny on stdout rather than the clean behavior:allow we
+    // expect for broker = allow (default_action = allow).
     let r = run_with_mock_for(CODEX, MockMode::Allow, PERMISSION_REQUEST, "codex-pr-noid");
-    assert_codex_permreq_no_output(&r);
+    assert_codex_permreq_behavior(&r, "allow");
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 use prempti_tests::e2e::E2eHarness;
-use prempti_tests::interceptor::{assert_decision, assert_reason_contains};
+use prempti_tests::interceptor::{assert_decision, assert_empty_stdout, assert_reason_contains};
 
 macro_rules! require_falco {
     () => {
@@ -83,6 +83,35 @@ fn allow_echo_command() {
     let input = E2eHarness::make_input("Bash", r#"{"command":"echo hello"}"#, cwd(), "e2e-echo");
     let r = h.run_hook(&input);
     assert_decision(&r, "allow");
+}
+
+// --- default_action: defer (guardrails no-rule-match floor) ---
+
+#[test]
+fn guardrails_default_action_defer_no_match_defers() {
+    // With default_action = defer, a tool call that matches no deny/ask rule
+    // resolves as defer → the Claude interceptor emits empty stdout + exit 0
+    // (Claude's own permission flow applies) instead of a forced allow.
+    let Some(h) = E2eHarness::start_with_default_action("guardrails", "defer") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    let input = E2eHarness::make_input("Bash", r#"{"command":"ls -la"}"#, cwd(), "e2e-defer-ls");
+    let r = h.run_hook(&input);
+    assert_empty_stdout(&r);
+}
+
+#[test]
+fn guardrails_default_action_defer_still_denies_matched_rule() {
+    // default_action governs only the no-match floor; an explicit deny rule
+    // still denies even when the floor is defer.
+    let Some(h) = E2eHarness::start_with_default_action("guardrails", "defer") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    let input = E2eHarness::make_input("Bash", r#"{"command":"rm -rf /"}"#, cwd(), "e2e-defer-rm");
+    let r = h.run_hook(&input);
+    assert_decision(&r, "deny");
 }
 
 // --- Deny: writes to sensitive paths ---

@@ -264,23 +264,30 @@ pub fn assert_codex_permreq_message_contains(result: &InterceptorResult, needle:
     );
 }
 
-/// Assert the interceptor emitted **no output** for a `PermissionRequest` —
-/// the wire-level representation of "no Prempti objection, fall through to
-/// Codex's normal approval flow" (Codex's hook contract: empty stdout +
-/// exit 0). Emitting `{"behavior":"allow"}` on PermissionRequest would tell
-/// Codex to SKIP its approval prompt, which is unsafe when Prempti just
-/// had no matching rule.
-pub fn assert_codex_permreq_no_output(result: &InterceptorResult) {
+/// Assert the interceptor emitted **no output** and exited 0 — the wire-level
+/// "no decision" signal. This is the `defer` verdict: for Claude Code, exit 0
+/// with empty stdout means "the normal permission flow applies"; for Codex's
+/// `PermissionRequest`, it means "fall through to Codex's own approval flow".
+/// Contrast the `allow` verdict, which emits an explicit approval
+/// (`permissionDecision:"allow"` / `{"behavior":"allow"}`) that skips the
+/// agent's prompt.
+pub fn assert_empty_stdout(result: &InterceptorResult) {
     assert!(
         result.stdout.trim().is_empty(),
-        "expected empty stdout on PermissionRequest allow, got '{}' (stderr='{}')",
+        "expected empty stdout (defer / no decision), got '{}' (stderr='{}')",
         result.stdout.trim(),
         result.stderr.trim()
     );
     assert_eq!(
         result.exit_code, 0,
-        "expected exit 0 on PermissionRequest allow, got {} (stderr='{}')",
+        "expected exit 0 with empty stdout, got {} (stderr='{}')",
         result.exit_code,
         result.stderr.trim()
     );
+}
+
+/// Codex `PermissionRequest` + `defer`: no output, so Codex's own approval
+/// flow decides. Thin alias of [`assert_empty_stdout`] for call-site clarity.
+pub fn assert_codex_permreq_no_output(result: &InterceptorResult) {
+    assert_empty_stdout(result);
 }

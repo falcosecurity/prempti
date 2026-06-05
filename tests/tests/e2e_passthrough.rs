@@ -1,5 +1,5 @@
 use prempti_tests::e2e::E2eHarness;
-use prempti_tests::interceptor::assert_decision;
+use prempti_tests::interceptor::assert_empty_stdout;
 
 macro_rules! require_falco {
     () => {
@@ -22,22 +22,24 @@ fn cwd() -> &'static str {
 }
 
 // Passthrough short-circuits at register: every tool call resolves as
-// `allow` immediately, without waiting for rule evaluation. From the
-// interceptor's POV the verdict is indistinguishable from monitor's
-// force-allow; the unique broker behavior (no pending insert, no rule-eval
-// wait) is covered by the unit tests in `plugins/coding-agents-plugin/src/
-// broker.rs`. These tests just confirm the wire-level result.
+// `defer` immediately, without waiting for rule evaluation. For the Claude
+// interceptor that renders as exit 0 with empty stdout (Claude's normal
+// permission flow then applies). From the interceptor's POV the result is
+// indistinguishable from monitor's defer; the unique broker behavior (no
+// pending insert, no rule-eval wait) is covered by the unit tests in
+// `plugins/coding-agents-plugin/src/broker.rs`. These tests just confirm the
+// wire-level result.
 
 #[test]
-fn passthrough_rm_rf_allowed() {
+fn passthrough_rm_rf_deferred() {
     let h = require_falco!();
     let input = E2eHarness::make_input("Bash", r#"{"command":"rm -rf /"}"#, cwd(), "pt-rm");
     let r = h.run_hook(&input);
-    assert_decision(&r, "allow");
+    assert_empty_stdout(&r);
 }
 
 #[test]
-fn passthrough_write_sensitive_allowed() {
+fn passthrough_write_sensitive_deferred() {
     let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Windows/system.ini"
@@ -51,11 +53,11 @@ fn passthrough_write_sensitive_allowed() {
         "pt-wsen",
     );
     let r = h.run_hook(&input);
-    assert_decision(&r, "allow");
+    assert_empty_stdout(&r);
 }
 
 #[test]
-fn passthrough_write_outside_cwd_allowed() {
+fn passthrough_write_outside_cwd_deferred() {
     let h = require_falco!();
     let path = if cfg!(windows) {
         "C:/Users/other/file.txt"
@@ -69,13 +71,13 @@ fn passthrough_write_outside_cwd_allowed() {
         "pt-wout",
     );
     let r = h.run_hook(&input);
-    assert_decision(&r, "allow");
+    assert_empty_stdout(&r);
 }
 
 #[test]
-fn passthrough_safe_command_allowed() {
+fn passthrough_safe_command_deferred() {
     let h = require_falco!();
     let input = E2eHarness::make_input("Bash", r#"{"command":"ls -la"}"#, cwd(), "pt-ls");
     let r = h.run_hook(&input);
-    assert_decision(&r, "allow");
+    assert_empty_stdout(&r);
 }

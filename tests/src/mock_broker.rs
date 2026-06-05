@@ -20,6 +20,7 @@ pub enum MockMode {
     Allow,
     Deny,
     Ask,
+    Defer,
     Slow(Duration),
     Close,
     BadJson,
@@ -118,6 +119,10 @@ fn handle_connection(stream: Stream, mode: &MockMode) {
         ),
         MockMode::Ask => format!(
             r#"{{"id":"{}","decision":"ask","reason":"requires confirmation"}}"#,
+            req_id
+        ),
+        MockMode::Defer => format!(
+            r#"{{"id":"{}","decision":"defer","reason":""}}"#,
             req_id
         ),
         MockMode::Slow(delay) => {

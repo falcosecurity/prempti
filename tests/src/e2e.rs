@@ -94,9 +94,18 @@ macro_rules! skip_unless_falco {
 }
 
 impl E2eHarness {
-    /// Start Falco with the plugin in the given mode.
+    /// Start Falco with the plugin in the given mode and the plugin-default
+    /// no-rule-match floor (`default_action = allow`).
     /// Returns `None` if Falco or the plugin is not available.
     pub fn start(mode: &str) -> Option<Self> {
+        Self::start_with_default_action(mode, "allow")
+    }
+
+    /// Start Falco with the plugin in the given mode and no-rule-match floor
+    /// (`default_action`, one of "allow" / "defer"). `default_action` governs
+    /// guardrails mode only; monitor/passthrough always resolve as defer.
+    /// Returns `None` if Falco or the plugin is not available.
+    pub fn start_with_default_action(mode: &str, default_action: &str) -> Option<Self> {
         let falco_bin = find_falco()?;
         let plugin_lib = find_plugin_lib()?;
         // Skip only if NO interceptor is built. Per-test binary requirements
@@ -138,6 +147,7 @@ impl E2eHarness {
             &rules_dir,
             http_port,
             mode,
+            default_action,
         );
 
         // Start Falco.
@@ -281,6 +291,7 @@ fn to_forward_slashes(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_falco_config(
     config_path: &Path,
     plugin_lib: &Path,
@@ -288,6 +299,7 @@ fn write_falco_config(
     rules_dir: &Path,
     http_port: u16,
     mode: &str,
+    default_action: &str,
 ) {
     let deny_rules = to_forward_slashes(&rules_dir.join("deny.yaml"));
     let seen_rules = to_forward_slashes(&rules_dir.join("seen.yaml"));
@@ -304,6 +316,7 @@ plugins:
       socket_path: "{sock_path}"
       http_port: {http_port}
       mode: {mode}
+      default_action: {default_action}
 load_plugins:
   - coding_agent
 rules_files:
