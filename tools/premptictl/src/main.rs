@@ -59,7 +59,7 @@ fn plugin_config_path(prefix: &PathBuf) -> PathBuf {
 
 fn print_restart_warning() {
     eprintln!();
-    eprintln!("  WARNING: Applying a mode change requires stopping and starting the");
+    eprintln!("  WARNING: Applying this change requires stopping and starting the");
     eprintln!("  service. During the restart (a few seconds), the broker is");
     eprintln!("  unavailable and ALL Claude Code tool calls will be BLOCKED");
     eprintln!("  (fail-closed). This is expected and temporary.");
@@ -207,6 +207,117 @@ fn mode_set(prefix: &PathBuf, mode: &str) {
 
     println!();
     println!("Mode set to: {mode}");
+}
+
+// ---------------------------------------------------------------------------
+// Default action management (no-rule-match floor)
+// ---------------------------------------------------------------------------
+
+fn default_action_get(prefix: &PathBuf) {
+    let config_path = plugin_config_path(prefix);
+    let data = fs::read_to_string(&config_path).unwrap_or_else(|e| {
+        eprintln!("error reading {}: {e}", config_path.display());
+        process::exit(1);
+    });
+
+    for line in data.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("default_action:") {
+            let action = rest.trim();
+            if !action.is_empty() {
+                println!("{}", action.trim_matches(|c| c == '"' || c == '\''));
+                return;
+            }
+        }
+    }
+    // Matches the plugin's serde default when the key is absent.
+    println!("allow");
+}
+
+/// Rewrite the `default_action:` line in a plugin-config YAML, preserving
+/// indentation. Returns `None` if no `default_action:` line is found. Mirrors
+/// `rewrite_mode_in_yaml`; the inline-comment caveat documented there applies.
+fn rewrite_default_action_in_yaml(data: &str, action: &str) -> Option<String> {
+    let mut found = false;
+    let mut out = String::with_capacity(data.len());
+    let line_count = data.lines().count();
+    for (idx, line) in data.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("default_action:") {
+            found = true;
+            out.push_str(&line.replace(trimmed, &format!("default_action: {action}")));
+        } else {
+            out.push_str(line);
+        }
+        if idx + 1 < line_count {
+            out.push('\n');
+        }
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if found {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn default_action_set(prefix: &PathBuf, action: &str) {
+    if action != "allow" && action != "defer" {
+        eprintln!("error: default-action must be 'allow' or 'defer'");
+        process::exit(1);
+    }
+
+    let config_path = plugin_config_path(prefix);
+    let data = fs::read_to_string(&config_path).unwrap_or_else(|e| {
+        eprintln!("error reading {}: {e}", config_path.display());
+        process::exit(1);
+    });
+
+    let new_data = rewrite_default_action_in_yaml(&data, action).unwrap_or_else(|| {
+        eprintln!(
+            "error: 'default_action:' not found in {}",
+            config_path.display()
+        );
+        process::exit(1);
+    });
+
+    // The floor is consulted only in guardrails mode; flag the no-op so the
+    // user isn't surprised that nothing changed behaviorally.
+    let mode = parse_plugin_config_summary(&data);
+    if mode != "guardrails" {
+        eprintln!(
+            "note: default_action is ignored in {mode} mode (every request resolves as 'defer'); \
+             it takes effect once you switch to guardrails mode."
+        );
+    }
+
+    // Snapshot service / hook state BEFORE rewriting so we know what to
+    // restore after the restart cycle (mirrors mode_set).
+    let was_running = is_service_running();
+    let hook_was_registered = hook::is_registered();
+    let codex_hook_was_enabled = hook_codex::is_enabled(prefix);
+
+    fs::write(&config_path, new_data).unwrap_or_else(|e| {
+        eprintln!("error writing {}: {e}", config_path.display());
+        process::exit(1);
+    });
+
+    if !was_running {
+        println!("Default action set to: {action}");
+        println!("(Service is not running. Start it to apply: premptictl start)");
+        return;
+    }
+
+    println!("Restarting service to apply default-action change...");
+    print_restart_warning();
+    eprintln!();
+
+    service_restart_inner(prefix, hook_was_registered, codex_hook_was_enabled);
+
+    println!();
+    println!("Default action set to: {action}");
 }
 
 /// Stop the service, re-register hooks to keep the gap fail-closed, then
@@ -1699,6 +1810,48 @@ mod mode_tests {
 }
 
 #[cfg(test)]
+mod default_action_tests {
+    use super::rewrite_default_action_in_yaml;
+
+    #[test]
+    fn flips_value_preserving_indent() {
+        let yaml = "plugins:\n  - name: coding_agent\n    init_config:\n      mode: guardrails\n      default_action: allow\n      http_port: 2802\n";
+        let out =
+            rewrite_default_action_in_yaml(yaml, "defer").expect("default_action line found");
+        assert!(
+            out.contains("      default_action: defer\n"),
+            "indent preserved: {out}"
+        );
+        assert!(out.contains("      http_port: 2802\n"));
+    }
+
+    #[test]
+    fn returns_none_when_absent() {
+        let yaml = "init_config:\n  mode: guardrails\n";
+        assert!(rewrite_default_action_in_yaml(yaml, "defer").is_none());
+    }
+
+    #[test]
+    fn round_trips_allow_and_defer() {
+        let yaml = "init_config:\n  default_action: allow\n";
+        let out = rewrite_default_action_in_yaml(yaml, "defer").unwrap();
+        assert!(out.contains("  default_action: defer\n"), "got: {out}");
+        let back = rewrite_default_action_in_yaml(&out, "allow").unwrap();
+        assert!(back.contains("  default_action: allow\n"), "got: {back}");
+    }
+
+    #[test]
+    fn targets_only_default_action_not_mode() {
+        // Both keys carry scalar values; the rewriter must touch only
+        // `default_action:` and leave `mode:` intact.
+        let yaml = "init_config:\n  mode: monitor\n  default_action: allow\n";
+        let out = rewrite_default_action_in_yaml(yaml, "defer").unwrap();
+        assert!(out.contains("  mode: monitor\n"), "mode preserved: {out}");
+        assert!(out.contains("  default_action: defer\n"));
+    }
+}
+
+#[cfg(test)]
 mod plugin_config_summary_tests {
     use super::{parse_plugin_config_summary, read_plugin_config_summary};
     use std::path::Path;
@@ -1756,6 +1909,10 @@ fn print_usage() {
     eprintln!("  mode monitor      Switch to monitor mode (all verdicts allow, alerts logged)");
     eprintln!("  mode passthrough  Switch to passthrough mode (Experimental, embedding-only:");
     eprintln!("                    instant allow, no rule-eval wait; events still enqueued)");
+    eprintln!();
+    eprintln!("  default-action          Show the no-rule-match floor (guardrails mode)");
+    eprintln!("  default-action allow    No matching rule → Prempti approves (skips agent prompt)");
+    eprintln!("  default-action defer    No matching rule → defer to the agent's own permission flow");
     eprintln!();
     eprintln!("  start            Start the service");
     eprintln!("  stop             Stop the service");
@@ -1886,6 +2043,8 @@ fn main() {
         ["hook", "status", "codex"] => hook_codex::cli_status(&prefix),
         ["mode"] => mode_get(&prefix),
         ["mode", mode] => mode_set(&prefix, mode),
+        ["default-action"] => default_action_get(&prefix),
+        ["default-action", action] => default_action_set(&prefix, action),
         ["start"] => service_start(&prefix),
         ["stop"] => service_stop(true),
         ["restart"] => service_restart(&prefix),
