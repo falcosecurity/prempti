@@ -1026,6 +1026,102 @@
          or tool.input contains "/id_ed25519"
          or tool.input contains "oauth_creds")
 
+# Container privilege-escalation and host-breakout patterns in container-run
+# commands. The flags below are shared by docker, podman, and nerdctl, so the
+# substring matches are runtime-agnostic and cover run/create/exec alike.
+# Each is a documented route to host-equivalent power or container escape —
+# for a coding agent, a clean way out of whatever containment Prempti is meant
+# to complement, and one Prempti cannot observe after the fact (it only sees
+# what the agent declares at the hook layer). Ask rather than deny: dind,
+# devcontainers, and GPU/CI workloads use several of these flags legitimately.
+# Helpers are split into separate macros to keep the umbrella readable and to
+# avoid (A and B) terms nested inside an or-chain.
+
+# --privileged on run/create/exec — full host device + capability access.
+- macro: is_container_privileged_flag
+  condition: tool.input_command contains "--privileged"
+
+# Added Linux capabilities (--cap-add=SYS_ADMIN, =ALL, =SYS_PTRACE, …).
+- macro: is_container_cap_add
+  condition: tool.input_command contains "--cap-add"
+
+# Disabled seccomp/AppArmor/SELinux profiles or unconfined system paths.
+# Deliberately matches the dangerous values, not bare --security-opt, so the
+# hardening value --security-opt no-new-privileges does not trigger an ask.
+- macro: is_container_security_opt_unconfined
+  condition: >
+    tool.input_command contains "seccomp=unconfined"
+    or tool.input_command contains "apparmor=unconfined"
+    or tool.input_command contains "systempaths=unconfined"
+    or tool.input_command contains "label=disable"
+    or tool.input_command contains "label:disable"
+
+# Shared host namespaces, both = and space separated. --pid=host enables
+# nsenter into host PID 1; --ipc/--userns/--uts/--cgroupns=host weaken
+# isolation; --net/--network=host exposes host-bound services (the most
+# common of these in benign dev — relax via override first if it nags).
+- macro: is_container_host_namespace
+  condition: >
+    tool.input_command contains "--pid=host"
+    or tool.input_command contains "--pid host"
+    or tool.input_command contains "--ipc=host"
+    or tool.input_command contains "--ipc host"
+    or tool.input_command contains "--userns=host"
+    or tool.input_command contains "--userns host"
+    or tool.input_command contains "--uts=host"
+    or tool.input_command contains "--uts host"
+    or tool.input_command contains "--cgroupns=host"
+    or tool.input_command contains "--cgroupns host"
+    or tool.input_command contains "--network=host"
+    or tool.input_command contains "--network host"
+    or tool.input_command contains "--net=host"
+    or tool.input_command contains "--net host"
+
+# Docker daemon socket exposed to or targeted by the command — a container
+# with the socket mounted can spawn a privileged sibling and own the host;
+# DOCKER_HOST= points the client at an arbitrary daemon.
+- macro: is_container_docker_socket
+  condition: >
+    tool.input_command contains "docker.sock"
+    or tool.input_command contains "DOCKER_HOST="
+
+# Host root filesystem bind-mounted into the container (-v /:… or
+# --mount source=/,…) — direct read/write of the entire host.
+- macro: is_container_host_root_mount
+  condition: >
+    tool.input_command contains "-v /:"
+    or tool.input_command contains "--volume /:"
+    or tool.input_command contains "source=/,"
+    or tool.input_command contains "src=/,"
+
+# Raw host device passthrough (--device=/dev/…). Covers /dev/mem, raw disks,
+# etc.; also matches benign GPU/USB passthrough, hence ask not deny.
+- macro: is_container_device_passthrough
+  condition: >
+    tool.input_command contains "--device=/dev/"
+    or tool.input_command contains "--device /dev/"
+
+# nsenter into the host's namespaces via init (PID 1) — the standard breakout
+# once --pid=host or the docker socket is available. Gated on targeting PID 1
+# so the word nsenter alone in prose does not match.
+- macro: is_nsenter_host
+  condition: >
+    tool.input_command contains "nsenter"
+    and (tool.input_command contains "-t 1"
+         or tool.input_command contains "--target 1"
+         or tool.input_command contains "-t1")
+
+- macro: is_container_privilege_escalation
+  condition: >
+    is_container_privileged_flag
+    or is_container_cap_add
+    or is_container_security_opt_unconfined
+    or is_container_host_namespace
+    or is_container_docker_socket
+    or is_container_host_root_mount
+    or is_container_device_passthrough
+    or is_nsenter_host
+
 # Rules
 
 - rule: Deny credential file access via Bash
@@ -1086,6 +1182,28 @@
   priority: WARNING
   source: coding_agent
   tags: [coding_agent_ask]
+
+- rule: Ask before container privilege escalation or host breakout
+  desc: >
+    Requires user confirmation before Bash commands that grant a container
+    host-equivalent power or break out of container isolation: --privileged,
+    --cap-add, disabled seccomp/AppArmor/SELinux profiles (--security-opt
+    *=unconfined or label=disable), shared host namespaces (--pid / --ipc /
+    --userns / --uts / --cgroupns / --network = host), Docker daemon socket
+    exposure (docker.sock, DOCKER_HOST=), host root bind mounts (-v /: or
+    --mount source=/), raw device passthrough (--device=/dev/), and nsenter
+    into host PID 1. The flags are shared by docker, podman, and nerdctl.
+    Prempti runs in user space and only sees what the agent declares at the
+    hook layer, so a privileged container is a route to host access it cannot
+    observe afterward. Asks rather than denies because dind, devcontainers,
+    and GPU/CI workloads use these flags legitimately; --network=host is the
+    most common of these in benign dev and is the first to relax via override.
+  condition: is_bash and is_container_privilege_escalation
+  output: >
+    Falco requires confirmation before %agent.name runs a container command that escalates privileges or breaks out of container isolation (%tool.input_command)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, mitre_t1611_escape_to_host, mitre_t1610_deploy_container]
 
 - rule: Deny pipe to shell interpreter
   desc: >
