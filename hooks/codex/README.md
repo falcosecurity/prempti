@@ -99,7 +99,7 @@ Register the interceptor with:
 premptictl hook add codex
 ```
 
-This writes a `~/.codex/hooks.json` file that mounts the packaged `codex-interceptor` binary on both `PreToolUse` and `PermissionRequest` (matcher `.*`, 30s timeout). The file is self-contained — your `~/.codex/config.toml` is not touched. Remove with `premptictl hook remove codex`; status with `premptictl hook status codex`.
+This writes a `~/.codex/hooks.json` file that mounts the packaged `codex-interceptor` binary on both `PreToolUse` and `PermissionRequest` (matcher `.*`, 30s timeout). The file is self-contained — your `~/.codex/config.toml` is not touched. Remove with `premptictl hook remove codex`; check state with `premptictl hook status codex` — which reports the `hooks.json` path, whether the supervisor is managing the hook, and both event mounts, warning if only one of `PreToolUse` / `PermissionRequest` is registered.
 
 The hook remains opt-in. Once enabled, the Prempti supervisor manages its lifecycle alongside the Claude Code hook: it re-asserts the JSON hook on service start and removes it on service stop so Codex does not fail closed against a dead broker. The opt-in marker remains until `premptictl hook remove codex`.
 
@@ -127,6 +127,12 @@ If you'd rather hand-roll the config — for example to bind it to a specific ma
 ```
 
 (Codex also accepts an inline `[hooks]` block in `~/.codex/config.toml`; both layers are loaded.)
+
+## Session names in `premptictl logs`
+
+Codex never sends a human-readable session name in the hook payload — only `session_id`. The name you set with Codex's `/rename` (and the auto-generated name Codex assigns) live in `~/.codex/session_index.jsonl`, appended one `{"id": …, "thread_name": …}` line per change (last wins). `premptictl logs` resolves that file — its path derived from the hook's `transcript_path` (the rollout file under `<codex_home>/sessions/…`, so a custom `CODEX_HOME` is handled automatically) — and renders the `thread_name` in the session banner and per-line label, so a `/rename` shows up live.
+
+If the index is absent or its (undocumented, version-specific) format changes, resolution falls back to the short session id. It is display-only: rule matching always uses the stable `agent.session_id`.
 
 ## Configuration
 

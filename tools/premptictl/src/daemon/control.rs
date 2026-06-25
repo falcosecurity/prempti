@@ -271,15 +271,26 @@ mod tests {
         dir
     }
 
-    /// Try to bind in `dir`, skipping the test (and printing why) if the
-    /// environment refuses AF_UNIX bind there. Sandboxed CI runners
-    /// (Landlock, restricted seccomp, certain container `/tmp` policies)
-    /// can block bind with EPERM even though the path is writable.
+    /// Whether a `bind` failure means the *environment* can't host the test
+    /// socket (so the test should skip, not fail) rather than a product bug.
+    /// Two cases: sandboxed CI runners (Landlock / seccomp / container `/tmp`
+    /// policy) reject bind with EPERM; and on macOS a deep `std::env::temp_dir`
+    /// path can overflow the ~104-byte `sun_path` limit, which std reports as
+    /// `InvalidInput` ("path must be shorter than SUN_LEN").
+    fn bind_unavailable(e: &io::Error) -> bool {
+        matches!(
+            e.kind(),
+            io::ErrorKind::PermissionDenied | io::ErrorKind::InvalidInput
+        )
+    }
+
+    /// Try to bind in `dir`, skipping the test (and printing why) when the
+    /// environment can't host the socket there (see `bind_unavailable`).
     fn try_bind_or_skip(dir: &Path, label: &str) -> Option<(UnixListener, PathBuf)> {
         let sock = dir.join("supervisor.sock");
         match bind(&sock) {
             Ok(l) => Some((l, sock)),
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            Err(e) if bind_unavailable(&e) => {
                 eprintln!(
                     "[skip {label}] cannot bind AF_UNIX in {}: {e}",
                     dir.display()
@@ -333,7 +344,7 @@ mod tests {
         std::fs::create_dir_all(&parent).unwrap();
         let listener = match bind(&sock) {
             Ok(l) => l,
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            Err(e) if bind_unavailable(&e) => {
                 eprintln!(
                     "[skip bind_chmods_socket_and_run_dir] cannot bind AF_UNIX in {}: {e}",
                     parent.display()

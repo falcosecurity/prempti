@@ -261,7 +261,7 @@ Recommended:
 premptictl hook add codex
 ```
 
-This writes `~/.codex/hooks.json` registering the interceptor for both `PreToolUse` and `PermissionRequest` with matcher `.*` (regex; matches every tool name) and a 30-second timeout. It also records the Codex opt-in marker under the Prempti install prefix, so the supervisor re-asserts the JSON hook on service start and removes it on service stop. Remove with `premptictl hook remove codex`; check state with `premptictl hook status codex`.
+This writes `~/.codex/hooks.json` registering the interceptor for both `PreToolUse` and `PermissionRequest` with matcher `.*` (regex; matches every tool name) and a 30-second timeout. It also records the Codex opt-in marker under the Prempti install prefix, so the supervisor re-asserts the JSON hook on service start and removes it on service stop. Remove with `premptictl hook remove codex`; check state with `premptictl hook status codex` (reports the `hooks.json` path, the opt-in marker state, and both event mounts — warning if only one is registered).
 
 The hand-rolled equivalent is documented in [`hooks/codex/README.md`](../../../hooks/codex/README.md). Codex also accepts an inline `[hooks]` block in `~/.codex/config.toml`; both layers are loaded together.
 

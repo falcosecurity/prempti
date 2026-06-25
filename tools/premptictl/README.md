@@ -15,9 +15,18 @@ Binary: `target/release/premptictl`
 ### Hook Management
 
 ```bash
-premptictl hook add       # Register interceptor in Claude Code settings.json
-premptictl hook remove    # Remove interceptor from Claude Code settings.json
-premptictl hook status    # Check if the hook is registered
+# Claude Code (~/.claude/settings.json)
+premptictl hook add        # Register the interceptor on PreToolUse
+premptictl hook remove     # Remove the interceptor
+premptictl hook status     # Report what's registered: the settings file, the
+                           # interceptor path and event, and any stale, foreign,
+                           # duplicate, or missing-binary condition
+
+# Codex CLI (~/.codex/hooks.json, experimental)
+premptictl hook add codex      # Register on PreToolUse + PermissionRequest
+premptictl hook remove codex   # Remove the interceptor
+premptictl hook status codex   # Report path, supervisor-managed marker, and both
+                               # event mounts; warns if only one event is hooked
 ```
 
 ### Mode Switching
@@ -82,6 +91,8 @@ premptictl logs --err [flags]   # Same, but against the stderr log
 ```
 
 `logs` defaults to a snapshot-and-exit (like `kubectl logs` / `docker logs`) of the **last 100 lines**. Pass `-f` / `--follow` to stream new output afterwards. `--tail=N` overrides the line count (use a large value if you want the entire file). The `--err` flag targets `falco.err` instead of `falco.log`.
+
+The pretty renderer shows a friendly **session name** in the banner and per-line label when it can resolve one: for Claude Code it reads the transcript's `/rename` title (falling back to the first user message); for Codex it reads `~/.codex/session_index.jsonl` (the `thread_name`, which reflects Codex's `/rename` as well as its auto-generated names). It falls back to the short session id when no name is available — name resolution is display-only and never affects policy.
 
 ## Service Lifecycle
 
