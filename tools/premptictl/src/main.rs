@@ -1841,8 +1841,7 @@ mod default_action_tests {
     #[test]
     fn flips_value_preserving_indent() {
         let yaml = "plugins:\n  - name: coding_agent\n    init_config:\n      mode: guardrails\n      default_action: allow\n      http_port: 2802\n";
-        let out =
-            rewrite_default_action_in_yaml(yaml, "defer").expect("default_action line found");
+        let out = rewrite_default_action_in_yaml(yaml, "defer").expect("default_action line found");
         assert!(
             out.contains("      default_action: defer\n"),
             "indent preserved: {out}"
@@ -2004,7 +2003,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("  default-action          Show the no-rule-match floor (guardrails mode)");
     eprintln!("  default-action allow    No matching rule → Prempti approves (skips agent prompt)");
-    eprintln!("  default-action defer    No matching rule → defer to the agent's own permission flow");
+    eprintln!(
+        "  default-action defer    No matching rule → defer to the agent's own permission flow"
+    );
     eprintln!();
     eprintln!("  start            Start the service");
     eprintln!("  stop             Stop the service");
@@ -2129,7 +2130,7 @@ fn main() {
     match cmd_args.as_slice() {
         ["hook", "add"] | ["hook", "add", "claude"] => hook::cli_add(&prefix),
         ["hook", "remove"] | ["hook", "remove", "claude"] => hook::cli_remove(&prefix),
-        ["hook", "status"] | ["hook", "status", "claude"] => hook::cli_status(),
+        ["hook", "status"] | ["hook", "status", "claude"] => hook::cli_status(&prefix),
         ["hook", "add", "codex"] => hook_codex::cli_add(&prefix),
         ["hook", "remove", "codex"] => hook_codex::cli_remove(&prefix),
         ["hook", "status", "codex"] => hook_codex::cli_status(&prefix),

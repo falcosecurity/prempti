@@ -100,7 +100,20 @@ impl ShowMask {
 }
 
 pub trait SessionNameResolver {
-    fn resolve(&mut self, transcript_path: &str) -> Option<String>;
+    /// Resolve a human-friendly session name for display.
+    ///
+    /// `agent_name` selects the storage convention. Claude Code keeps the
+    /// name inside the transcript itself (a `custom-title` record written by
+    /// `/rename`, else the first user message). Codex never puts the name in
+    /// the transcript — it lives in `<codex_home>/session_index.jsonl`, keyed
+    /// by session id. `session_id` and `transcript_path` come straight from
+    /// the seen alert's `agent.session_id` / `agent.transcript_path`.
+    fn resolve(
+        &mut self,
+        agent_name: &str,
+        session_id: &str,
+        transcript_path: &str,
+    ) -> Option<String>;
 }
 
 #[derive(Default)]
@@ -124,13 +137,38 @@ impl ResolverEntry {
     }
 }
 
+/// Parsed `session_index.jsonl`, cached so we only re-read when the file
+/// changes. `names` maps session id → most-recent `thread_name`.
+#[derive(Default)]
+struct CodexIndexCache {
+    /// Byte length last read. Any change (grow on `/rename`, or shrink on
+    /// rotation) triggers a full rebuild.
+    last_len: u64,
+    names: HashMap<String, String>,
+}
+
 #[derive(Default)]
 pub struct FsSessionNameResolver {
+    /// Claude Code: incremental transcript-scan state, keyed by transcript path.
     cache: HashMap<String, ResolverEntry>,
+    /// Codex: parsed `session_index.jsonl`, keyed by index path.
+    codex: HashMap<String, CodexIndexCache>,
 }
 
 impl SessionNameResolver for FsSessionNameResolver {
-    fn resolve(&mut self, transcript_path: &str) -> Option<String> {
+    fn resolve(
+        &mut self,
+        agent_name: &str,
+        session_id: &str,
+        transcript_path: &str,
+    ) -> Option<String> {
+        // Codex doesn't write the session name into the transcript — it
+        // records it (auto-generated first, then overwritten by `/rename`) in
+        // `<codex_home>/session_index.jsonl`, keyed by session id.
+        if agent_name == "codex" {
+            return self.resolve_codex(session_id, transcript_path);
+        }
+        // Claude Code (default): the name lives in the transcript itself.
         if transcript_path.is_empty() {
             return None;
         }
@@ -148,6 +186,39 @@ impl SessionNameResolver for FsSessionNameResolver {
             }
         }
         entry.current()
+    }
+}
+
+impl FsSessionNameResolver {
+    /// Resolve a Codex session name from `<codex_home>/session_index.jsonl`.
+    /// The index path is derived from the rollout `transcript_path`
+    /// (`<codex_home>/sessions/YYYY/MM/DD/rollout-*.jsonl`), so a relocated
+    /// `CODEX_HOME` needs no extra wiring. Each `/rename` appends a fresh
+    /// `{"id":...,"thread_name":...}` line, so the last entry for a session id
+    /// wins. Best-effort: any miss (no index, no matching id, unparseable
+    /// line, future format change) falls back to the bare session id via
+    /// `None`.
+    fn resolve_codex(&mut self, session_id: &str, transcript_path: &str) -> Option<String> {
+        if session_id.is_empty() {
+            return None;
+        }
+        let index_path = codex_session_index_path(transcript_path)?;
+        let cur_len = std::fs::metadata(&index_path).ok().map(|m| m.len());
+        let entry = self.codex.entry(index_path.clone()).or_default();
+        if let Some(len) = cur_len {
+            // The index is tiny and rename only appends; on any size change
+            // we rebuild from scratch, which keeps "last line wins" trivial.
+            if len != entry.last_len {
+                entry.names.clear();
+                load_codex_index(&index_path, &mut entry.names);
+                entry.last_len = len;
+            }
+        }
+        entry
+            .names
+            .get(session_id)
+            .map(|name| condense_session_name(name))
+            .filter(|name| !name.is_empty())
     }
 }
 
@@ -191,6 +262,48 @@ fn scan_transcript_incremental(path: &str, entry: &mut ResolverEntry) {
             }
             _ => {}
         }
+    }
+}
+
+/// Derive `<codex_home>/session_index.jsonl` from a Codex rollout transcript
+/// path shaped like `<codex_home>/sessions/YYYY/MM/DD/rollout-*.jsonl`. Splits
+/// on the `sessions` directory segment so a custom `CODEX_HOME` works, and
+/// handles both `/` and `\` separators. Returns `None` when the path has no
+/// `sessions` segment (i.e. it isn't a Codex rollout path).
+fn codex_session_index_path(transcript_path: &str) -> Option<String> {
+    for sep in ["/sessions/", "\\sessions\\"] {
+        if let Some(idx) = transcript_path.find(sep) {
+            let home = &transcript_path[..idx];
+            let slash = &sep[..1];
+            return Some(format!("{home}{slash}session_index.jsonl"));
+        }
+    }
+    None
+}
+
+/// Read every `{"id":...,"thread_name":...}` line into `names`, last write
+/// winning so the most recent `/rename` for a session id is what survives.
+/// Silent on any I/O or parse error — this is a display nicety, not policy.
+fn load_codex_index(path: &str, names: &mut HashMap<String, String>) {
+    let Ok(file) = File::open(path) else {
+        return;
+    };
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let (Some(id), Some(name)) = (
+            v.get("id").and_then(|x| x.as_str()),
+            v.get("thread_name").and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        names.insert(id.to_string(), name.to_string());
     }
 }
 
@@ -516,6 +629,7 @@ impl<R: SessionNameResolver> Formatter<R> {
             .or_else(|| field_str(fields, "agent.cwd"))
             .unwrap_or_default();
         let transcript_path = field_str(fields, "agent.transcript_path").unwrap_or_default();
+        let agent_name = field_str(fields, "agent.name").unwrap_or_default();
         let time_str = clock_time_from_alert(seen);
 
         let mut out = Vec::new();
@@ -536,7 +650,9 @@ impl<R: SessionNameResolver> Formatter<R> {
 
         // Resolve title up front so we can both emit the banner and detect
         // mid-stream rename. Resolver re-scans the transcript incrementally.
-        let resolved_title = self.resolver.resolve(&transcript_path);
+        let resolved_title = self
+            .resolver
+            .resolve(&agent_name, &session_id, &transcript_path);
         if new_session {
             let banner = self.format_banner(&session_id, color_code, resolved_title.as_deref());
             self.last_banner_meta.push((
@@ -1004,12 +1120,8 @@ impl<RS: SessionNameResolver> SharedState<RS> {
     /// buffer, attaching banner regeneration metadata to the lines that
     /// `Formatter` flagged as banners. Caps at `EVENT_BUFFER_CAPACITY`.
     fn record_lines(&mut self, lines: &[String]) {
-        let banners: HashMap<usize, BannerMeta> = self
-            .formatter
-            .last_banner_meta()
-            .iter()
-            .cloned()
-            .collect();
+        let banners: HashMap<usize, BannerMeta> =
+            self.formatter.last_banner_meta().iter().cloned().collect();
         for (i, line) in lines.iter().enumerate() {
             let entry = match banners.get(&i) {
                 Some(meta) => BufferedLine::Banner(meta.clone()),
@@ -1181,7 +1293,10 @@ where
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if with_status && s.status_drawn {
-        let rows = s.footer_size.map(|(_, r)| r).unwrap_or_else(|| detect_term_size().1);
+        let rows = s
+            .footer_size
+            .map(|(_, r)| r)
+            .unwrap_or_else(|| detect_term_size().1);
         leave_split_layout(&mut out, rows)?;
         writeln!(out)?;
     } else if final_summary {
@@ -1647,7 +1762,14 @@ mod tests {
 
     struct StubResolver(HashMap<String, String>);
     impl SessionNameResolver for StubResolver {
-        fn resolve(&mut self, transcript_path: &str) -> Option<String> {
+        // Keyed by transcript path; agent/session are irrelevant to the
+        // formatter-level tests that use this stub.
+        fn resolve(
+            &mut self,
+            _agent_name: &str,
+            _session_id: &str,
+            transcript_path: &str,
+        ) -> Option<String> {
             self.0.get(transcript_path).cloned()
         }
     }
@@ -1744,7 +1866,10 @@ mod tests {
         let joined = out.join("\n");
         assert!(joined.contains("[abc123]"));
         assert!(joined.contains("●"));
-        assert!(!joined.contains("◉"), "pass must not use the allow bullet: {joined}");
+        assert!(
+            !joined.contains("◉"),
+            "pass must not use the allow bullet: {joined}"
+        );
         assert!(joined.contains("Bash(ls -la)"));
         assert!(joined.contains("~/proj"));
         let c = f.counters();
@@ -1807,8 +1932,14 @@ mod tests {
         let seen = make_seen(5, "abc", "/home/u/proj", "Read", "file", "/etc/hosts");
         let out = f.process_line(&seen);
         let joined = out.join("\n");
-        assert!(joined.contains("◉"), "matched-allow bullet expected: {joined}");
-        assert!(!joined.contains("●"), "must not use the pass bullet: {joined}");
+        assert!(
+            joined.contains("◉"),
+            "matched-allow bullet expected: {joined}"
+        );
+        assert!(
+            !joined.contains("●"),
+            "must not use the pass bullet: {joined}"
+        );
         assert!(joined.contains("Read"), "tool name on event line: {joined}");
         assert!(
             joined.contains("│ /etc/hosts"),
@@ -2033,6 +2164,78 @@ mod tests {
     }
 
     #[test]
+    fn codex_index_path_derives_from_rollout_transcript() {
+        assert_eq!(
+            codex_session_index_path(
+                "/home/u/.codex/sessions/2026/06/25/rollout-2026-06-25T15-01-46-uuid.jsonl"
+            )
+            .as_deref(),
+            Some("/home/u/.codex/session_index.jsonl")
+        );
+        // A relocated CODEX_HOME is handled by splitting on `sessions`.
+        assert_eq!(
+            codex_session_index_path("/opt/cdx/sessions/2026/01/02/rollout-x.jsonl").as_deref(),
+            Some("/opt/cdx/session_index.jsonl")
+        );
+        // Windows separators.
+        assert_eq!(
+            codex_session_index_path(r"C:\Users\u\.codex\sessions\2026\06\25\rollout-x.jsonl")
+                .as_deref(),
+            Some(r"C:\Users\u\.codex\session_index.jsonl")
+        );
+        // Not a Codex rollout path → no index.
+        assert_eq!(
+            codex_session_index_path("/home/u/.claude/projects/x/abc.jsonl"),
+            None
+        );
+        assert_eq!(codex_session_index_path(""), None);
+    }
+
+    #[test]
+    fn codex_resolver_reads_last_thread_name_and_refreshes() {
+        // session_index.jsonl with two entries for the same id (an auto-name
+        // then a /rename) — the last one must win.
+        let dir = std::env::temp_dir().join(format!("prempti-codexidx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let index = dir.join("session_index.jsonl");
+        let body = concat!(
+            "{\"id\":\"sid1\",\"thread_name\":\"Analyze project\",\"updated_at\":\"t1\"}\n",
+            "{\"id\":\"sid2\",\"thread_name\":\"Other\",\"updated_at\":\"t1\"}\n",
+            "{\"id\":\"sid1\",\"thread_name\":\"ciao ciao\",\"updated_at\":\"t2\"}\n",
+        );
+        std::fs::write(&index, body).unwrap();
+        // A rollout path under the same codex home — the file itself need not
+        // exist; only the derived index path is read.
+        let tpath = format!(
+            "{}/sessions/2026/06/25/rollout-x-sid1.jsonl",
+            dir.to_string_lossy()
+        );
+
+        let mut r = FsSessionNameResolver::default();
+        assert_eq!(
+            r.resolve("codex", "sid1", &tpath).as_deref(),
+            Some("ciao ciao"),
+            "last thread_name for the id must win"
+        );
+        assert_eq!(r.resolve("codex", "sid2", &tpath).as_deref(), Some("Other"));
+        // Unknown id, and a non-codex agent, both fall back to None.
+        assert_eq!(r.resolve("codex", "sid3", &tpath), None);
+        assert_eq!(r.resolve("claude_code", "sid1", &tpath), None);
+
+        // Appending a newer rename grows the file → resolver rebuilds.
+        let more = format!("{body}{{\"id\":\"sid1\",\"thread_name\":\"final name\"}}\n");
+        std::fs::write(&index, more).unwrap();
+        assert_eq!(
+            r.resolve("codex", "sid1", &tpath).as_deref(),
+            Some("final name"),
+            "resolver must pick up an appended rename"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn clock_time_uses_evt_time_when_available() {
         // 1700000000 = 2023-11-14 22:13:20 UTC. Local will vary by tz; just
         // assert format HH:MM:SS.
@@ -2082,7 +2285,10 @@ mod tests {
         let mut f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
         let out = f.process_line(&make_seen(1, "s", "/home/u", "Bash", "command", "ls"));
         let joined = out.join("\n");
-        assert!(joined.contains("●"), "pass bullet expected via seen alias: {joined}");
+        assert!(
+            joined.contains("●"),
+            "pass bullet expected via seen alias: {joined}"
+        );
         assert_eq!(f.counters().pass, 1);
     }
 
@@ -2265,7 +2471,11 @@ mod tests {
         opts.term_cols = 120;
         let f = Formatter::new(opts, "/home/u".to_string(), StubResolver(HashMap::new()));
         let rule = f.status_footer()[1].clone();
-        assert_eq!(display_width(&rule), 120, "rule width != term_cols: {rule:?}");
+        assert_eq!(
+            display_width(&rule),
+            120,
+            "rule width != term_cols: {rule:?}"
+        );
     }
 
     #[test]
@@ -2329,7 +2539,10 @@ mod tests {
         // Reset DECSTBM (`ESC[r`) and park cursor at the bottom row so a
         // shell prompt appears below the (now-static) footer.
         assert!(out.contains("\x1b[r"), "missing region reset: {out:?}");
-        assert!(out.contains("\x1b[30;1H"), "missing bottom-row park: {out:?}");
+        assert!(
+            out.contains("\x1b[30;1H"),
+            "missing bottom-row park: {out:?}"
+        );
     }
 
     #[test]
@@ -2353,7 +2566,10 @@ mod tests {
         assert!(off < body && body < on, "toggle must bracket body: {out:?}");
         // Cursor parks at the events-region bottom (27) so the next event
         // writeln scrolls naturally.
-        assert!(out.ends_with("\x1b[27;1H"), "must park at events bottom: {out:?}");
+        assert!(
+            out.ends_with("\x1b[27;1H"),
+            "must park at events bottom: {out:?}"
+        );
     }
 
     fn make_state(cols: usize) -> SharedState<StubResolver> {
@@ -2381,7 +2597,10 @@ mod tests {
         // Scroll region established for the new height.
         assert!(out.contains("\x1b[1;47r"), "missing scroll region: {out:?}");
         // Footer absolute-positioned at the new bottom.
-        assert!(out.contains("\x1b[48;1H"), "missing footer top CUP: {out:?}");
+        assert!(
+            out.contains("\x1b[48;1H"),
+            "missing footer top CUP: {out:?}"
+        );
         // Rule sized to the new width.
         let rule_chars = out.matches('─').count();
         assert!(rule_chars >= 160, "rule sized to new width: {rule_chars}");
@@ -2405,11 +2624,17 @@ mod tests {
         state.full_repaint(&mut buf, 120, 30).unwrap();
         let out = String::from_utf8(buf).unwrap();
         for i in 0..3 {
-            assert!(out.contains(&format!("event-{i}")), "missing buffered line {i}: {out:?}");
+            assert!(
+                out.contains(&format!("event-{i}")),
+                "missing buffered line {i}: {out:?}"
+            );
         }
         // Most recent event right above the events region bottom (rows-3 = 27).
         // 3 events anchored to bottom: rows 25, 26, 27. Cursor jumps to row 25.
-        assert!(out.contains("\x1b[25;1H"), "events should anchor at row 25: {out:?}");
+        assert!(
+            out.contains("\x1b[25;1H"),
+            "events should anchor at row 25: {out:?}"
+        );
     }
 
     #[test]
@@ -2429,9 +2654,18 @@ mod tests {
         // events excluded.
         state.full_repaint(&mut buf, 120, 10).unwrap();
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("event-049"), "most recent must render: {out:?}");
-        assert!(out.contains("event-043"), "oldest visible must render: {out:?}");
-        assert!(!out.contains("event-042"), "off-screen oldest must NOT render: {out:?}");
+        assert!(
+            out.contains("event-049"),
+            "most recent must render: {out:?}"
+        );
+        assert!(
+            out.contains("event-043"),
+            "oldest visible must render: {out:?}"
+        );
+        assert!(
+            !out.contains("event-042"),
+            "off-screen oldest must NOT render: {out:?}"
+        );
     }
 
     #[test]
@@ -2440,11 +2674,13 @@ mod tests {
         // trailing dashes need to track the new width, not replay the width
         // they were originally written at.
         let mut state = make_state(120);
-        state.event_buffer.push_back(BufferedLine::Banner(BannerMeta {
-            session_id: "abcdef12".to_string(),
-            color_code: 1,
-            name: None,
-        }));
+        state
+            .event_buffer
+            .push_back(BufferedLine::Banner(BannerMeta {
+                session_id: "abcdef12".to_string(),
+                color_code: 1,
+                name: None,
+            }));
         let mut buf: Vec<u8> = Vec::new();
         state.full_repaint(&mut buf, 200, 30).unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -2452,7 +2688,10 @@ mod tests {
         // trailing pad. Total visible ─ count should be ≥ 200 (the new
         // width) since the banner extends to the new viewport.
         let dashes = out.matches('─').count();
-        assert!(dashes >= 200, "banner should regenerate to new width: {dashes}");
+        assert!(
+            dashes >= 200,
+            "banner should regenerate to new width: {dashes}"
+        );
     }
 
     #[test]

@@ -55,6 +55,58 @@ fn is_owned_interceptor_command(cmd: &str, expected: &str) -> bool {
     SUFFIXES.iter().any(|s| cmd.ends_with(s))
 }
 
+/// Expand a leading `$HOME` / `${HOME}` (the form we write for the default
+/// prefix) so the interceptor binary can be stat-ed for existence. Custom-
+/// prefix and Windows commands are already absolute and pass through.
+pub(crate) fn expand_home(cmd: &str) -> String {
+    #[cfg(unix)]
+    let home = env::var("HOME").unwrap_or_default();
+    #[cfg(windows)]
+    let home = env::var("USERPROFILE").unwrap_or_default();
+    if home.is_empty() {
+        return cmd.to_string();
+    }
+    if let Some(rest) = cmd.strip_prefix("${HOME}") {
+        format!("{home}{rest}")
+    } else if let Some(rest) = cmd.strip_prefix("$HOME") {
+        format!("{home}{rest}")
+    } else {
+        cmd.to_string()
+    }
+}
+
+/// Walk `hooks.PreToolUse[*].hooks[*]` and split interceptor commands into
+/// `(owned, foreign)`: `owned` are Prempti's (exact match on `expected`, or a
+/// well-known path suffix), `foreign` merely contain the `claude-interceptor`
+/// substring (e.g. a user's own wrapper) and are reported but never touched.
+fn scan_pre_tool_use(settings: &serde_json::Value, expected: &str) -> (Vec<String>, Vec<String>) {
+    let mut owned = Vec::new();
+    let mut foreign = Vec::new();
+    let Some(groups) = settings
+        .get("hooks")
+        .and_then(|h| h.get("PreToolUse"))
+        .and_then(|p| p.as_array())
+    else {
+        return (owned, foreign);
+    };
+    for group in groups {
+        let Some(hooks) = group.get("hooks").and_then(|h| h.as_array()) else {
+            continue;
+        };
+        for h in hooks {
+            let Some(cmd) = h.get("command").and_then(|c| c.as_str()) else {
+                continue;
+            };
+            if is_owned_interceptor_command(cmd, expected) {
+                owned.push(cmd.to_string());
+            } else if cmd.contains("claude-interceptor") {
+                foreign.push(cmd.to_string());
+            }
+        }
+    }
+    (owned, foreign)
+}
+
 pub enum AddResult {
     Added(PathBuf),
     AlreadyRegistered,
@@ -67,12 +119,17 @@ pub enum RemoveResult {
 
 pub fn is_registered() -> bool {
     let path = claude_settings_path();
-    if !path.exists() {
+    let Ok(data) = fs::read_to_string(&path) else {
         return false;
+    };
+    match serde_json::from_str::<serde_json::Value>(&data) {
+        // "Registered" means *our* interceptor (owned), not merely the
+        // `claude-interceptor` substring inside some unrelated user hook.
+        Ok(settings) => !scan_pre_tool_use(&settings, "").0.is_empty(),
+        // Malformed settings: fall back to substring so we still treat the
+        // file as registered, keeping the restart re-add path fail-closed.
+        Err(_) => data.contains("claude-interceptor"),
     }
-    fs::read_to_string(&path)
-        .map(|data| data.contains("claude-interceptor"))
-        .unwrap_or(false)
 }
 
 pub fn add(prefix: &Path) -> Result<AddResult, String> {
@@ -230,17 +287,76 @@ pub fn cli_remove(prefix: &Path) {
     }
 }
 
-pub fn cli_status() {
+pub fn cli_status(prefix: &Path) {
     let path = claude_settings_path();
     if !path.exists() {
-        println!("Not registered (no settings file).");
+        println!(
+            "Claude Code hook: not registered (no settings file at {}).",
+            path.display()
+        );
         return;
     }
-    let data = fs::read_to_string(&path).unwrap_or_default();
-    if data.contains("claude-interceptor") {
-        println!("Registered.");
-    } else {
-        println!("Not registered.");
+    let data = match fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Claude Code hook: cannot read {} ({e}).", path.display());
+            return;
+        }
+    };
+    let settings: serde_json::Value = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(e) => {
+            let hint = if data.contains("claude-interceptor") {
+                " — an interceptor-like entry appears present but could not be verified"
+            } else {
+                ""
+            };
+            println!(
+                "Claude Code hook: {} is not valid JSON ({e}){hint}.",
+                path.display()
+            );
+            return;
+        }
+    };
+
+    let expected = interceptor_command(prefix);
+    let (owned, foreign) = scan_pre_tool_use(&settings, &expected);
+
+    if owned.is_empty() {
+        if foreign.is_empty() {
+            println!("Claude Code hook: not registered.");
+        } else {
+            println!(
+                "Claude Code hook: not registered by Prempti; found {} interceptor-like hook(s) left untouched:",
+                foreign.len()
+            );
+            for cmd in &foreign {
+                println!("    PreToolUse → {cmd}");
+            }
+        }
+        return;
+    }
+
+    println!("Claude Code hook: registered in {}", path.display());
+    for cmd in &owned {
+        let missing = if Path::new(&expand_home(cmd)).exists() {
+            ""
+        } else {
+            "  [interceptor binary not found at this path]"
+        };
+        println!("    PreToolUse → {cmd}{missing}");
+    }
+    if owned.iter().any(|c| c != &expected) {
+        println!("    note: a registered path differs from this install's prefix ({expected}).");
+    }
+    if owned.len() > 1 {
+        println!(
+            "    note: {} interceptor hooks registered — duplicates?",
+            owned.len()
+        );
+    }
+    for cmd in &foreign {
+        println!("    plus a non-Prempti interceptor-like hook (left untouched): {cmd}");
     }
 }
 
@@ -368,7 +484,11 @@ mod tests {
         let removed = strip_owned_hooks(&mut settings, "$HOME/.prempti/bin/claude-interceptor");
         assert!(removed);
         let groups = settings["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(groups.len(), 1, "unrelated group should survive: {settings}");
+        assert_eq!(
+            groups.len(),
+            1,
+            "unrelated group should survive: {settings}"
+        );
         assert_eq!(groups[0]["matcher"].as_str().unwrap(), "Bash");
     }
 
@@ -386,5 +506,60 @@ mod tests {
         let removed = strip_owned_hooks(&mut settings, "$HOME/.prempti/bin/claude-interceptor");
         assert!(!removed);
         assert_eq!(settings, snapshot, "settings should be untouched");
+    }
+
+    #[test]
+    fn scan_classifies_owned_and_foreign() {
+        let settings = json!({
+            "hooks": {"PreToolUse": [{
+                "matcher": "",
+                "hooks": [
+                    {"type": "command", "command": "$HOME/.prempti/bin/claude-interceptor"},
+                    {"type": "command", "command": "python my-claude-interceptor.py"},
+                    {"type": "command", "command": "/opt/prempti/bin/claude-interceptor"}
+                ]
+            }]}
+        });
+        let (owned, foreign) =
+            scan_pre_tool_use(&settings, "$HOME/.prempti/bin/claude-interceptor");
+        assert_eq!(
+            owned.len(),
+            2,
+            "exact + suffix matches are owned: {owned:?}"
+        );
+        assert_eq!(foreign, vec!["python my-claude-interceptor.py".to_string()]);
+    }
+
+    #[test]
+    fn scan_empty_without_pre_tool_use() {
+        let (owned, foreign) = scan_pre_tool_use(&json!({}), "x");
+        assert!(owned.is_empty() && foreign.is_empty());
+    }
+
+    #[test]
+    fn expand_home_passthrough_for_absolute_paths() {
+        assert_eq!(
+            expand_home("/opt/x/bin/claude-interceptor"),
+            "/opt/x/bin/claude-interceptor"
+        );
+    }
+
+    #[test]
+    fn expand_home_expands_leading_home_token() {
+        #[cfg(unix)]
+        let home = std::env::var("HOME").unwrap_or_default();
+        #[cfg(windows)]
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        if home.is_empty() {
+            return; // can't meaningfully test without a home dir
+        }
+        assert_eq!(
+            expand_home("$HOME/.prempti/bin/claude-interceptor"),
+            format!("{home}/.prempti/bin/claude-interceptor")
+        );
+        assert_eq!(
+            expand_home("${HOME}/.prempti/bin/claude-interceptor"),
+            format!("{home}/.prempti/bin/claude-interceptor")
+        );
     }
 }

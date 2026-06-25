@@ -38,8 +38,7 @@ fn mark_enabled(prefix: &Path) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|e| format!("error creating {}: {e}", parent.display()))?;
     }
-    fs::write(&marker, b"")
-        .map_err(|e| format!("error writing marker {}: {e}", marker.display()))
+    fs::write(&marker, b"").map_err(|e| format!("error writing marker {}: {e}", marker.display()))
 }
 
 fn mark_disabled(prefix: &Path) -> Result<(), String> {
@@ -121,6 +120,37 @@ fn is_owned_codex_interceptor_command(cmd: &str, expected: &str) -> bool {
     SUFFIXES.iter().any(|s| cmd.ends_with(s))
 }
 
+/// Owned interceptor commands registered under a single event
+/// (`hooks.<event>[*].hooks[*]`). Empty when the event isn't present or holds
+/// only foreign hooks.
+fn owned_commands_for_event(
+    settings: &serde_json::Value,
+    event: &str,
+    expected: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(groups) = settings
+        .get("hooks")
+        .and_then(|h| h.get(event))
+        .and_then(|p| p.as_array())
+    else {
+        return out;
+    };
+    for group in groups {
+        let Some(hooks) = group.get("hooks").and_then(|h| h.as_array()) else {
+            continue;
+        };
+        for h in hooks {
+            if let Some(cmd) = h.get("command").and_then(|c| c.as_str()) {
+                if is_owned_codex_interceptor_command(cmd, expected) {
+                    out.push(cmd.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 pub enum AddResult {
     Added(PathBuf),
     AlreadyRegistered,
@@ -129,23 +159,6 @@ pub enum AddResult {
 pub enum RemoveResult {
     Removed(PathBuf),
     NotFound,
-}
-
-/// Whether the Codex JSON hook is currently registered in `~/.codex/hooks.json`.
-/// Distinct from `is_enabled` (the marker that records user intent): the
-/// supervisor removes the JSON on service stop but keeps the marker, so
-/// across a stop/start window `is_registered` may be false even when
-/// `is_enabled` is true.
-pub fn is_registered() -> bool {
-    let path = codex_hooks_path();
-    if !path.exists() {
-        return false;
-    }
-    fs::read_to_string(&path)
-        .ok()
-        .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
-        .map(|settings| has_owned_codex_interceptor_hook(&settings))
-        .unwrap_or(false)
 }
 
 pub fn add(prefix: &Path) -> Result<AddResult, String> {
@@ -219,32 +232,6 @@ fn ensure_event_hook(settings: &mut serde_json::Value, event: &str, hook_cmd: &s
     true
 }
 
-fn has_owned_codex_interceptor_hook(settings: &serde_json::Value) -> bool {
-    let Some(hooks) = settings.get("hooks").and_then(|h| h.as_object()) else {
-        return false;
-    };
-    for event in [PRE_TOOL_USE, PERMISSION_REQUEST] {
-        let Some(groups) = hooks.get(event).and_then(|p| p.as_array()) else {
-            continue;
-        };
-        for group in groups {
-            let Some(group_hooks) = group.get("hooks").and_then(|h| h.as_array()) else {
-                continue;
-            };
-            for hook in group_hooks {
-                if hook
-                    .get("command")
-                    .and_then(|c| c.as_str())
-                    .is_some_and(|c| is_owned_codex_interceptor_command(c, ""))
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 pub fn remove(prefix: &Path) -> Result<RemoveResult, String> {
     let path = codex_hooks_path();
     if !path.exists() {
@@ -266,13 +253,9 @@ pub fn remove(prefix: &Path) -> Result<RemoveResult, String> {
     // If our removal emptied the whole file (no other hooks, no other
     // top-level keys), delete it rather than leaving behind a stub.
     // Otherwise rewrite the trimmed JSON.
-    let is_empty = settings
-        .as_object()
-        .map(|o| o.is_empty())
-        .unwrap_or(true);
+    let is_empty = settings.as_object().map(|o| o.is_empty()).unwrap_or(true);
     if is_empty {
-        fs::remove_file(&path)
-            .map_err(|e| format!("error removing {}: {e}", path.display()))?;
+        fs::remove_file(&path).map_err(|e| format!("error removing {}: {e}", path.display()))?;
     } else {
         let output = serde_json::to_string_pretty(&settings).unwrap();
         fs::write(&path, format!("{output}\n"))
@@ -295,7 +278,8 @@ fn strip_owned_hooks(settings: &mut serde_json::Value, expected: &str) -> bool {
     for event in &[PRE_TOOL_USE, PERMISSION_REQUEST] {
         if let Some(arr) = hooks.get_mut(*event).and_then(|p| p.as_array_mut()) {
             arr.retain_mut(|group| {
-                let Some(group_hooks) = group.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+                let Some(group_hooks) = group.get_mut("hooks").and_then(|h| h.as_array_mut())
+                else {
                     return true;
                 };
                 let before = group_hooks.len();
@@ -342,7 +326,9 @@ pub fn cli_add(prefix: &Path) {
             println!("Codex hook registered in {}", path.display());
             if let Err(e) = mark_enabled(prefix) {
                 eprintln!("warning: hook registered but enable marker failed: {e}");
-                eprintln!("         (the supervisor won't re-assert this hook across service restarts)");
+                eprintln!(
+                    "         (the supervisor won't re-assert this hook across service restarts)"
+                );
             }
             print_warning();
         }
@@ -383,17 +369,79 @@ pub fn cli_remove(prefix: &Path) {
 }
 
 pub fn cli_status(prefix: &Path) {
-    let registered = is_registered();
+    let path = codex_hooks_path();
     let enabled = is_enabled(prefix);
-    match (registered, enabled) {
-        (true, true) => println!("Codex hook: registered, supervisor-managed."),
-        (true, false) => println!(
-            "Codex hook: registered (no enable marker — supervisor will not re-assert across restarts)."
-        ),
-        (false, true) => println!(
-            "Codex hook: enabled marker present but JSON missing (expected briefly between supervisor stop and next start)."
-        ),
-        (false, false) => println!("Codex hook: not registered."),
+
+    if !path.exists() {
+        if enabled {
+            println!(
+                "Codex hook: enable marker present but {} is missing (expected briefly between supervisor stop and next start).",
+                path.display()
+            );
+        } else {
+            println!("Codex hook: not registered.");
+        }
+        return;
+    }
+
+    let settings: serde_json::Value = match fs::read_to_string(&path) {
+        Ok(data) => match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(e) => {
+                println!("Codex hook: {} is not valid JSON ({e}).", path.display());
+                return;
+            }
+        },
+        Err(e) => {
+            println!("Codex hook: cannot read {} ({e}).", path.display());
+            return;
+        }
+    };
+
+    let expected = interceptor_command(prefix);
+    let pre = owned_commands_for_event(&settings, PRE_TOOL_USE, &expected);
+    let pr = owned_commands_for_event(&settings, PERMISSION_REQUEST, &expected);
+
+    if pre.is_empty() && pr.is_empty() {
+        println!(
+            "Codex hook: not registered (no Prempti interceptor in {}).",
+            path.display()
+        );
+        return;
+    }
+
+    let marker = if enabled {
+        "supervisor-managed"
+    } else {
+        "no enable marker — supervisor will not re-assert across restarts"
+    };
+    println!("Codex hook: registered in {} ({marker}).", path.display());
+
+    for (event, cmds) in [(PRE_TOOL_USE, &pre), (PERMISSION_REQUEST, &pr)] {
+        for cmd in cmds {
+            let missing = if Path::new(&crate::hook::expand_home(cmd)).exists() {
+                ""
+            } else {
+                "  [interceptor binary not found at this path]"
+            };
+            println!("    {event} → {cmd}{missing}");
+        }
+    }
+
+    // Codex routes PreToolUse and PermissionRequest to the interceptor; a
+    // half-registered state silently lets one class of calls bypass policy.
+    if pre.is_empty() || pr.is_empty() {
+        let missing_event = if pre.is_empty() {
+            PRE_TOOL_USE
+        } else {
+            PERMISSION_REQUEST
+        };
+        println!(
+            "    WARNING: only one event is hooked — {missing_event} is missing. Run `premptictl hook add codex` to repair."
+        );
+    }
+    if pre.iter().chain(pr.iter()).any(|c| c != &expected) {
+        println!("    note: a registered path differs from this install's prefix ({expected}).");
     }
 }
 
@@ -453,8 +501,16 @@ mod tests {
     #[test]
     fn add_into_empty_settings_registers_both_events() {
         let mut settings = json!({});
-        let added_pre = ensure_event_hook(&mut settings, PRE_TOOL_USE, "$HOME/.prempti/bin/codex-interceptor");
-        let added_pr = ensure_event_hook(&mut settings, PERMISSION_REQUEST, "$HOME/.prempti/bin/codex-interceptor");
+        let added_pre = ensure_event_hook(
+            &mut settings,
+            PRE_TOOL_USE,
+            "$HOME/.prempti/bin/codex-interceptor",
+        );
+        let added_pr = ensure_event_hook(
+            &mut settings,
+            PERMISSION_REQUEST,
+            "$HOME/.prempti/bin/codex-interceptor",
+        );
         assert!(added_pre);
         assert!(added_pr);
         assert!(settings["hooks"]["PreToolUse"].is_array());
@@ -475,8 +531,16 @@ mod tests {
                 }]
             }
         });
-        let added_pre = ensure_event_hook(&mut settings, PRE_TOOL_USE, "$HOME/.prempti/bin/codex-interceptor");
-        let added_pr = ensure_event_hook(&mut settings, PERMISSION_REQUEST, "$HOME/.prempti/bin/codex-interceptor");
+        let added_pre = ensure_event_hook(
+            &mut settings,
+            PRE_TOOL_USE,
+            "$HOME/.prempti/bin/codex-interceptor",
+        );
+        let added_pr = ensure_event_hook(
+            &mut settings,
+            PERMISSION_REQUEST,
+            "$HOME/.prempti/bin/codex-interceptor",
+        );
         assert!(!added_pre, "PreToolUse already had our hook");
         assert!(!added_pr, "PermissionRequest already had our hook");
     }
@@ -491,8 +555,15 @@ mod tests {
                 }]
             }
         });
-        let added_pre = ensure_event_hook(&mut settings, PRE_TOOL_USE, "$HOME/.prempti/bin/codex-interceptor");
-        assert!(added_pre, "user hook name must not block Prempti registration");
+        let added_pre = ensure_event_hook(
+            &mut settings,
+            PRE_TOOL_USE,
+            "$HOME/.prempti/bin/codex-interceptor",
+        );
+        assert!(
+            added_pre,
+            "user hook name must not block Prempti registration"
+        );
 
         let groups = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(
@@ -523,8 +594,16 @@ mod tests {
                 }]
             }
         });
-        let added_pre = ensure_event_hook(&mut settings, PRE_TOOL_USE, "$HOME/.prempti/bin/codex-interceptor");
-        let added_pr = ensure_event_hook(&mut settings, PERMISSION_REQUEST, "$HOME/.prempti/bin/codex-interceptor");
+        let added_pre = ensure_event_hook(
+            &mut settings,
+            PRE_TOOL_USE,
+            "$HOME/.prempti/bin/codex-interceptor",
+        );
+        let added_pr = ensure_event_hook(
+            &mut settings,
+            PERMISSION_REQUEST,
+            "$HOME/.prempti/bin/codex-interceptor",
+        );
         assert!(!added_pre);
         assert!(added_pr, "PermissionRequest was missing, should be added");
         assert!(settings["hooks"]["PermissionRequest"].is_array());
@@ -544,7 +623,8 @@ mod tests {
                 }]
             }
         });
-        assert!(!has_owned_codex_interceptor_hook(&settings));
+        assert!(owned_commands_for_event(&settings, PRE_TOOL_USE, "").is_empty());
+        assert!(owned_commands_for_event(&settings, PERMISSION_REQUEST, "").is_empty());
     }
 
     #[test]
@@ -557,7 +637,7 @@ mod tests {
                 }]
             }
         });
-        assert!(has_owned_codex_interceptor_hook(&settings));
+        assert!(!owned_commands_for_event(&settings, PERMISSION_REQUEST, "").is_empty());
     }
 
     // ----- strip_owned_hooks: mixed-with-user preservation -----------
@@ -624,7 +704,10 @@ mod tests {
         });
         let removed = strip_owned_hooks(&mut settings, "$HOME/.prempti/bin/codex-interceptor");
         assert!(removed);
-        assert!(settings.get("hooks").is_none(), "both events should be empty: {settings}");
+        assert!(
+            settings.get("hooks").is_none(),
+            "both events should be empty: {settings}"
+        );
     }
 
     #[test]
@@ -726,5 +809,31 @@ mod tests {
         let removed = strip_owned_hooks(&mut settings, "$HOME/.prempti/bin/codex-interceptor");
         assert!(!removed);
         assert_eq!(settings, snapshot, "settings untouched");
+    }
+
+    #[test]
+    fn owned_commands_lists_interceptor_per_event() {
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{"matcher": ".*", "hooks": [
+                    {"type": "command", "command": "$HOME/.prempti/bin/codex-interceptor"},
+                    {"type": "command", "command": "python user.py"}
+                ]}],
+                "PermissionRequest": [{"matcher": ".*", "hooks": [
+                    {"type": "command", "command": "/opt/prempti/bin/codex-interceptor"}
+                ]}]
+            }
+        });
+        let expected = "$HOME/.prempti/bin/codex-interceptor";
+        assert_eq!(
+            owned_commands_for_event(&settings, PRE_TOOL_USE, expected),
+            vec!["$HOME/.prempti/bin/codex-interceptor".to_string()]
+        );
+        assert_eq!(
+            owned_commands_for_event(&settings, PERMISSION_REQUEST, expected).len(),
+            1
+        );
+        // Absent event → empty.
+        assert!(owned_commands_for_event(&json!({"hooks": {}}), PRE_TOOL_USE, expected).is_empty());
     }
 }
