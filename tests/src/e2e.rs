@@ -380,6 +380,14 @@ fn write_rules(rules_dir: &Path) {
   source: coding_agent
   tags: [coding_agent_deny]
 
+- rule: Deny bash credential read
+  desc: Block bash reads of credential paths (mirrors references_credential)
+  condition: tool.name = "Bash" and (tool.input_command contains "/.kube/" or tool.input_command contains "/.config/gcloud/" or tool.input_command contains "/.azure/" or tool.input_command contains "/.git-credentials")
+  output: "Falco blocked a bash credential read: %tool.input_command | correlation=%correlation.id"
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
 - rule: Deny writes to sensitive paths
   desc: Block writes to sensitive system directories
   condition: {sensitive_write_condition}

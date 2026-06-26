@@ -387,6 +387,67 @@ fn deny_read_aws_credentials() {
     assert_decision(&r, "deny");
 }
 
+// --- Bash credential read parity ---
+// The Read tool already blocks these via is_sensitive_path, but reading them
+// through a shell command (the only way Codex reads files, and a bypass for any
+// agent that prefers `cat` over the Read tool) must be denied too.
+
+#[cfg(not(windows))]
+#[test]
+fn deny_bash_read_kubeconfig() {
+    let h = require_falco!();
+    let input = E2eHarness::make_input(
+        "Bash",
+        r#"{"command":"cat /home/user/.kube/config"}"#,
+        cwd(),
+        "e2e-bkube",
+    );
+    let r = h.run_hook(&input);
+    assert_decision(&r, "deny");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn deny_bash_read_gcloud_adc() {
+    let h = require_falco!();
+    let input = E2eHarness::make_input(
+        "Bash",
+        r#"{"command":"cat /home/user/.config/gcloud/application_default_credentials.json"}"#,
+        cwd(),
+        "e2e-bgcloud",
+    );
+    let r = h.run_hook(&input);
+    assert_decision(&r, "deny");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn deny_bash_read_azure_tokens() {
+    let h = require_falco!();
+    let input = E2eHarness::make_input(
+        "Bash",
+        r#"{"command":"cat /home/user/.azure/accessTokens.json"}"#,
+        cwd(),
+        "e2e-bazure",
+    );
+    let r = h.run_hook(&input);
+    assert_decision(&r, "deny");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn deny_bash_read_git_credentials() {
+    let h = require_falco!();
+    let input = E2eHarness::make_input(
+        "Bash",
+        r#"{"command":"cat /home/user/.git-credentials"}"#,
+        cwd(),
+        "e2e-bgitcred",
+    );
+    let r = h.run_hook(&input);
+    assert_decision(&r, "deny");
+}
+
 // --- Bash edge cases ---
 
 #[test]
