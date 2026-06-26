@@ -205,6 +205,10 @@ impl FsSessionNameResolver {
         let index_path = codex_session_index_path(transcript_path)?;
         let cur_len = std::fs::metadata(&index_path).ok().map(|m| m.len());
         let entry = self.codex.entry(index_path.clone()).or_default();
+        // When the index can't be stat'd (`cur_len` is None — missing or
+        // unreadable), we intentionally keep any last-known name rather than
+        // blank it: Codex appends to the index and never deletes it
+        // mid-session, so a transient stat failure shouldn't drop the label.
         if let Some(len) = cur_len {
             // The index is tiny and rename only appends; on any size change
             // we rebuild from scratch, which keeps "last line wins" trivial.
@@ -267,12 +271,15 @@ fn scan_transcript_incremental(path: &str, entry: &mut ResolverEntry) {
 
 /// Derive `<codex_home>/session_index.jsonl` from a Codex rollout transcript
 /// path shaped like `<codex_home>/sessions/YYYY/MM/DD/rollout-*.jsonl`. Splits
-/// on the `sessions` directory segment so a custom `CODEX_HOME` works, and
-/// handles both `/` and `\` separators. Returns `None` when the path has no
-/// `sessions` segment (i.e. it isn't a Codex rollout path).
+/// on the *last* `sessions` segment (`rfind`), so a custom `CODEX_HOME` that
+/// itself contains a `sessions` component still resolves correctly — the date
+/// and `rollout-*` components are never `sessions`, so the deepest match is
+/// always the real session dir. Handles both `/` and `\` separators. Returns
+/// `None` when the path has no `sessions` segment (i.e. it isn't a Codex
+/// rollout path).
 fn codex_session_index_path(transcript_path: &str) -> Option<String> {
     for sep in ["/sessions/", "\\sessions\\"] {
-        if let Some(idx) = transcript_path.find(sep) {
+        if let Some(idx) = transcript_path.rfind(sep) {
             let home = &transcript_path[..idx];
             let slash = &sep[..1];
             return Some(format!("{home}{slash}session_index.jsonl"));
@@ -2182,6 +2189,13 @@ mod tests {
             codex_session_index_path(r"C:\Users\u\.codex\sessions\2026\06\25\rollout-x.jsonl")
                 .as_deref(),
             Some(r"C:\Users\u\.codex\session_index.jsonl")
+        );
+        // A CODEX_HOME whose own path contains a `sessions` segment must still
+        // resolve to the deepest (real) session dir — `rfind`, not `find`.
+        assert_eq!(
+            codex_session_index_path("/home/sessions/.codex/sessions/2026/06/25/rollout-x.jsonl")
+                .as_deref(),
+            Some("/home/sessions/.codex/session_index.jsonl")
         );
         // Not a Codex rollout path → no index.
         assert_eq!(
