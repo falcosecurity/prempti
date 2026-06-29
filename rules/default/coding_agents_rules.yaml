@@ -228,7 +228,7 @@
     Falco blocked reading %tool.real_file_path because it is a sensitive path
   priority: CRITICAL
   source: coding_agent
-  tags: [coding_agent_deny, mitre_t1083_file_and_directory_discovery]
+  tags: [coding_agent_deny, mitre_t1552_unsecured_credentials]
 
 - rule: Deny writing to sensitive paths
   desc: >
@@ -1270,7 +1270,7 @@
     Falco blocked a reverse shell command (%tool.input_command)
   priority: CRITICAL
   source: coding_agent
-  tags: [coding_agent_deny, mitre_t1059_command_and_scripting_interpreter, mitre_t1571_non_standard_port]
+  tags: [coding_agent_deny, mitre_t1059_command_and_scripting_interpreter]
 
 - rule: Deny cloud metadata service access via Bash
   desc: >
