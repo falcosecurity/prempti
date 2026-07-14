@@ -116,7 +116,7 @@ output: >
 | `tolower()` | Case-insensitive comparison: `tolower(tool.input_command) startswith "sudo "` |
 | `len()` | String length: `len(tool.input_command) > 1000` — detect anomalous inputs |
 
-Transformers can be chained: `basename(tolower(tool.file_path))`.
+Transformers can be chained: `basename(tolower(tool.real_file_path))`.
 
 Without `val()`, the right-hand side is a literal string, not a field reference.
 

@@ -101,7 +101,7 @@ A custom user rule that asks for confirmation before the agent edits a dependenc
   condition: >
     tool.name in ("Write", "Edit")
     and tool.file_path != ""
-    and basename(tool.file_path) in (dependency_lockfiles)
+    and basename(tool.real_file_path) in (dependency_lockfiles)
   output: >
     Falco requires confirmation before modifying dependency lockfile %tool.real_file_path
   priority: WARNING
@@ -112,6 +112,6 @@ A custom user rule that asks for confirmation before the agent edits a dependenc
 ### Tips
 
 - Use `val()` for field-to-field comparisons. For path containment, test equality with `agent.real_cwd` or use `tool.real_file_path startswith val(agent.real_cwd_prefix)` so sibling names do not collide.
-- Use `basename()` to match file names: `basename(tool.file_path) = ".env"`
+- Use `basename()` with the separator-normalized path to match file names on every platform: `basename(tool.real_file_path) = ".env"`
 - Use `real_*` fields for policy matching (resolved paths)
 - Use raw fields (`agent.cwd`, `tool.file_path`) for display and audit
