@@ -121,7 +121,7 @@ Malformed apply_patch envelopes fail closed: the broker writes a deny response w
 
 **Rule authoring notes**:
 - When comparing one field against another in Falco rule conditions, use the `val()` transformer. For path containment, compare equality with `agent.real_cwd` or use `tool.real_file_path startswith val(agent.real_cwd_prefix)`; the trailing slash prevents sibling-prefix collisions. Without `val()`, the RHS is treated as a literal string, not a field reference.
-- Use the `basename()` transformer to extract the file name from a path. For example: `basename(tool.file_path) = ".env"` matches any `.env` file regardless of directory.
+- Use the `basename()` transformer with the separator-normalized path. For example: `basename(tool.real_file_path) = ".env"` matches any `.env` file regardless of directory, including on Windows.
 - For rules that care about the destructive operation type (e.g. gating only deletes), pattern-match on `tool.patch_op` directly: `tool.patch_op = "Delete" and tool.real_file_path startswith "/etc/"`. Otherwise prefer `is_write_tool` which covers all four ops uniformly.
 
 ### Rule output convention

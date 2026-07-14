@@ -174,12 +174,11 @@ $denySshJson = '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":
 $out = Run-Hook $denySshJson
 Assert-Contains $out '"permissionDecision":"deny"' 'read of .ssh key is denied'
 
-# Note: the default `sensitive_paths` list is Unix-only (/etc, /root, ...),
-# and `basename(tool.file_path) in (sensitive_file_names)` uses the raw
-# backslash path on Windows, so a .env write is NOT denied by the stock
-# ruleset. That is a known ruleset limitation tracked separately, not a
-# regression of the pipeline. Do not assert-deny here until the default
-# rules gain Windows-aware coverage.
+# Basename policies operate on tool.real_file_path, whose separators are
+# normalized by the plugin, so a backslash-style Windows path must match too.
+$denyEnvJson = '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"C:\\Users\\test\\.env","content":"SECRET=x"},"session_id":"installed-test","cwd":"C:\\Users\\test","tool_use_id":"inst_deny3"}'
+$out = Run-Hook $denyEnvJson
+Assert-Contains $out '"permissionDecision":"deny"' 'write to .env is denied with Windows path separators'
 
 # ---------------------------------------------------------------------------
 # ctl status reports a running PID
