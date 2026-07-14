@@ -464,12 +464,51 @@ fn resolve_file_path(file_path: &str, resolved_cwd: &str) -> String {
         p.push(file_path);
         p
     };
-    // Try filesystem canonicalization first.
-    if let Ok(resolved) = std::fs::canonicalize(&abs) {
+    // Resolve every existing ancestor before appending a missing suffix. A
+    // plain canonicalize(&abs) fails for new Write/Add targets, which used to
+    // leave symlinked parent directories unresolved. For example, with
+    // `project/link -> ~/.ssh`, a new `project/link/key` was incorrectly
+    // reported as being inside `project` rather than under `~/.ssh`.
+    if let Some(resolved) = canonicalize_allow_missing(&abs, 0) {
         return normalize_separators(resolved.to_string_lossy().into_owned());
     }
     // Fallback: lexical normalization.
     normalize_separators(normalize_path(&abs).to_string_lossy().into_owned())
+}
+
+/// Canonicalize a path even when its final components do not exist yet.
+///
+/// The nearest existing ancestor is canonicalized first (resolving symlinks),
+/// then the missing suffix is appended lexically. Broken final symlinks are
+/// followed explicitly because `canonicalize` reports them as `NotFound`.
+/// Limit explicit symlink traversal to the conventional operating-system
+/// maximum so a cycle degrades to the caller's lexical fallback.
+fn canonicalize_allow_missing(path: &Path, symlink_depth: usize) -> Option<PathBuf> {
+    const MAX_SYMLINK_DEPTH: usize = 40;
+
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => return Some(resolved),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
+
+    if symlink_depth >= MAX_SYMLINK_DEPTH {
+        return None;
+    }
+
+    if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        let target = std::fs::read_link(path).ok()?;
+        let target = if target.is_absolute() {
+            target
+        } else {
+            path.parent()?.join(target)
+        };
+        return canonicalize_allow_missing(&target, symlink_depth + 1);
+    }
+
+    let file_name = path.file_name()?.to_owned();
+    let parent = canonicalize_allow_missing(path.parent()?, symlink_depth)?;
+    Some(normalize_path(&parent.join(file_name)))
 }
 
 #[cfg(test)]
@@ -713,6 +752,53 @@ mod tests {
     fn resolve_file_path_lexical_collapses_dotdot() {
         let resolved = resolve_file_path("../sibling/file", "/nonexistent/a/b");
         assert_eq!(resolved, "/nonexistent/a/sibling/file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_file_path_canonicalizes_symlinked_parent_for_missing_leaf() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "prempti-resolve-missing-symlink-{}",
+            std::process::id()
+        ));
+        let project = root.join("project");
+        let sensitive = root.join("sensitive");
+        let link = project.join("link");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sensitive).unwrap();
+        symlink(&sensitive, &link).unwrap();
+
+        let resolved = resolve_file_path("link/new-dir/new-key", &project.to_string_lossy());
+        assert_eq!(PathBuf::from(resolved), sensitive.join("new-dir/new-key"));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_file_path_follows_broken_final_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "prempti-resolve-broken-symlink-{}",
+            std::process::id()
+        ));
+        let project = root.join("project");
+        let sensitive = root.join("sensitive");
+        let link = project.join("new-key");
+        let target = sensitive.join("new-key");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sensitive).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let resolved = resolve_file_path("new-key", &project.to_string_lossy());
+        assert_eq!(PathBuf::from(resolved), target);
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     // ------------------------------------------------------------------

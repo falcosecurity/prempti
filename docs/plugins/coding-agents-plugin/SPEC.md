@@ -143,7 +143,7 @@ Implements `ExtractPlugin` with per-event caching via `ExtractContext`.
 | `tool.input` | string | `event.tool_input` as JSON string. For Codex `apply_patch` synthetic events, the broker has already rewritten `tool_input.command` to just this hunk's slice. |
 | `tool.input_command` | string | `event.tool_input.command` (Bash only) |
 | `tool.file_path` | string | Raw from `event.tool_input.file_path` for Claude Code (`Write`/`Edit`/`Read`); broker-injected per-event path for Codex `apply_patch` synthetic events. Empty otherwise. |
-| `tool.real_file_path` | string | Resolved absolute path. Populated whenever `tool.file_path` is. |
+| `tool.real_file_path` | string | Resolved absolute path. Existing ancestors are canonicalized before a missing suffix is appended, so symlinked parents are preserved for new files. Populated whenever `tool.file_path` is. |
 | `tool.patch_op` | string | Per-event operation for Codex `apply_patch` synthetic events: `Add`, `Update`, `Delete`, or `Move`. Empty for all other events. |
 
 Event source restriction: `CodingAgentPayload` with `EventSource::SOURCE = Some("coding_agent")` prevents extraction from syscall events.

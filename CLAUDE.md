@@ -108,7 +108,7 @@ This schema is agent-agnostic. The `agent.name` field distinguishes which coding
 
 Path fields come in raw/real pairs:
 - **Raw** (`agent.cwd`, `tool.file_path`): exactly as reported in the hook JSON for Claude Code, or as injected by the broker per synthetic event for Codex `apply_patch`. Use for display and audit.
-- **Real** (`agent.real_cwd`, `tool.real_file_path`): resolved via `canonicalize` (symlinks resolved, absolute). Falls back to lexical normalization if the path doesn't exist yet (common for `Write` / `Add`). Use for policy matching.
+- **Real** (`agent.real_cwd`, `tool.real_file_path`): resolved via `canonicalize` (symlinks resolved, absolute). For a path that does not exist yet (common for `Write` / `Add`), the nearest existing ancestor is canonicalized before the missing suffix is appended; a fully unresolvable path falls back to lexical normalization. Use for policy matching.
 
 ### Codex apply_patch: one event per touched path
 
