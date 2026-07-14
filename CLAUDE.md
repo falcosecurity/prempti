@@ -84,7 +84,7 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `correlation.id` | u64 | Broker-assigned unique ID for this event (monotonic counter, always > 0) |
+| `correlation.id` | u64 | Broker-assigned cryptographically random request capability (always > 0) |
 | `agent.name` | string | Coding agent identifier (`claude_code` or `codex`) |
 | `agent.os` | string | Host OS — `linux`, `macos`, `windows`, or `unknown` (static per build, derived from `cfg!(target_os)`) |
 | `agent.pid` | u64 | PID of the agent process that invoked the hook (the interceptor's immediate parent). `0` when the platform lookup fails. Lets a side-by-side vanilla Falco correlate hook events with syscall events emitted by the same agent instance via `proc.apid[]`. |
@@ -168,7 +168,7 @@ See [`rules/README.md`](rules/README.md) for the full output convention and exam
 
 ### http_output for alert feedback
 
-Falco sends alerts to the plugin's embedded HTTP server via `http_output` (localhost). This avoids `file_output` (unbounded file growth, dual-purpose conflicts) and keeps everything in-process. Requires `json_output: true` in Falco config so the broker can parse tags and extract correlation IDs.
+Falco sends alerts to the plugin's embedded HTTP server via `http_output` (localhost). This avoids `file_output` (unbounded file growth, dual-purpose conflicts) and keeps everything in-process. Requires `json_output: true` in Falco config so the broker can parse tags and extract correlation IDs. Correlation IDs are unguessable, short-lived capabilities; never replace them with counters, because other local processes can connect to the loopback listener.
 
 Note: Falco's alert delivery is asynchronous — alerts are pushed to an internal queue and delivered by a worker thread. Since delivery is to localhost, latency is sub-millisecond. The batch-completion mechanism provides the synchronization guarantee.
 

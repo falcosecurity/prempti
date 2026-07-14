@@ -208,8 +208,20 @@ fn handle_connection(
     // Old interceptors don't send agent_pid; map None → 0 sentinel.
     let agent_pid = request.agent_pid.unwrap_or(0);
 
-    // Broker assigns a unique correlation ID (monotonic u64 counter, always > 0).
-    let correlation_id = broker.next_correlation_id();
+    // Treat the random correlation ID as a per-request capability: the
+    // loopback HTTP receiver accepts verdict alerts only for live IDs, so an
+    // untrusted local process must not be able to predict one. Entropy failure
+    // is security-sensitive and therefore denies the request directly.
+    let correlation_id = match broker.next_correlation_id() {
+        Ok(id) => id,
+        Err(e) => {
+            log::error!("failed to generate correlation capability: {e}");
+            let response = Verdict::Deny("failed to secure verdict channel".to_string())
+                .to_response_json(&wire_id);
+            write_response_and_close(stream, &response);
+            return Ok(());
+        }
+    };
 
     // Codex's apply_patch tool can touch multiple files in one invocation
     // (the Lark grammar at codex-rs/core/src/tools/handlers/apply_patch.lark
@@ -436,7 +448,10 @@ mod tests {
 
     #[test]
     fn clamp_max_request_bytes_exactly_at_bounds_is_unchanged() {
-        assert_eq!(clamp_max_request_bytes(MIN_REQUEST_BYTES), MIN_REQUEST_BYTES);
+        assert_eq!(
+            clamp_max_request_bytes(MIN_REQUEST_BYTES),
+            MIN_REQUEST_BYTES
+        );
         assert_eq!(
             clamp_max_request_bytes(MAX_REQUEST_BYTES_CEILING),
             MAX_REQUEST_BYTES_CEILING

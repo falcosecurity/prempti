@@ -157,7 +157,7 @@ impl ExtractPlugin for CodingAgentPlugin {
     const EXTRACT_FIELDS: &'static [ExtractFieldInfo<Self>] = &[
         field("correlation.id", &Self::extract_correlation_id)
             .with_display("Correlation ID")
-            .with_description("Broker-assigned unique ID for this event (used for verdict correlation)")
+            .with_description("Broker-assigned random capability used for verdict correlation")
             .add_output(),
         field("agent.name", &Self::extract_agent_name)
             .with_display("Agent Name")

@@ -18,7 +18,7 @@ Output: `target/release/libcoding_agent.so` (Linux) / `.dylib` (macOS)
 
 The plugin runs inside Falco and manages three background responsibilities:
 
-1. **Unix socket server** — accepts interceptor connections, assigns a `correlation.id`, enqueues events
+1. **Unix socket server** — accepts interceptor connections, assigns an unguessable per-request `correlation.id`, enqueues events
 2. **Falco source plugin** — delivers events to the rule engine via `next_batch`
 3. **HTTP alert receiver** — receives Falco alerts via `http_output`, resolves verdicts back to interceptors
 
@@ -26,7 +26,7 @@ The plugin runs inside Falco and manages three background responsibilities:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `correlation.id` | u64 | Broker-assigned unique ID (always > 0) |
+| `correlation.id` | u64 | Broker-assigned cryptographically random request capability (always > 0) |
 | `agent.name` | string | Coding agent identifier |
 | `agent.os` | string | Host OS — `linux`, `macos`, `windows`, or `unknown` (static per build) |
 | `agent.pid` | u64 | PID of the agent process that invoked the hook; `0` when the platform lookup fails |

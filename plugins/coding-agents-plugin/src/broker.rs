@@ -30,16 +30,6 @@ const REAPER_INTERVAL_SECS: u64 = 10;
 /// negligible CPU overhead, sub-second shutdown latency.
 const REAPER_SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Process-wide monotonic counter for correlation IDs.
-///
-/// In the current design, `Plugin::new()` runs exactly once per Falco process
-/// (config-driven hot-reload is disabled — see `configs/falco.yaml`), so a
-/// per-`Broker` counter would also be sufficient. The counter is process-wide
-/// as a defensive measure: if a future change ever introduces a path where a
-/// `Broker` is recreated mid-process, alerts already queued for the previous
-/// `Broker` won't collide with newly-issued IDs from the next one.
-static NEXT_CORRELATION_ID: AtomicU64 = AtomicU64::new(1);
-
 /// Tracks pending requests from interceptors, waiting for verdict resolution.
 pub struct Broker {
     /// Maps correlation ID → pending request.
@@ -96,13 +86,20 @@ impl Broker {
         self.shutdown.load(Ordering::Relaxed)
     }
 
-    /// Generate a unique correlation ID for an event.
+    /// Generate an unguessable correlation capability for an event.
     ///
-    /// Uses a process-wide counter (see `NEXT_CORRELATION_ID`) so IDs remain
-    /// unique even if a `Broker` is ever reconstructed within the same Falco
-    /// process.
-    pub fn next_correlation_id(&self) -> u64 {
-        NEXT_CORRELATION_ID.fetch_add(1, Ordering::Relaxed)
+    /// The HTTP receiver is loopback-only, but other local processes can still
+    /// connect to it. A cryptographically random ID prevents them from
+    /// predicting a live request and forging its deny/ask/seen alert. Reject
+    /// zero because Falco rules use `correlation.id > 0` as their catch-all,
+    /// and reject any (extremely unlikely) collision with a pending request.
+    pub fn next_correlation_id(&self) -> Result<u64, getrandom::Error> {
+        loop {
+            let id = getrandom::u64()?;
+            if id != 0 && !self.pending.contains_key(&id) {
+                return Ok(id);
+            }
+        }
     }
 
     /// Set monitor mode. When enabled, all verdicts resolve as defer after
@@ -548,12 +545,16 @@ mod tests {
     }
 
     #[test]
-    fn correlation_ids_are_monotonic_and_positive() {
+    fn correlation_ids_are_random_positive_capabilities() {
         let broker = Broker::new();
-        let a = broker.next_correlation_id();
-        let b = broker.next_correlation_id();
-        let c = broker.next_correlation_id();
-        assert!(a > 0 && b > a && c > b);
+        let ids: Vec<u64> = (0..32)
+            .map(|_| broker.next_correlation_id().expect("OS randomness"))
+            .collect();
+
+        assert!(ids.iter().all(|id| *id > 0));
+        assert!(ids
+            .windows(2)
+            .all(|pair| pair[1] != pair[0].wrapping_add(1)));
     }
 
     #[test]
