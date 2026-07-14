@@ -138,6 +138,7 @@ Implements `ExtractPlugin` with per-event caching via `ExtractContext`.
 | `agent.turn_id` | string | `event.turn_id` — finer correlation than `session_id` (Codex-only; empty for Claude Code) |
 | `agent.cwd` | string | `event.cwd` (raw) |
 | `agent.real_cwd` | string | `event.cwd` resolved via `canonicalize` + lexical fallback |
+| `agent.real_cwd_prefix` | string | `agent.real_cwd` with one trailing `/`, for path-segment-aware prefix comparisons |
 | `tool.use_id` | string | `event.tool_use_id` (present on Claude Code hooks and Codex `PreToolUse`; absent on Codex `PermissionRequest`) |
 | `tool.name` | string | `event.tool_name` (e.g. `Bash`, `Write`, `Edit` for Claude Code; `Bash`, `apply_patch`, `mcp__<server>__<tool>` for Codex) |
 | `tool.input` | string | `event.tool_input` as JSON string. For Codex `apply_patch` synthetic events, the broker has already rewritten `tool_input.command` to just this hunk's slice. |

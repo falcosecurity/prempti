@@ -61,6 +61,7 @@ Rules use the standard [Falco rule language](https://falco.org/docs/rules/). Ava
 | `agent.transcript_path` | Session transcript file path (empty when the agent reports `null`) |
 | `agent.cwd` | Working directory (raw) |
 | `agent.real_cwd` | Working directory (resolved, absolute) |
+| `agent.real_cwd_prefix` | Resolved working directory with a trailing `/` for path-segment-aware prefix matching |
 | `tool.use_id` | Unique identifier for this tool call |
 | `tool.name` | Tool name (e.g., `Bash`, `Write`, `Edit`, `Read`) |
 | `tool.input` | Full tool input as JSON |
@@ -110,7 +111,7 @@ A custom user rule that asks for confirmation before the agent edits a dependenc
 
 ### Tips
 
-- Use `val()` for field-to-field comparisons: `tool.real_file_path startswith val(agent.real_cwd)`
+- Use `val()` for field-to-field comparisons. For path containment, test equality with `agent.real_cwd` or use `tool.real_file_path startswith val(agent.real_cwd_prefix)` so sibling names do not collide.
 - Use `basename()` to match file names: `basename(tool.file_path) = ".env"`
 - Use `real_*` fields for policy matching (resolved paths)
 - Use raw fields (`agent.cwd`, `tool.file_path`) for display and audit

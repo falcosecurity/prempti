@@ -36,6 +36,7 @@ The plugin runs inside Falco and manages three background responsibilities:
 | `agent.transcript_path` | string | Session transcript file path (empty when the agent reports `null`) |
 | `agent.cwd` | string | Working directory (raw) |
 | `agent.real_cwd` | string | Working directory (resolved) |
+| `agent.real_cwd_prefix` | string | Resolved working directory with a trailing `/` for safe prefix matching |
 | `tool.use_id` | string | Tool call ID from Claude Code (raw) |
 | `tool.name` | string | Tool name |
 | `tool.input` | string | Full tool input as JSON |

@@ -29,6 +29,7 @@ Every tool call event exposes these fields for conditions and output:
 | `agent.session_id` | string | Session identifier |
 | `agent.cwd` | string | Working directory as reported by the agent |
 | `agent.real_cwd` | string | Working directory resolved to absolute canonical path |
+| `agent.real_cwd_prefix` | string | Resolved working directory with one trailing `/`; use for path containment checks |
 | `tool.name` | string | Tool name: `Bash`, `Write`, `Edit`, `Read`, `Glob`, `Grep`, `Agent`, etc. |
 | `tool.use_id` | string | Unique identifier for this tool call |
 | `tool.input` | string | Full tool input as JSON |
@@ -110,7 +111,7 @@ output: >
 
 | Transformer | Usage |
 |-------------|-------|
-| `val()` | Field-to-field comparison: `tool.real_file_path startswith val(agent.real_cwd)` |
+| `val()` | Field-to-field comparison: `tool.real_file_path startswith val(agent.real_cwd_prefix)` |
 | `basename()` | Extract filename: `basename(tool.real_file_path) = ".env"` (POSIX split on `/` — use `real_file_path`, which the plugin normalizes to forward slashes on every platform) |
 | `tolower()` | Case-insensitive comparison: `tolower(tool.input_command) startswith "sudo "` |
 | `len()` | String length: `len(tool.input_command) > 1000` — detect anomalous inputs |
@@ -429,7 +430,7 @@ condition: basename(tool.real_file_path) = "Dockerfile"
 
 **Match files inside the working directory** (use `val()` for field comparison):
 ```yaml
-condition: tool.real_file_path startswith val(agent.real_cwd)
+condition: tool.real_file_path = val(agent.real_cwd) or tool.real_file_path startswith val(agent.real_cwd_prefix)
 ```
 
 **Match files by extension** (use `endswith`):
