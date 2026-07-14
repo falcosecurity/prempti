@@ -52,7 +52,7 @@ Rules use the standard [Falco rule language](https://falco.org/docs/rules/). Ava
 
 | Field | Description |
 |-------|-------------|
-| `correlation.id` | Broker-assigned unique ID (used for verdict correlation) |
+| `correlation.id` | Broker-assigned random capability used for verdict correlation |
 | `agent.name` | Coding agent identifier (e.g., `claude_code`) |
 | `agent.os` | Host OS (`linux`, `macos`, `windows`, or `unknown`); static per build |
 | `agent.pid` | PID of the agent process that invoked the hook; `0` when the platform lookup fails. Useful for correlating with syscall events from a side-by-side vanilla Falco. |

@@ -141,6 +141,7 @@ dependencies = [
  "dashmap",
  "falco_event",
  "falco_plugin",
+ "getrandom",
  "log",
  "serde",
  "serde_json",
