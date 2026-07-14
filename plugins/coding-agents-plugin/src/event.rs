@@ -96,6 +96,7 @@ struct ParsedFields {
     file_path: String,
     // Resolved paths (canonicalized or lexically normalized)
     real_cwd: String,
+    real_cwd_prefix: String,
     real_file_path: String,
     // Other fields
     tool_name: String,
@@ -259,6 +260,7 @@ impl ParsedEvent {
 
         // Resolved paths — canonicalized with lexical normalization fallback.
         let real_cwd = resolve_path(&cwd);
+        let real_cwd_prefix = directory_prefix(&real_cwd);
         let real_file_path = resolve_file_path(&file_path, &real_cwd);
 
         let tool_input_command = extract_command(&tool_name, &tool_input);
@@ -279,6 +281,7 @@ impl ParsedEvent {
             cwd,
             file_path,
             real_cwd,
+            real_cwd_prefix,
             real_file_path,
             tool_name,
             tool_input,
@@ -347,6 +350,11 @@ impl ParsedEvent {
         self.ensure_parsed(payload).map(|f| f.real_cwd.as_str())
     }
 
+    pub fn real_cwd_prefix(&mut self, payload: &[u8]) -> Option<&str> {
+        self.ensure_parsed(payload)
+            .map(|f| f.real_cwd_prefix.as_str())
+    }
+
     pub fn tool_name(&mut self, payload: &[u8]) -> Option<&str> {
         self.ensure_parsed(payload).map(|f| f.tool_name.as_str())
     }
@@ -396,6 +404,16 @@ fn extract_raw_file_path(tool_name: &str, tool_input: &serde_json::Value) -> Str
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+/// Return a normalized directory prefix suitable for path-segment-aware
+/// `startswith` comparisons in Falco rules.
+fn directory_prefix(path: &str) -> String {
+    if path.is_empty() || path.ends_with('/') {
+        path.to_string()
+    } else {
+        format!("{path}/")
+    }
 }
 
 /// Normalize a path lexically: resolve `.` and `..` without touching the filesystem.
@@ -577,6 +595,18 @@ mod tests {
     #[test]
     fn normalize_path_single_dotdot() {
         assert_eq!(normalize_path(Path::new("..")), PathBuf::from(""));
+    }
+
+    #[test]
+    fn directory_prefix_adds_exactly_one_separator() {
+        assert_eq!(
+            directory_prefix("/home/user/project"),
+            "/home/user/project/"
+        );
+        assert_eq!(directory_prefix("/"), "/");
+        assert_eq!(directory_prefix(""), "");
+        assert_eq!(directory_prefix("C:/Users/project"), "C:/Users/project/");
+        assert_eq!(directory_prefix("C:/"), "C:/");
     }
 
     #[cfg(windows)]
@@ -833,6 +863,7 @@ mod tests {
         assert_eq!(pe.agent_turn_id(&p), Some(""));
         assert_eq!(pe.cwd(&p), Some("/nonexistent-cwd-999"));
         assert_eq!(pe.real_cwd(&p), Some("/nonexistent-cwd-999"));
+        assert_eq!(pe.real_cwd_prefix(&p), Some("/nonexistent-cwd-999/"));
         assert_eq!(pe.tool_name(&p), Some("Write"));
         assert_eq!(pe.file_path(&p), Some("out.txt"));
         assert_eq!(pe.real_file_path(&p), Some("/nonexistent-cwd-999/out.txt"));
@@ -860,6 +891,7 @@ mod tests {
         assert_eq!(pe.agent_turn_id(&p), Some(""));
         assert_eq!(pe.cwd(&p), Some(""));
         assert_eq!(pe.real_cwd(&p), Some(""));
+        assert_eq!(pe.real_cwd_prefix(&p), Some(""));
         assert_eq!(pe.tool_name(&p), Some(""));
         assert_eq!(pe.file_path(&p), Some(""));
         assert_eq!(pe.real_file_path(&p), Some(""));

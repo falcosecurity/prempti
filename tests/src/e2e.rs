@@ -406,7 +406,7 @@ fn write_rules(rules_dir: &Path) {
 
 - rule: Ask write outside cwd
   desc: Require confirmation for writes outside working directory
-  condition: is_write_tool and not tool.real_file_path startswith val(agent.real_cwd)
+  condition: is_write_tool and (agent.real_cwd = "" or (tool.real_file_path != val(agent.real_cwd) and not tool.real_file_path startswith val(agent.real_cwd_prefix)))
   output: "Falco asks about writing to %tool.real_file_path outside %agent.real_cwd | correlation=%correlation.id"
   priority: WARNING
   source: coding_agent
@@ -422,7 +422,7 @@ fn write_rules(rules_dir: &Path) {
 
 - rule: Audit read outside cwd
   desc: Log reads outside working directory (monitor only, no deny/ask)
-  condition: tool.name = "Read" and not tool.real_file_path startswith val(agent.real_cwd)
+  condition: tool.name = "Read" and (agent.real_cwd = "" or (tool.real_file_path != val(agent.real_cwd) and not tool.real_file_path startswith val(agent.real_cwd_prefix)))
   output: "Falco noticed read outside cwd %tool.real_file_path | correlation=%correlation.id"
   priority: NOTICE
   source: coding_agent

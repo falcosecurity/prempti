@@ -124,7 +124,10 @@
     or basename(tool.file_path) in (sensitive_file_names)
 
 - macro: is_outside_cwd
-  condition: not tool.real_file_path startswith val(agent.real_cwd)
+  condition: >
+    agent.real_cwd = ""
+    or (tool.real_file_path != val(agent.real_cwd)
+        and not tool.real_file_path startswith val(agent.real_cwd_prefix))
 
 # Claude Code's own data tree (~/.claude/). The agent legitimately writes
 # session bookkeeping here — plans, todos, memories, transcripts, caches,

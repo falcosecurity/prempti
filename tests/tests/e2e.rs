@@ -156,6 +156,24 @@ fn ask_write_outside_cwd() {
     assert_reason_contains(&r, "Ask write outside cwd");
 }
 
+#[test]
+fn ask_write_to_sibling_with_cwd_prefix() {
+    let h = require_falco!();
+    let sibling = if cfg!(windows) {
+        "C:/Users/test/project-backup/notes.txt"
+    } else {
+        "/tmp/myproject-backup/notes.txt"
+    };
+    let input = E2eHarness::make_input(
+        "Write",
+        &format!(r#"{{"file_path":"{sibling}","content":"x"}}"#),
+        cwd(),
+        "e2e-outside-prefix",
+    );
+    let r = h.run_hook(&input);
+    assert_decision(&r, "ask");
+}
+
 // --- Allow: writes inside cwd ---
 
 #[test]

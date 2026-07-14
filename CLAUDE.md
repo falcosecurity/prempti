@@ -92,6 +92,7 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 | `agent.session_id` | string | Session identifier |
 | `agent.cwd` | string | Working directory, raw from the hook JSON (`cwd` field on both Claude Code and Codex) |
 | `agent.real_cwd` | string | Working directory, resolved to absolute canonical path (symlinks resolved if exists, lexical normalization otherwise) |
+| `agent.real_cwd_prefix` | string | `agent.real_cwd` with one trailing `/` (root paths are unchanged). Use for path-segment-aware field-to-field prefix comparisons. |
 | `tool.use_id` | string | Tool call identifier (`tool_use_id`, raw value). Present on Claude Code hooks and Codex `PreToolUse`; absent on Codex `PermissionRequest`. May be empty. |
 | `tool.name` | string | Tool name (e.g., `Bash`, `Write`, `Edit` for Claude Code; `Bash`, `apply_patch`, `mcp__<server>__<tool>` for Codex) |
 | `tool.input` | string | Full tool input as JSON |
@@ -119,7 +120,7 @@ Each synthetic event carries `tool.patch_op` (Add/Update/Delete/Move) and a sing
 Malformed apply_patch envelopes fail closed: the broker writes a deny response with the parse error as the reason and never enqueues events.
 
 **Rule authoring notes**:
-- When comparing one field against another in Falco rule conditions, use the `val()` transformer. For example: `tool.real_file_path startswith val(agent.real_cwd)`. Without `val()`, the RHS is treated as a literal string, not a field reference.
+- When comparing one field against another in Falco rule conditions, use the `val()` transformer. For path containment, compare equality with `agent.real_cwd` or use `tool.real_file_path startswith val(agent.real_cwd_prefix)`; the trailing slash prevents sibling-prefix collisions. Without `val()`, the RHS is treated as a literal string, not a field reference.
 - Use the `basename()` transformer to extract the file name from a path. For example: `basename(tool.file_path) = ".env"` matches any `.env` file regardless of directory.
 - For rules that care about the destructive operation type (e.g. gating only deletes), pattern-match on `tool.patch_op` directly: `tool.patch_op = "Delete" and tool.real_file_path startswith "/etc/"`. Otherwise prefer `is_write_tool` which covers all four ops uniformly.
 

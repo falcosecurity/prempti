@@ -104,6 +104,12 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
+    fn extract_real_cwd_prefix(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
+        let payload = self.get_payload(&mut req)?;
+        let val = req.context.real_cwd_prefix(payload).unwrap_or("");
+        Ok(CString::new(val)?)
+    }
+
     fn extract_tool_name(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.tool_name(payload).unwrap_or("");
@@ -190,6 +196,9 @@ impl ExtractPlugin for CodingAgentPlugin {
         field("agent.real_cwd", &Self::extract_real_cwd)
             .with_display("Resolved Working Directory")
             .with_description("Working directory, resolved to absolute canonical path"),
+        field("agent.real_cwd_prefix", &Self::extract_real_cwd_prefix)
+            .with_display("Resolved Working Directory Prefix")
+            .with_description("Resolved working directory with one trailing path separator"),
         field("tool.name", &Self::extract_tool_name)
             .with_display("Tool Name")
             .with_description("Tool being invoked (e.g., Bash, Write, Edit)"),
