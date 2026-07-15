@@ -225,7 +225,7 @@ fn shipped_rules_deny_sensitive_symlink_access_name() {
     );
     let r = h.run_hook(&input);
     assert_decision(&r, "deny");
-    assert_reason_contains(&r, "Deny writes to sensitive paths");
+    assert_reason_contains(&r, "Deny writing to sensitive paths");
 }
 
 // --- Allow: writes inside cwd ---
