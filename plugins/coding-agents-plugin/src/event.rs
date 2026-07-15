@@ -474,13 +474,15 @@ fn normalize_separators(path: String) -> String {
     }
 }
 
-/// Resolve a single path: canonicalize if possible, otherwise lexically normalize.
+/// Resolve a single path, including through its nearest existing ancestor.
 fn resolve_path(raw: &str) -> String {
     if raw.is_empty() {
         return String::new();
     }
-    // Try filesystem canonicalization first (resolves symlinks).
-    if let Ok(resolved) = std::fs::canonicalize(raw) {
+    // The cwd itself may not exist yet. Resolve any existing symlinked
+    // ancestor so cwd and file paths use the same canonical namespace (for
+    // example, /tmp and /private/tmp on macOS).
+    if let Some(resolved) = canonicalize_allow_missing(Path::new(raw)) {
         return normalize_separators(resolved.to_string_lossy().into_owned());
     }
     // Fallback: lexical normalization only.
@@ -816,6 +818,27 @@ mod tests {
     #[test]
     fn resolve_path_empty_returns_empty() {
         assert_eq!(resolve_path(""), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_path_canonicalizes_symlinked_ancestor_for_missing_suffix() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "prempti-resolve-cwd-symlink-{}",
+            std::process::id()
+        ));
+        let target = root.join("target");
+        let link = root.join("link");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let resolved = resolve_path(&link.join("missing/project").to_string_lossy());
+        assert_eq!(PathBuf::from(resolved), target.join("missing/project"));
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
