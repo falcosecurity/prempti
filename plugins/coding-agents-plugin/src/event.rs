@@ -1,6 +1,7 @@
 use falco_event::fields::{FromBytes, FromBytesError, ToBytes};
 use falco_plugin::event::EventSource;
 use serde::Deserialize;
+use std::ffi::OsString;
 use std::io::Write as IoWrite;
 use std::path::{Component, Path, PathBuf};
 
@@ -487,7 +488,7 @@ fn resolve_file_path(file_path: &str, resolved_cwd: &str) -> String {
     // leave symlinked parent directories unresolved. For example, with
     // `project/link -> ~/.ssh`, a new `project/link/key` was incorrectly
     // reported as being inside `project` rather than under `~/.ssh`.
-    if let Some(resolved) = canonicalize_allow_missing(&abs, 0) {
+    if let Some(resolved) = canonicalize_allow_missing(&abs) {
         return normalize_separators(resolved.to_string_lossy().into_owned());
     }
     // Fallback: lexical normalization.
@@ -496,37 +497,60 @@ fn resolve_file_path(file_path: &str, resolved_cwd: &str) -> String {
 
 /// Canonicalize a path even when its final components do not exist yet.
 ///
-/// The nearest existing ancestor is canonicalized first (resolving symlinks),
+/// The nearest existing ancestor is found iteratively and canonicalized once,
 /// then the missing suffix is appended lexically. Broken final symlinks are
 /// followed explicitly because `canonicalize` reports them as `NotFound`.
 /// Limit explicit symlink traversal to the conventional operating-system
 /// maximum so a cycle degrades to the caller's lexical fallback.
-fn canonicalize_allow_missing(path: &Path, symlink_depth: usize) -> Option<PathBuf> {
+fn canonicalize_allow_missing(path: &Path) -> Option<PathBuf> {
     const MAX_SYMLINK_DEPTH: usize = 40;
+    let mut current = path.to_path_buf();
+    let mut missing_suffix = Vec::<OsString>::new();
+    let mut symlink_depth = 0;
 
-    match std::fs::canonicalize(path) {
-        Ok(resolved) => return Some(resolved),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return None,
-    }
+    loop {
+        // Peel missing components without recursively canonicalizing every
+        // parent. This bounds stack use and performs one metadata lookup per
+        // missing component instead of repeatedly walking the entire prefix.
+        loop {
+            match std::fs::symlink_metadata(&current) {
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing_suffix.push(current.file_name()?.to_owned());
+                    current = current.parent()?.to_path_buf();
+                }
+                Err(_) => return None,
+            }
+        }
 
-    if symlink_depth >= MAX_SYMLINK_DEPTH {
-        return None;
-    }
+        match std::fs::canonicalize(&current) {
+            Ok(mut resolved) => {
+                while let Some(component) = missing_suffix.pop() {
+                    resolved.push(component);
+                }
+                return Some(normalize_path(&resolved));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
 
-    if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        let target = std::fs::read_link(path).ok()?;
-        let target = if target.is_absolute() {
+        if symlink_depth >= MAX_SYMLINK_DEPTH {
+            return None;
+        }
+
+        let metadata = std::fs::symlink_metadata(&current).ok()?;
+        if !metadata.file_type().is_symlink() {
+            return None;
+        }
+
+        let target = std::fs::read_link(&current).ok()?;
+        current = if target.is_absolute() {
             target
         } else {
-            path.parent()?.join(target)
+            current.parent()?.join(target)
         };
-        return canonicalize_allow_missing(&target, symlink_depth + 1);
+        symlink_depth += 1;
     }
-
-    let file_name = path.file_name()?.to_owned();
-    let parent = canonicalize_allow_missing(path.parent()?, symlink_depth)?;
-    Some(normalize_path(&parent.join(file_name)))
 }
 
 #[cfg(test)]
@@ -782,6 +806,21 @@ mod tests {
     fn resolve_file_path_lexical_collapses_dotdot() {
         let resolved = resolve_file_path("../sibling/file", "/nonexistent/a/b");
         assert_eq!(resolved, "/nonexistent/a/sibling/file");
+    }
+
+    #[test]
+    fn canonicalize_allow_missing_handles_a_deep_suffix_iteratively() {
+        let root = std::env::temp_dir();
+        let mut path = root.clone();
+        let mut suffix = PathBuf::new();
+        for _ in 0..256 {
+            path.push("x");
+            suffix.push("x");
+        }
+
+        let resolved = canonicalize_allow_missing(&path).expect("resolve deep missing suffix");
+        let expected = normalize_path(&std::fs::canonicalize(root).unwrap().join(suffix));
+        assert_eq!(resolved, expected);
     }
 
     #[cfg(unix)]
