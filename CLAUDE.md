@@ -98,6 +98,7 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 | `tool.input` | string | Full tool input as JSON |
 | `tool.input_command` | string | Shell command (Bash tool calls) |
 | `tool.file_path` | string | Target file path. Raw from `tool_input.file_path` for Claude Code's `Write`/`Edit`/`Read`; for Codex `apply_patch` synthetic events the broker injects the per-event path parsed from the patch envelope. Empty otherwise. |
+| `tool.file_name` | string | Final component of `tool.file_path` before symlink resolution. Use alongside the canonical basename for name-based policies. |
 | `tool.real_file_path` | string | Target file path, resolved to absolute canonical path. Relative paths resolved against `agent.cwd`. Populated whenever `tool.file_path` is. |
 | `tool.patch_op` | string | Per-event apply_patch operation for Codex synthetic events: `Add`, `Update`, `Delete`, or `Move`. Empty for all other events. |
 | `agent.permission_mode` | string | Session permission mode reported by the agent (e.g., `default`, `acceptEdits`, `plan`, `bypassPermissions`; Codex also emits `dontAsk`) |
@@ -110,6 +111,7 @@ This schema is agent-agnostic. The `agent.name` field distinguishes which coding
 Path fields come in raw/real pairs:
 - **Raw** (`agent.cwd`, `tool.file_path`): exactly as reported in the hook JSON for Claude Code, or as injected by the broker per synthetic event for Codex `apply_patch`. Use for display and audit.
 - **Real** (`agent.real_cwd`, `tool.real_file_path`): resolved via `canonicalize` (symlinks resolved, absolute). For a path that does not exist yet (common for `Write` / `Add`), the nearest existing ancestor is canonicalized before the missing suffix is appended; a fully unresolvable path falls back to lexical normalization. Use for policy matching.
+- **Access name** (`tool.file_name`): the platform-aware final component before symlink resolution. Name-based policies should match this field **or** `basename(tool.real_file_path)` so neither a sensitive alias nor a sensitive target can be hidden by a symlink.
 
 ### Codex apply_patch: one event per touched path
 
@@ -121,7 +123,7 @@ Malformed apply_patch envelopes fail closed: the broker writes a deny response w
 
 **Rule authoring notes**:
 - When comparing one field against another in Falco rule conditions, use the `val()` transformer. For path containment, compare equality with `agent.real_cwd` or use `tool.real_file_path startswith val(agent.real_cwd_prefix)`; the trailing slash prevents sibling-prefix collisions. Without `val()`, the RHS is treated as a literal string, not a field reference.
-- Use the `basename()` transformer with the separator-normalized path. For example: `basename(tool.real_file_path) = ".env"` matches any `.env` file regardless of directory, including on Windows.
+- For name-based policies, match both the access name and canonical target name: `tool.file_name = ".env" or basename(tool.real_file_path) = ".env"`. The first catches a sensitive symlink alias; the second catches an innocuous alias that resolves to a sensitive target. `tool.file_name` is platform-aware, and `tool.real_file_path` uses forward slashes on every platform.
 - For rules that care about the destructive operation type (e.g. gating only deletes), pattern-match on `tool.patch_op` directly: `tool.patch_op = "Delete" and tool.real_file_path startswith "/etc/"`. Otherwise prefer `is_write_tool` which covers all four ops uniformly.
 
 ### Rule output convention

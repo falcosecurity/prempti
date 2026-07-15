@@ -121,6 +121,7 @@
     or tool.real_file_path contains "/.config/gcloud/"
     or tool.real_file_path contains "/.kube/"
     or tool.real_file_path contains "/.docker/"
+    or tool.file_name in (sensitive_file_names)
     or basename(tool.real_file_path) in (sensitive_file_names)
 
 - macro: is_outside_cwd
@@ -1364,8 +1365,9 @@
     but always warrants explicit user confirmation.
   condition: >
     is_write_tool
-    and tool.file_path != ""
-    and basename(tool.real_file_path) in (shell_startup_files)
+    and tool.real_file_path != ""
+    and (tool.file_name in (shell_startup_files)
+         or basename(tool.real_file_path) in (shell_startup_files))
   output: >
     Falco requires confirmation before modifying shell startup file %tool.real_file_path
   priority: WARNING
@@ -1380,9 +1382,9 @@
     injection vector. Writes inside the current project are allowed.
   condition: >
     is_write_tool
-    and tool.file_path != ""
-    and basename(tool.real_file_path) in (agent_instruction_files)
     and tool.real_file_path != ""
+    and (tool.file_name in (agent_instruction_files)
+         or basename(tool.real_file_path) in (agent_instruction_files))
     and is_outside_cwd
   output: >
     Falco requires confirmation before writing agent instruction file %tool.real_file_path outside working directory %agent.real_cwd
@@ -1479,9 +1481,9 @@
 - macro: is_mcp_config_write
   condition: >
     is_write_tool
-    and tool.file_path != ""
-    and (basename(tool.real_file_path) = ".mcp.json"
-         or basename(tool.real_file_path) = "managed-mcp.json")
+    and tool.real_file_path != ""
+    and (tool.file_name in (".mcp.json", "managed-mcp.json")
+         or basename(tool.real_file_path) in (".mcp.json", "managed-mcp.json"))
 
 # Matches MCP config content where any path points to a temporary directory.
 # Since the rule already restricts to .mcp.json / managed-mcp.json files,
@@ -1686,9 +1688,9 @@
     inside the working project directory are allowed.
   condition: >
     is_write_tool
-    and tool.file_path != ""
-    and basename(tool.real_file_path) = "CLAUDE.md"
     and tool.real_file_path != ""
+    and (tool.file_name = "CLAUDE.md"
+         or basename(tool.real_file_path) = "CLAUDE.md")
     and is_outside_cwd
   output: >
     Falco requires confirmation before writing CLAUDE.md at %tool.real_file_path outside working directory %agent.real_cwd
@@ -1925,8 +1927,9 @@
 - macro: is_registry_config_write
   condition: >
     is_write_tool
-    and tool.file_path != ""
-    and basename(tool.real_file_path) in (registry_config_files)
+    and tool.real_file_path != ""
+    and (tool.file_name in (registry_config_files)
+         or basename(tool.real_file_path) in (registry_config_files))
 
 # Matches content keys that redirect package downloads to a custom index.
 # registry=            — npm/pnpm registry (no space, npmrc/.pnpmrc format)
@@ -1975,8 +1978,9 @@
 - macro: is_env_file_write
   condition: >
     is_write_tool
-    and tool.file_path != ""
-    and basename(tool.real_file_path) in (env_file_names)
+    and tool.real_file_path != ""
+    and (tool.file_name in (env_file_names)
+         or basename(tool.real_file_path) in (env_file_names))
 
 # Matches env content that overrides the AI API base URL.
 # ANTHROPIC_BASE_URL — Claude Code / Anthropic SDK endpoint

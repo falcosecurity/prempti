@@ -137,6 +137,12 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
+    fn extract_file_name(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
+        let payload = self.get_payload(&mut req)?;
+        let val = req.context.file_name(payload).unwrap_or("");
+        Ok(CString::new(val)?)
+    }
+
     fn extract_real_file_path(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.real_file_path(payload).unwrap_or("");
@@ -157,7 +163,7 @@ impl ExtractPlugin for CodingAgentPlugin {
     const EXTRACT_FIELDS: &'static [ExtractFieldInfo<Self>] = &[
         field("correlation.id", &Self::extract_correlation_id)
             .with_display("Correlation ID")
-            .with_description("Broker-assigned random capability used for verdict correlation")
+            .with_description("Broker-assigned random nonce used for verdict correlation")
             .add_output(),
         field("agent.name", &Self::extract_agent_name)
             .with_display("Agent Name")
@@ -211,6 +217,9 @@ impl ExtractPlugin for CodingAgentPlugin {
         field("tool.file_path", &Self::extract_file_path)
             .with_display("File Path")
             .with_description("Target file path, raw from tool_input.file_path (Write/Edit/Read only)"),
+        field("tool.file_name", &Self::extract_file_name)
+            .with_display("Accessed File Name")
+            .with_description("Final component of the target path before symlink resolution"),
         field("tool.real_file_path", &Self::extract_real_file_path)
             .with_display("Resolved File Path")
             .with_description("Target file path, resolved to absolute canonical path (Write/Edit/Read only)"),
