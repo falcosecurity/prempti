@@ -51,7 +51,7 @@ pub struct InterceptorRequest {
 
 /// Parsed event data queued for Falco.
 pub struct EventData {
-    /// Broker-assigned cryptographically random correlation capability (always > 0).
+    /// Broker-assigned cryptographically random correlation nonce (always > 0).
     pub correlation_id: u64,
     /// Agent name (e.g., "claude_code").
     pub agent_name: String,

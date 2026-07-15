@@ -101,8 +101,8 @@ Background thread spawned in `Plugin::new()`. Listens on a Unix domain socket fo
 - **Bind**: `config.socket_path` (default `~/.prempti/run/broker.sock`)
 - **Protocol**: Newline-terminated JSON, one request per connection
 - **Read timeout**: 5 seconds (prevents slow connections from blocking the accept loop)
-- **Default flow** (single-event): read request → validate → assign an unguessable `correlation.id` capability → register in broker (`expected_events = 1`) → enqueue one event
-- **Codex apply_patch flow** (multi-event multiplex): read request → validate → parse the patch envelope from `tool_input.command` → for each `(operation, path)` tuple, build a per-event payload with `tool_input.command` rewritten to just that hunk's slice wrapped in a fresh `*** Begin Patch ... *** End Patch` envelope → assign one shared, unguessable `correlation.id` capability → register in broker with `expected_events = N` → enqueue N events. Malformed envelopes or failure to obtain OS randomness fail closed. See [`docs/hooks/codex/SPEC.md`](../../hooks/codex/SPEC.md) for the wire shape that triggers this path.
+- **Default flow** (single-event): read request → validate → assign a random `correlation.id` nonce → register in broker (`expected_events = 1`) → enqueue one event
+- **Codex apply_patch flow** (multi-event multiplex): read request → validate → parse the patch envelope from `tool_input.command` → for each `(operation, path)` tuple, build a per-event payload with `tool_input.command` rewritten to just that hunk's slice wrapped in a fresh `*** Begin Patch ... *** End Patch` envelope → assign one shared, random `correlation.id` nonce → register in broker with `expected_events = N` → enqueue N events. Malformed envelopes or failure to obtain OS randomness fail closed. See [`docs/hooks/codex/SPEC.md`](../../hooks/codex/SPEC.md) for the wire shape that triggers this path.
 
 ### Event Queue (`crossbeam-channel`)
 
@@ -126,7 +126,7 @@ Implements `ExtractPlugin` with per-event caching via `ExtractContext`.
 
 | Field | Type | Source |
 |-------|------|--------|
-| `correlation.id` | u64 | Broker-assigned cryptographically random request capability (from payload header). Multiple events from one Codex `apply_patch` invocation share the same `correlation.id`. |
+| `correlation.id` | u64 | Broker-assigned cryptographically random correlation nonce (from payload header). Multiple events from one Codex `apply_patch` invocation share the same `correlation.id`. |
 | `agent.name` | string | Wire protocol `agent_name` field (`claude_code` or `codex`) |
 | `agent.os` | string | Compile-time `cfg!(target_os)` — `linux`, `macos`, `windows`, or `unknown` (static per build, not parsed from the payload) |
 | `agent.pid` | u64 | PID of the agent process that invoked the hook (the interceptor's immediate parent). `0` when the platform lookup fails. |
@@ -158,14 +158,14 @@ Background thread spawned in `Plugin::new()`. Receives Falco JSON alerts via `ht
 - **Library**: `tiny_http` (synchronous, minimal)
 - **Response**: 200 OK immediately (must be fast — blocks Falco's output worker)
 - **Body limit**: 1 MB
-- **Alert parsing**: Extract `correlation.id` from `output_fields` (u64), classify tags. Only a live, unguessable ID can affect a pending request; unknown IDs are ignored.
+- **Alert parsing**: Extract `correlation.id` from `output_fields` (u64), classify tags. Only a live ID can affect a pending request; unknown IDs are ignored. Randomness mitigates blind guessing but does not authenticate the alert.
 
 ### Broker (`broker.rs`)
 
 Tracks pending requests and resolves verdicts. Shared via `Arc<Broker>` across all threads.
 
 - **Pending map**: `DashMap<u64, PendingRequest>` keyed by `correlation.id`
-- **Correlation ID**: Cryptographically random non-zero `u64`, generated from the operating system for each wire request. It acts as a short-lived capability so another local process cannot predict a pending ID and forge a verdict through the loopback HTTP listener.
+- **Correlation ID**: Cryptographically random non-zero `u64`, generated from the operating system for each wire request. It mitigates blind guessing of a pending ID. The loopback HTTP listener is intentionally unauthenticated, so this nonce is defense in depth rather than an authentication boundary.
 - **Wire ID**: The interceptor's original request `id` (stored per-request, used in the verdict response)
 - **`expected_events` counter**: `AtomicU64` per pending request, set at register time. `1` for ordinary single-event flows (every hook except Codex `apply_patch`), `N` for the multi-file `apply_patch` multiplex. `apply_seen` decrements; the broker only resolves on the last seen (the call that brings the counter to 0). `apply_deny` short-circuits regardless of remaining seens.
 - **Mode flags**: `monitor_mode` and `passthrough` `AtomicBool`s, set from plugin config on init
@@ -264,3 +264,4 @@ Since every broker-assigned `correlation.id` is non-zero, this condition is alwa
 4. **`Plugin::Drop` only runs on graceful shutdown**: on Linux, Falco's `SIGTERM` handler tears the plugin down cleanly. On macOS and Windows, Falco has no signal handler — the service manager terminates the process, so `Drop` is skipped. Resources are still reclaimed correctly: TCP listener via the kernel, AF_UNIX socket file via `prepare_listener`'s stale-file cleanup on next start, threads via process exit.
 5. **Wire request size cap.** The socket server's read cap is `max_request_bytes` (default 5 MiB, configurable in plugin `init_config`, clamped to `[4 KiB, 64 MiB]`). The interceptor's matching `PREMPTI_INPUT_MAX_BYTES` (default 4 MiB) bounds what reaches the broker in the first place; envelope overhead is the gap. Raise both knobs in tandem to support very large `apply_patch` payloads.
 6. **Codex `permission_mode = "dontAsk"` × `PermissionRequest` interaction is unverified at runtime**: the multi-event multiplex and the verdict mapping (`ask → deny + reason` on both mounts) handle this safely on paper, but exact firing semantics of `PermissionRequest` under `dontAsk` are still inferred from upstream source, not observed.
+7. **Loopback HTTP alerts are unauthenticated**: the receiver trusts a correctly shaped alert carrying a live `correlation.id`. Random nonces make blind guessing impractical, but a local process that learns a live ID can submit a matching deny/ask/seen alert. This is an explicit threat-model boundary, not transport authentication.
