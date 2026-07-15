@@ -174,6 +174,60 @@ fn ask_write_to_sibling_with_cwd_prefix() {
     assert_decision(&r, "ask");
 }
 
+#[test]
+fn shipped_rules_ask_for_write_when_cwd_is_empty() {
+    let Some(h) = E2eHarness::start_with_shipped_rules("guardrails") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    let path = if cfg!(windows) {
+        "C:/Users/prempti-e2e/no-cwd.txt"
+    } else if cfg!(target_os = "macos") {
+        "/Users/prempti-e2e/no-cwd.txt"
+    } else {
+        "/home/prempti-e2e/no-cwd.txt"
+    };
+    let input = E2eHarness::make_input(
+        "Write",
+        &format!(r#"{{"file_path":"{path}","content":"x"}}"#),
+        "",
+        "e2e-empty-cwd",
+    );
+    let r = h.run_hook(&input);
+    assert_decision(&r, "ask");
+    assert_reason_contains(&r, "Ask before writing outside working directory");
+}
+
+#[cfg(unix)]
+#[test]
+fn shipped_rules_deny_sensitive_symlink_access_name() {
+    use std::os::unix::fs::symlink;
+
+    let Some(h) = E2eHarness::start_with_shipped_rules("guardrails") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    let target = h.e2e_dir.join("ordinary-config");
+    let alias = h.e2e_dir.join(".env");
+    std::fs::write(&target, "value=test\n").unwrap();
+    symlink(&target, &alias).unwrap();
+
+    let tool_input = serde_json::json!({
+        "file_path": alias,
+        "content": "value=new\n"
+    })
+    .to_string();
+    let input = E2eHarness::make_input(
+        "Write",
+        &tool_input,
+        &h.e2e_dir.to_string_lossy(),
+        "e2e-sensitive-alias",
+    );
+    let r = h.run_hook(&input);
+    assert_decision(&r, "deny");
+    assert_reason_contains(&r, "Deny writes to sensitive paths");
+}
+
 // --- Allow: writes inside cwd ---
 
 #[test]

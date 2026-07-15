@@ -166,6 +166,31 @@ fn codex_pretool_ask_sentinel_becomes_deny_with_reason() {
     );
 }
 
+#[test]
+fn codex_shipped_rules_fail_closed_when_cwd_is_empty() {
+    let Some(h) = E2eHarness::start_with_shipped_rules("guardrails") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    let path = if cfg!(windows) {
+        "C:/Users/prempti-e2e/no-cwd-codex.txt"
+    } else if cfg!(target_os = "macos") {
+        "/Users/prempti-e2e/no-cwd-codex.txt"
+    } else {
+        "/home/prempti-e2e/no-cwd-codex.txt"
+    };
+    let patch = format!("*** Begin Patch\n*** Add File: {path}\n+content\n*** End Patch");
+    let input = E2eHarness::make_codex_apply_patch_input(&patch, "", "codex-empty-cwd");
+    let r = h.run_hook_for(AgentKind::Codex, &input);
+    assert_codex_pretool_decision(&r, "deny");
+    assert!(
+        r.stdout
+            .contains("Ask before writing outside working directory"),
+        "expected shipped outside-cwd rule in deny reason, got '{}'",
+        r.stdout.trim()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // agent.pid round-trip: the Codex interceptor must propagate its getppid
 // the same way the Claude one does. The seen rule embeds agent.pid in its
