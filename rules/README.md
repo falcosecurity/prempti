@@ -52,11 +52,14 @@ Rules use the standard [Falco rule language](https://falco.org/docs/rules/). Ava
 
 | Field | Description |
 |-------|-------------|
-| `correlation.id` | Broker-assigned random capability used for verdict correlation |
+| `correlation.id` | Broker-assigned random nonce used for verdict correlation |
 | `agent.name` | Coding agent identifier (e.g., `claude_code`) |
 | `agent.os` | Host OS (`linux`, `macos`, `windows`, or `unknown`); static per build |
 | `agent.pid` | PID of the agent process that invoked the hook; `0` when the platform lookup fails. Useful for correlating with syscall events from a side-by-side vanilla Falco. |
+| `agent.hook_event_name` | Hook lifecycle point (e.g., `PreToolUse`) |
 | `agent.session_id` | Session identifier |
+| `agent.model` | Model identifier (Codex-only; empty for Claude Code) |
+| `agent.turn_id` | Turn identifier within a session (Codex-only; empty for Claude Code) |
 | `agent.permission_mode` | Session permission mode (e.g. `default`, `acceptEdits`, `bypassPermissions`) |
 | `agent.transcript_path` | Session transcript file path (empty when the agent reports `null`) |
 | `agent.cwd` | Working directory (raw) |
@@ -67,7 +70,9 @@ Rules use the standard [Falco rule language](https://falco.org/docs/rules/). Ava
 | `tool.input` | Full tool input as JSON |
 | `tool.input_command` | Shell command (Bash only) |
 | `tool.file_path` | Target file path (raw, Write/Edit/Read only) |
+| `tool.file_name` | Final component of the target path before symlink resolution |
 | `tool.real_file_path` | Target file path (resolved, absolute, Write/Edit/Read only) |
+| `tool.patch_op` | Codex `apply_patch` operation (`Add`, `Update`, `Delete`, or `Move`; empty otherwise) |
 
 All rules must:
 - Set `source: coding_agent`
@@ -100,8 +105,9 @@ A custom user rule that asks for confirmation before the agent edits a dependenc
   desc: Require confirmation before the agent edits a generated lockfile.
   condition: >
     tool.name in ("Write", "Edit")
-    and tool.file_path != ""
-    and basename(tool.real_file_path) in (dependency_lockfiles)
+    and tool.real_file_path != ""
+    and (tool.file_name in (dependency_lockfiles)
+         or basename(tool.real_file_path) in (dependency_lockfiles))
   output: >
     Falco requires confirmation before modifying dependency lockfile %tool.real_file_path
   priority: WARNING
@@ -112,6 +118,6 @@ A custom user rule that asks for confirmation before the agent edits a dependenc
 ### Tips
 
 - Use `val()` for field-to-field comparisons. For path containment, test equality with `agent.real_cwd` or use `tool.real_file_path startswith val(agent.real_cwd_prefix)` so sibling names do not collide.
-- Use `basename()` with the separator-normalized path to match file names on every platform: `basename(tool.real_file_path) = ".env"`
+- For name-based policies, match both the access name and canonical target name: `tool.file_name = ".env" or basename(tool.real_file_path) = ".env"`. This catches both sensitive symlink aliases and sensitive targets.
 - Use `real_*` fields for policy matching (resolved paths)
-- Use raw fields (`agent.cwd`, `tool.file_path`) for display and audit
+- Use raw fields (`agent.cwd`, `tool.file_path`) for display and audit; `tool.file_name` is the pre-resolution name for alias-aware policy matching

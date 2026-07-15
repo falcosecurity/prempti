@@ -25,8 +25,12 @@ Every tool call event exposes these fields for conditions and output:
 |-------|------|-------------|
 | `correlation.id` | u64 | Unique event ID (always > 0, auto-included in output_fields) |
 | `agent.name` | string | Agent identifier (e.g., `claude_code`) |
+| `agent.os` | string | Host OS: `linux`, `macos`, `windows`, or `unknown` |
 | `agent.pid` | u64 | PID of the agent process that invoked the hook (auto-included in output_fields). `0` when the platform lookup fails. |
+| `agent.hook_event_name` | string | Hook lifecycle point (e.g., `PreToolUse`) |
 | `agent.session_id` | string | Session identifier |
+| `agent.model` | string | Model identifier (Codex-only; empty for Claude Code) |
+| `agent.turn_id` | string | Turn identifier within a session (Codex-only; empty for Claude Code) |
 | `agent.cwd` | string | Working directory as reported by the agent |
 | `agent.real_cwd` | string | Working directory resolved to absolute canonical path |
 | `agent.real_cwd_prefix` | string | Resolved working directory with one trailing `/`; use for path containment checks |
@@ -35,11 +39,13 @@ Every tool call event exposes these fields for conditions and output:
 | `tool.input` | string | Full tool input as JSON |
 | `tool.input_command` | string | Shell command (Bash tool only, empty otherwise) |
 | `tool.file_path` | string | Target file path, raw (Write/Edit/Read only) |
+| `tool.file_name` | string | Final component of the target path before symlink resolution |
 | `tool.real_file_path` | string | Target file path resolved to absolute canonical path (Write/Edit/Read only) |
+| `tool.patch_op` | string | Codex `apply_patch` operation: `Add`, `Update`, `Delete`, or `Move` (empty otherwise) |
 | `agent.permission_mode` | string | Session permission mode: `default`, `acceptEdits`, `plan`, `bypassPermissions` (Codex also emits `dontAsk`) |
 | `agent.transcript_path` | string | Session transcript file path (empty when the agent reports `null`) |
 
-Path fields come in raw/real pairs. Use `real_*` for policy matching (resolved, absolute). Use raw fields for display.
+Path fields come in raw/real pairs. Use `real_*` for path policy matching (resolved, absolute). Use raw fields for display. For policies based on a file name, match `tool.file_name` **or** `basename(tool.real_file_path)` so both sensitive symlink aliases and sensitive canonical targets are covered.
 
 ## Rule Structure
 
@@ -112,7 +118,7 @@ output: >
 | Transformer | Usage |
 |-------------|-------|
 | `val()` | Field-to-field comparison: `tool.real_file_path startswith val(agent.real_cwd_prefix)` |
-| `basename()` | Extract filename: `basename(tool.real_file_path) = ".env"` (POSIX split on `/` — use `real_file_path`, which the plugin normalizes to forward slashes on every platform) |
+| `basename()` | Extract the canonical target filename: `basename(tool.real_file_path) = ".env"` (POSIX split on `/`; `real_file_path` is normalized to forward slashes on every platform). Combine it with `tool.file_name` for alias-aware policies. |
 | `tolower()` | Case-insensitive comparison: `tolower(tool.input_command) startswith "sudo "` |
 | `len()` | String length: `len(tool.input_command) > 1000` — detect anomalous inputs |
 
@@ -423,9 +429,9 @@ Flag to the user that the rule was not machine-validated.
 condition: tool.name = "Bash" and tool.input_command startswith "sudo "
 ```
 
-**Match files by name regardless of directory** (use `real_file_path` so `basename()` works on Windows too):
+**Match files by name regardless of directory** (cover both the access name and canonical target):
 ```yaml
-condition: basename(tool.real_file_path) = "Dockerfile"
+condition: tool.file_name = "Dockerfile" or basename(tool.real_file_path) = "Dockerfile"
 ```
 
 **Match files inside the working directory** (use `val()` for field comparison):

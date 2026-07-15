@@ -32,6 +32,8 @@ The plugin runs inside Falco and manages three background responsibilities:
 | `agent.pid` | u64 | PID of the agent process that invoked the hook; `0` when the platform lookup fails |
 | `agent.hook_event_name` | string | Hook lifecycle point |
 | `agent.session_id` | string | Session identifier |
+| `agent.model` | string | Model identifier (Codex-only; empty for Claude Code) |
+| `agent.turn_id` | string | Turn identifier within a session (Codex-only; empty for Claude Code) |
 | `agent.permission_mode` | string | Session permission mode (e.g. `default`, `acceptEdits`, `bypassPermissions`) |
 | `agent.transcript_path` | string | Session transcript file path (empty when the agent reports `null`) |
 | `agent.cwd` | string | Working directory (raw) |
@@ -42,6 +44,7 @@ The plugin runs inside Falco and manages three background responsibilities:
 | `tool.input` | string | Full tool input as JSON |
 | `tool.input_command` | string | Shell command (Bash only) |
 | `tool.file_path` | string | File path (raw, Write/Edit/Read) |
+| `tool.file_name` | string | Final component of the file path before symlink resolution |
 | `tool.real_file_path` | string | File path (resolved, Write/Edit/Read) |
 
 ## Configuration

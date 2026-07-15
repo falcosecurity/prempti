@@ -274,7 +274,7 @@ cargo test --manifest-path tests/Cargo.toml --test e2e
 
 - **`broker response timeout` / stale pending requests**: If Claude Code tool calls are denied with a broker timeout and Falco logs show `reaping stale pending request`, the alert round-trip is not completing. The most common cause is a misconfigured `http_output.url` in `falco.yaml` (must match the plugin's `http_port`). Run `premptictl health` to confirm the pipeline is healthy after starting the service.
 
-- **`basename()` in rules on Windows**: Falco's `basename()` transformer uses POSIX logic (splits on `/`). Use `basename(tool.real_file_path)` (forward slashes, normalized by the plugin) not `basename(tool.file_path)` (raw, may contain backslashes on Windows).
+- **File-name rules on Windows**: Falco's `basename()` transformer uses POSIX logic (splits on `/`). Match `tool.file_name` for the platform-aware access name and `basename(tool.real_file_path)` for the canonical target name. Do not apply `basename()` to raw `tool.file_path`, which may contain backslashes.
 
 - **ARM64 hosts and Rust/MSVC arch alignment**: On ARM64 Windows, use matching ARM64 toolchain for Rust host (`stable-aarch64-pc-windows-msvc`) and MSVC (`vcvarsall arm64`) when building ARM64 artifacts. Mixed host/target toolchains can fail with unresolved externals at link time.
 

@@ -95,6 +95,8 @@ struct ParsedFields {
     // Raw paths (as reported by Claude Code)
     cwd: String,
     file_path: String,
+    // Final component of the access path, before symlink resolution.
+    file_name: String,
     // Resolved paths (canonicalized or lexically normalized)
     real_cwd: String,
     real_cwd_prefix: String,
@@ -258,6 +260,7 @@ impl ParsedEvent {
         } else {
             extract_raw_file_path(&tool_name, &tool_input)
         };
+        let file_name = access_file_name(&file_path);
 
         // Resolved paths — canonicalized with lexical normalization fallback.
         let real_cwd = resolve_path(&cwd);
@@ -281,6 +284,7 @@ impl ParsedEvent {
             patch_path,
             cwd,
             file_path,
+            file_name,
             real_cwd,
             real_cwd_prefix,
             real_file_path,
@@ -374,6 +378,10 @@ impl ParsedEvent {
         self.ensure_parsed(payload).map(|f| f.file_path.as_str())
     }
 
+    pub fn file_name(&mut self, payload: &[u8]) -> Option<&str> {
+        self.ensure_parsed(payload).map(|f| f.file_name.as_str())
+    }
+
     pub fn real_file_path(&mut self, payload: &[u8]) -> Option<&str> {
         self.ensure_parsed(payload)
             .map(|f| f.real_file_path.as_str())
@@ -405,6 +413,19 @@ fn extract_raw_file_path(tool_name: &str, tool_input: &serde_json::Value) -> Str
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+/// Return the final component of the path as the agent addressed it.
+///
+/// This deliberately runs before canonicalization. Name-based policies need
+/// both this access name (so a sensitive symlink alias cannot hide behind an
+/// innocuous target name) and the canonical target basename (so an innocuous
+/// alias cannot hide a sensitive target).
+fn access_file_name(file_path: &str) -> String {
+    Path::new(file_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Return a normalized directory prefix suitable for path-segment-aware
@@ -758,6 +779,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn access_file_name_uses_the_unresolved_path() {
+        assert_eq!(access_file_name("/project/config/.env"), ".env");
+        assert_eq!(access_file_name("relative/Cargo.lock"), "Cargo.lock");
+        assert_eq!(access_file_name(""), "");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn access_file_name_handles_windows_separators() {
+        assert_eq!(access_file_name(r"C:\project\config\.env"), ".env");
+    }
+
     // ------------------------------------------------------------------
     // resolve_path / resolve_file_path
     // ------------------------------------------------------------------
@@ -870,6 +904,38 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn parsed_event_preserves_sensitive_symlink_access_name() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "prempti-access-name-symlink-{}",
+            std::process::id()
+        ));
+        let target = root.join("ordinary-config");
+        let alias = root.join(".env");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&target, "value=test\n").unwrap();
+        symlink(&target, &alias).unwrap();
+
+        let event = serde_json::json!({
+            "cwd": root,
+            "tool_name": "Write",
+            "tool_input": {"file_path": alias, "content": "value=new\n"}
+        });
+        let p = payload_with(&event.to_string());
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.file_name(&p), Some(".env"));
+        assert_eq!(
+            pe.real_file_path(&p),
+            Some(target.to_string_lossy().as_ref())
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     // ------------------------------------------------------------------
     // ParsedEvent end-to-end: every accessor
     // ------------------------------------------------------------------
@@ -905,6 +971,7 @@ mod tests {
         assert_eq!(pe.real_cwd_prefix(&p), Some("/nonexistent-cwd-999/"));
         assert_eq!(pe.tool_name(&p), Some("Write"));
         assert_eq!(pe.file_path(&p), Some("out.txt"));
+        assert_eq!(pe.file_name(&p), Some("out.txt"));
         assert_eq!(pe.real_file_path(&p), Some("/nonexistent-cwd-999/out.txt"));
         assert_eq!(pe.tool_input_command(&p), Some(""));
 
@@ -933,6 +1000,7 @@ mod tests {
         assert_eq!(pe.real_cwd_prefix(&p), Some(""));
         assert_eq!(pe.tool_name(&p), Some(""));
         assert_eq!(pe.file_path(&p), Some(""));
+        assert_eq!(pe.file_name(&p), Some(""));
         assert_eq!(pe.real_file_path(&p), Some(""));
         assert_eq!(pe.tool_input_command(&p), Some(""));
         // tool_input with no field serializes to the default empty object.
@@ -1065,6 +1133,7 @@ mod tests {
         // file_path takes from patch_path for synthetic apply_patch events
         // even though apply_patch's tool_input doesn't carry file_path.
         assert_eq!(pe.file_path(&encoded), Some("src/new.rs"));
+        assert_eq!(pe.file_name(&encoded), Some("new.rs"));
         // real_file_path resolves against agent.cwd as for any other event.
         assert_eq!(pe.real_file_path(&encoded), Some("/work/src/new.rs"));
     }

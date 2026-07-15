@@ -174,8 +174,8 @@ $denySshJson = '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":
 $out = Run-Hook $denySshJson
 Assert-Contains $out '"permissionDecision":"deny"' 'read of .ssh key is denied'
 
-# Basename policies operate on tool.real_file_path, whose separators are
-# normalized by the plugin, so a backslash-style Windows path must match too.
+# Name policies use the platform-aware tool.file_name and the basename of
+# normalized tool.real_file_path, so a backslash-style Windows path must match.
 $denyEnvJson = '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"C:\\Users\\test\\.env","content":"SECRET=x"},"session_id":"installed-test","cwd":"C:\\Users\\test","tool_use_id":"inst_deny3"}'
 $out = Run-Hook $denyEnvJson
 Assert-Contains $out '"permissionDecision":"deny"' 'write to .env is denied with Windows path separators'
