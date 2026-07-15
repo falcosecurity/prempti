@@ -106,6 +106,18 @@ impl E2eHarness {
     /// guardrails mode only; monitor/passthrough always resolve as defer.
     /// Returns `None` if Falco or the plugin is not available.
     pub fn start_with_default_action(mode: &str, default_action: &str) -> Option<Self> {
+        Self::start_internal(mode, default_action, false)
+    }
+
+    /// Start Falco with the repository's shipped default and seen rules.
+    /// This is intentionally separate from the compact generated fixture:
+    /// security regressions in production macros must be exercised against
+    /// the exact YAML that users install.
+    pub fn start_with_shipped_rules(mode: &str) -> Option<Self> {
+        Self::start_internal(mode, "allow", true)
+    }
+
+    fn start_internal(mode: &str, default_action: &str, shipped_rules: bool) -> Option<Self> {
         let falco_bin = find_falco()?;
         let plugin_lib = find_plugin_lib()?;
         // Skip only if NO interceptor is built. Per-test binary requirements
@@ -135,8 +147,15 @@ impl E2eHarness {
             .map(|addr| addr.port())
             .unwrap_or(19000 + ((pid as u64 + harness_id) % 1000) as u16);
 
-        // Write rules.
-        write_rules(&rules_dir);
+        let rules_files = if shipped_rules {
+            vec![
+                root.join("rules/default/coding_agents_rules.yaml"),
+                root.join("rules/seen.yaml"),
+            ]
+        } else {
+            write_rules(&rules_dir);
+            vec![rules_dir.join("deny.yaml"), rules_dir.join("seen.yaml")]
+        };
 
         // Write Falco config.
         let config_path = e2e_dir.join("falco.yaml");
@@ -144,7 +163,7 @@ impl E2eHarness {
             &config_path,
             &plugin_lib,
             &socket_path,
-            &rules_dir,
+            &rules_files,
             http_port,
             mode,
             default_action,
@@ -262,11 +281,7 @@ impl E2eHarness {
     /// is a single line (the broker's read_line would truncate otherwise).
     /// `patch_body` is the full envelope including `*** Begin Patch` and
     /// `*** End Patch` markers.
-    pub fn make_codex_apply_patch_input(
-        patch_body: &str,
-        cwd: &str,
-        tool_use_id: &str,
-    ) -> String {
+    pub fn make_codex_apply_patch_input(patch_body: &str, cwd: &str, tool_use_id: &str) -> String {
         let escaped = serde_json::to_string(patch_body).expect("JSON-escape patch body");
         let tool_input = format!(r#"{{"command":{escaped}}}"#);
         Self::make_codex_pretool_input("apply_patch", &tool_input, cwd, tool_use_id)
@@ -296,13 +311,16 @@ fn write_falco_config(
     config_path: &Path,
     plugin_lib: &Path,
     socket_path: &Path,
-    rules_dir: &Path,
+    rules_files: &[PathBuf],
     http_port: u16,
     mode: &str,
     default_action: &str,
 ) {
-    let deny_rules = to_forward_slashes(&rules_dir.join("deny.yaml"));
-    let seen_rules = to_forward_slashes(&rules_dir.join("seen.yaml"));
+    let rules_entries = rules_files
+        .iter()
+        .map(|path| format!("  - {}", to_forward_slashes(path)))
+        .collect::<Vec<_>>()
+        .join("\n");
     let plugin_path = to_forward_slashes(plugin_lib);
     let sock_path = to_forward_slashes(socket_path);
 
@@ -320,8 +338,7 @@ plugins:
 load_plugins:
   - coding_agent
 rules_files:
-  - {deny_rules}
-  - {seen_rules}
+{rules_entries}
 json_output: true
 json_include_message_property: true
 json_include_output_property: false
