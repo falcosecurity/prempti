@@ -346,6 +346,14 @@ json_include_output_fields_property: true
 json_include_tags_property: true
 rule_matching: all
 priority: debug
+# Production appends correlation.id to every coding_agent alert. Shipped
+# rules rely on that config-level field instead of repeating it in every
+# output template, so the E2E harness must do the same or the broker cannot
+# associate deny/ask alerts with the pending tool call.
+append_output:
+  - match:
+      source: coding_agent
+    extra_output: "| correlation=%correlation.id"
 # Mirror production: hot-reload is disabled. ctl drives all config changes
 # via stop -> rewrite -> start. See configs/falco.yaml for the rationale.
 watch_config_files: false
