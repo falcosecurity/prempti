@@ -208,15 +208,15 @@ fn handle_connection(
     // Old interceptors don't send agent_pid; map None → 0 sentinel.
     let agent_pid = request.agent_pid.unwrap_or(0);
 
-    // Treat the random correlation ID as a per-request capability: the
-    // loopback HTTP receiver accepts verdict alerts only for live IDs, so an
-    // untrusted local process must not be able to predict one. Entropy failure
-    // is security-sensitive and therefore denies the request directly.
+    // Use a random correlation nonce so another local process cannot blindly
+    // guess a live request ID. This is defense in depth, not authentication of
+    // the intentionally unauthenticated loopback HTTP channel. Entropy failure
+    // still fails closed because predictable or colliding IDs are unsafe.
     let correlation_id = match broker.next_correlation_id() {
         Ok(id) => id,
         Err(e) => {
-            log::error!("failed to generate correlation capability: {e}");
-            let response = Verdict::Deny("failed to secure verdict channel".to_string())
+            log::error!("failed to generate correlation nonce: {e}");
+            let response = Verdict::Deny("failed to generate verdict correlation ID".to_string())
                 .to_response_json(&wire_id);
             write_response_and_close(stream, &response);
             return Ok(());

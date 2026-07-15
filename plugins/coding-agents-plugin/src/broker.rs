@@ -86,13 +86,13 @@ impl Broker {
         self.shutdown.load(Ordering::Relaxed)
     }
 
-    /// Generate an unguessable correlation capability for an event.
+    /// Generate an unguessable correlation nonce for an event.
     ///
-    /// The HTTP receiver is loopback-only, but other local processes can still
-    /// connect to it. A cryptographically random ID prevents them from
-    /// predicting a live request and forging its deny/ask/seen alert. Reject
-    /// zero because Falco rules use `correlation.id > 0` as their catch-all,
-    /// and reject any (extremely unlikely) collision with a pending request.
+    /// The loopback HTTP receiver is intentionally unauthenticated. Random IDs
+    /// mitigate blind guessing by another local process, but are not a security
+    /// boundary if a live ID is disclosed. Reject zero because Falco rules use
+    /// `correlation.id > 0` as their catch-all, and reject any (extremely
+    /// unlikely) collision with a pending request.
     pub fn next_correlation_id(&self) -> Result<u64, getrandom::Error> {
         loop {
             let id = getrandom::u64()?;
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn correlation_ids_are_random_positive_capabilities() {
+    fn correlation_ids_are_random_positive_nonces() {
         let broker = Broker::new();
         let ids: Vec<u64> = (0..32)
             .map(|_| broker.next_correlation_id().expect("OS randomness"))
