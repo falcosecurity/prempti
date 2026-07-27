@@ -9,7 +9,7 @@
 use prempti_tests::e2e::E2eHarness;
 use prempti_tests::interceptor::{
     assert_codex_permreq_behavior, assert_codex_permreq_message_contains,
-    assert_codex_pretool_decision, AgentKind,
+    assert_codex_pretool_decision, assert_codex_pretool_no_output, AgentKind,
 };
 
 macro_rules! require_falco {
@@ -58,7 +58,7 @@ fn codex_pretool_allow_safe_command() {
     let input =
         E2eHarness::make_codex_pretool_input("Bash", r#"{"command":"ls -la"}"#, cwd(), "codex-ls");
     let r = h.run_hook_for(AgentKind::Codex, &input);
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_no_output(&r);
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +343,7 @@ fn codex_apply_patch_all_paths_inside_cwd_allows() {
 ";
     let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-5");
     let r = h.run_hook_for(AgentKind::Codex, &input);
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_no_output(&r);
 }
 
 #[test]
@@ -389,7 +389,7 @@ fn codex_apply_patch_per_hunk_content_does_not_cross_match() {
 ";
     let input = E2eHarness::make_codex_apply_patch_input(patch, cwd(), "codex-ap-cross");
     let r = h.run_hook_for(AgentKind::Codex, &input);
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_no_output(&r);
     // Defense in depth: also make sure the sentinel didn't fire (the
     // allow assertion would also catch this, but an explicit check makes
     // future regressions easier to diagnose).
