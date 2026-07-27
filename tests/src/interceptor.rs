@@ -165,8 +165,9 @@ pub fn run_with_mock_for(
 }
 
 /// Assert the interceptor output contains the expected verdict decision.
-/// Matches the Claude Code / Codex PreToolUse shape — both use the
-/// `permissionDecision` field.
+/// Matches Claude Code responses and explicit Codex PreToolUse denies, which
+/// use the `permissionDecision` field. Allowed Codex PreToolUse calls emit no
+/// output and use [`assert_codex_pretool_no_output`] instead.
 pub fn assert_decision(result: &InterceptorResult, expected: &str) {
     let needle = format!("\"permissionDecision\":\"{}\"", expected);
     assert!(
@@ -265,12 +266,10 @@ pub fn assert_codex_permreq_message_contains(result: &InterceptorResult, needle:
 }
 
 /// Assert the interceptor emitted **no output** and exited 0 — the wire-level
-/// "no decision" signal. This is the `defer` verdict: for Claude Code, exit 0
-/// with empty stdout means "the normal permission flow applies"; for Codex's
-/// `PermissionRequest`, it means "fall through to Codex's own approval flow".
-/// Contrast the `allow` verdict, which emits an explicit approval
-/// (`permissionDecision:"allow"` / `{"behavior":"allow"}`) that skips the
-/// agent's prompt.
+/// "no decision" signal. For Claude Code this is the `defer` verdict. For
+/// Codex, both `PreToolUse + allow/defer` and `PermissionRequest + defer` emit
+/// no output; only `PermissionRequest + allow` emits an explicit approval that
+/// skips the agent's prompt.
 pub fn assert_empty_stdout(result: &InterceptorResult) {
     assert!(
         result.stdout.trim().is_empty(),
@@ -279,7 +278,8 @@ pub fn assert_empty_stdout(result: &InterceptorResult) {
         result.stderr.trim()
     );
     assert_eq!(
-        result.exit_code, 0,
+        result.exit_code,
+        0,
         "expected exit 0 with empty stdout, got {} (stderr='{}')",
         result.exit_code,
         result.stderr.trim()
@@ -289,5 +289,12 @@ pub fn assert_empty_stdout(result: &InterceptorResult) {
 /// Codex `PermissionRequest` + `defer`: no output, so Codex's own approval
 /// flow decides. Thin alias of [`assert_empty_stdout`] for call-site clarity.
 pub fn assert_codex_permreq_no_output(result: &InterceptorResult) {
+    assert_empty_stdout(result);
+}
+
+/// Codex `PreToolUse` + `allow` / `defer`: no output, so Codex proceeds with
+/// the original tool input. A `permissionDecision:"allow"` response is valid
+/// only for a rewrite that also supplies `updatedInput`.
+pub fn assert_codex_pretool_no_output(result: &InterceptorResult) {
     assert_empty_stdout(result);
 }

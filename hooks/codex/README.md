@@ -26,7 +26,7 @@ The interceptor mounts on **two** Codex hook events:
 
 | Hook event | Codex purpose | Interceptor responsibility |
 |------------|---------------|----------------------------|
-| `PreToolUse` | Fires before every tool dispatch | Block deny / ask rules with the rule reason as the message; pass allow through |
+| `PreToolUse` | Fires before every tool dispatch | Block deny / ask rules with the rule reason; emit no output for unchanged allowed calls |
 | `PermissionRequest` | Fires in the approval path before guardian/UI prompts | Same: deny on deny / ask, allow otherwise |
 
 Both hooks send the same wire envelope to the broker (`agent_name = "codex"`); the broker runs the same Falco rules regardless of which event arrived. Only the **output translation** is per-event.
@@ -35,11 +35,12 @@ Both hooks send the same wire envelope to the broker (`agent_name = "codex"`); t
 
 | Falco verdict | `PreToolUse` | `PermissionRequest` |
 |---------------|--------------|---------------------|
-| `allow` | `allow` | `allow` |
+| `allow` | no output (proceed unchanged) | `allow` |
 | `deny` | `deny` (with rule reason) | `deny` (with rule reason) |
 | `ask` | `deny` (with rule reason) | `deny` (with rule reason) |
+| `defer` | no output (proceed unchanged) | no output (use Codex's normal approval flow) |
 
-Codex's hook contract is binary allow/deny on both mount points — there is no equivalent of Claude's per-call "ask the user" UX. An earlier design tried to preserve ask semantics by routing PreToolUse `ask` to `allow` and catching it downstream at `PermissionRequest`, but `PermissionRequest` only fires when Codex's own `permission_mode` would have prompted (so `bypassPermissions`, `dontAsk`, and `--ask-for-approval never` would silently allow). Denying at the earliest mount point with the rule reason as the message is the only safe mapping; users see Prempti's reason via Codex's deny UI and can retry or change permission mode if they decide the action is acceptable. PermissionRequest is still mounted because it can fire standalone (network policy, sudo escalation, MCP approvals) without a corresponding PreToolUse.
+At `PreToolUse`, Codex reserves `permissionDecision: "allow"` for hook responses that also provide `updatedInput` to rewrite the tool call. Prempti never rewrites tool input, so an unchanged `allow` or `defer` must produce empty stdout; a bare allow decision is rejected as an unsupported hook response. There is also no equivalent of Claude's per-call "ask the user" UX. An earlier design tried to preserve ask semantics by letting PreToolUse `ask` proceed and catching it downstream at `PermissionRequest`, but `PermissionRequest` only fires when Codex's own `permission_mode` would have prompted (so `bypassPermissions`, `dontAsk`, and `--ask-for-approval never` would silently allow). Denying at the earliest mount point with the rule reason as the message is the only safe mapping; users see Prempti's reason via Codex's deny UI and can retry or change permission mode if they decide the action is acceptable. PermissionRequest is still mounted because it can fire standalone (network policy, sudo escalation, MCP approvals) without a corresponding PreToolUse.
 
 ### Codex apply_patch: one event per touched path
 
@@ -149,7 +150,7 @@ Boolean values accept `1`, `true`, `yes`, `on` (case-insensitive, whitespace tri
 
 - **Fail-closed by default.** Broker communication failures emit a `deny` (with the failure reason) unless `PREMPTI_FAIL_OPEN=1` is set. The deny is emitted in the output shape matching the Codex hook event that fired.
 - **Exit code 2** for malformed input (empty stdin, invalid JSON, unsupported `hook_event_name`). Codex treats exit 2 + stderr as a hard block.
-- **Stdout safety.** If serialization fails, the interceptor writes a hardcoded deny literal in the correct shape for the event. No path produces empty stdout with exit 0 (Codex treats empty stdout as allow).
+- **Stdout safety.** If serialization fails, the interceptor writes a hardcoded deny literal in the correct shape for the event. Empty stdout with exit 0 is deliberate for `PreToolUse + allow/defer` and `PermissionRequest + defer`.
 
 ## Known v1 limitations
 

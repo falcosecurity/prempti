@@ -93,16 +93,21 @@ The `permission_mode` enum on the wire is `default | acceptEdits | plan | dontAs
 
 Codex expects **camelCase** JSON on stdout (with `#[serde(deny_unknown_fields)]` on the receiving side — emitting extra fields is rejected).
 
-`PreToolUse`:
+`PreToolUse` (deny):
 ```json
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
-    "permissionDecision": "allow | deny",
+    "permissionDecision": "deny",
     "permissionDecisionReason": "string"
   }
 }
 ```
+
+`PreToolUse` (allow or defer): **no output**. Codex only accepts
+`permissionDecision: "allow"` when it is paired with `updatedInput` to rewrite
+the call. The interceptor never rewrites input, so empty stdout is the
+pass-through shape.
 
 `PermissionRequest` (deny only):
 ```json
@@ -120,7 +125,7 @@ Codex expects **camelCase** JSON on stdout (with `#[serde(deny_unknown_fields)]`
 
 | Code | Meaning | Codex behavior |
 |------|---------|----------------|
-| 0 | Success | Parse stdout JSON for verdict; empty stdout on PermissionRequest = "no objection, fall through to normal approval flow" |
+| 0 | Success | Parse stdout JSON for verdict; empty stdout means no decision (proceed unchanged at PreToolUse, or fall through to normal approval at PermissionRequest) |
 | 2 | Blocking error | Block tool call, feed stderr to Codex |
 | Other | Non-blocking error | Treated as exit 0 fallthrough (the upstream parser records a `HookRunStatus::Failed` entry but does not block) |
 
@@ -130,7 +135,7 @@ Codex's hook output schema reserves fields the interceptor does NOT emit. Severa
 
 | Field | Why we don't emit it |
 |-------|----------------------|
-| `decision.updatedInput` | Reserved / fail-closed in upstream (`output_parser.rs:393-406`) |
+| `updatedInput` | PreToolUse-only rewrite field; Prempti does not rewrite tool calls |
 | `decision.updatedPermissions` | Same |
 | `decision.interrupt` | Same |
 | `additionalContext` | Reserved on `PermissionRequest` |
@@ -147,16 +152,16 @@ Codex requires non-managed command hooks to be **trusted** before they execute. 
 
 ## Verdict Translation
 
-Codex's hook contract is binary allow/deny on both mount points. There is no per-call user-confirmation UX at the hook layer. The interceptor maps the broker's four-valued verdict (`allow`, `deny`, `ask`, `defer`) across the two mount points as follows:
+Codex has no per-call user-confirmation UX at the hook layer. The interceptor maps the broker's four-valued verdict (`allow`, `deny`, `ask`, `defer`) across the two mount points as follows:
 
 | Broker verdict | `PreToolUse` output | `PermissionRequest` output |
 |----------------|---------------------|----------------------------|
-| `allow` | `permissionDecision: "allow"` | `decision: {"behavior": "allow"}` (Prempti approves, skips Codex's prompt) |
+| `allow` | **No output** (proceed with the original input) | `decision: {"behavior": "allow"}` (Prempti approves, skips Codex's prompt) |
 | `deny` | `permissionDecision: "deny"` with the rule reason | `decision: {"behavior": "deny", "message": "<reason>"}` |
 | `ask` | Same as `deny` (with rule reason) | Same as `deny` (with rule reason) |
-| `defer` | `permissionDecision: "allow"` (proceed to the gate) | **No output** (empty stdout, exit 0) — Codex's own approval flow decides |
+| `defer` | **No output** (proceed with the original input) | **No output** (empty stdout, exit 0) — Codex's own approval flow decides |
 
-`allow` and `defer` are the two faces of the plugin's no-rule-match floor (`default_action`): `allow` (the default) has Prempti actively approve, `defer` has Prempti step aside. Both proceed at `PreToolUse`; they diverge only at `PermissionRequest`, Codex's actual approval gate. `monitor` and `passthrough` modes always resolve as `defer`.
+`allow` and `defer` are the two faces of the plugin's no-rule-match floor (`default_action`). Both proceed without output at `PreToolUse`, because the interceptor is not rewriting the call; they diverge only at `PermissionRequest`, Codex's actual approval gate. There, `allow` (the default) has Prempti actively approve, while `defer` has Prempti step aside. `monitor` and `passthrough` modes always resolve as `defer`.
 
 ### Why `ask` becomes `deny`
 
@@ -208,7 +213,7 @@ Same model as the Claude Code interceptor: broker errors → deny unless `PREMPT
 
 ### Stdout safety
 
-If JSON serialization fails, the interceptor emits a hardcoded deny literal in the shape matching the event (`PreToolUse` form or `PermissionRequest` form) — fail-closed, the safe direction even for an allow that failed to serialize. If any stdout write fails, it exits with code 2. The one path that deliberately produces empty stdout is `PermissionRequest + defer` — and that is the **correct** wire shape, not an oversight.
+If JSON serialization fails, the interceptor emits a hardcoded deny literal in the shape matching the event (`PreToolUse` form or `PermissionRequest` form) — fail-closed. If any stdout write fails, it exits with code 2. Empty stdout is deliberate for `PreToolUse + allow/defer` and `PermissionRequest + defer`; each is the documented no-decision shape.
 
 ### Unsupported events
 

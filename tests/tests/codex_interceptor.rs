@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use prempti_tests::interceptor::{
     assert_codex_permreq_behavior, assert_codex_permreq_message_contains,
-    assert_codex_permreq_no_output, assert_codex_pretool_decision, assert_reason_contains,
-    run_interceptor_for, run_with_mock_for, AgentKind,
+    assert_codex_permreq_no_output, assert_codex_pretool_decision, assert_codex_pretool_no_output,
+    assert_reason_contains, run_interceptor_for, run_with_mock_for, AgentKind,
 };
 use prempti_tests::mock_broker::{self, MockBroker, MockMode};
 
@@ -31,7 +31,7 @@ const PERMISSION_REQUEST: &str = r#"{"session_id":"sess-codex-2","turn_id":"turn
 #[test]
 fn pretool_allow_verdict() {
     let r = run_with_mock_for(CODEX, MockMode::Allow, PRE_TOOL_USE, "codex-pre-allow");
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_no_output(&r);
 }
 
 #[test]
@@ -54,12 +54,11 @@ fn pretool_ask_becomes_deny_with_reason() {
 }
 
 #[test]
-fn pretool_defer_proceeds_like_allow() {
+fn pretool_defer_proceeds_without_output() {
     // At PreToolUse, defer (the no-match floor under default_action = defer,
-    // and the monitor/passthrough resolution) proceeds via "allow"; the
-    // PermissionRequest gate is where allow and defer diverge.
+    // and the monitor/passthrough resolution) proceeds without a decision.
     let r = run_with_mock_for(CODEX, MockMode::Defer, PRE_TOOL_USE, "codex-pre-defer");
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_no_output(&r);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +109,7 @@ fn pretool_broker_closes_connection() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn pretool_fail_open_yields_allow_when_broker_unreachable() {
+fn pretool_fail_open_yields_no_output_when_broker_unreachable() {
     let sock = mock_broker::temp_socket_path("codex-pre-failopen");
     let r = run_interceptor_for(
         CODEX,
@@ -118,7 +117,7 @@ fn pretool_fail_open_yields_allow_when_broker_unreachable() {
         &sock.to_string_lossy(),
         &[("PREMPTI_FAIL_OPEN", "1")],
     );
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_no_output(&r);
 }
 
 // ---------------------------------------------------------------------------
@@ -287,14 +286,14 @@ fn apply_patch_tool_passes_through() {
     // are a plugin-layer concern, not an interceptor concern.
     let input = r#"{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/work","hook_event_name":"PreToolUse","model":"x","permission_mode":"default","tool_name":"apply_patch","tool_input":{"input":"diff content"},"tool_use_id":"tu-apply"}"#;
     let r = run_with_mock_for(CODEX, MockMode::Allow, input, "codex-apply-patch");
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_no_output(&r);
 }
 
 #[test]
 fn mcp_tool_passes_through() {
     let input = r#"{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/work","hook_event_name":"PreToolUse","model":"x","permission_mode":"default","tool_name":"mcp__github__create_issue","tool_input":{"title":"test"},"tool_use_id":"tu-mcp"}"#;
     let r = run_with_mock_for(CODEX, MockMode::Allow, input, "codex-mcp");
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_no_output(&r);
 }
 
 #[test]
@@ -302,5 +301,5 @@ fn dont_ask_permission_mode_passes_through() {
     // Codex-only permission_mode value. Interceptor must not reject it.
     let input = r#"{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/work","hook_event_name":"PreToolUse","model":"x","permission_mode":"dontAsk","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"tu-da"}"#;
     let r = run_with_mock_for(CODEX, MockMode::Allow, input, "codex-dontask");
-    assert_codex_pretool_decision(&r, "allow");
+    assert_codex_pretool_no_output(&r);
 }
