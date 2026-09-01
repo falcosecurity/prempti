@@ -64,7 +64,9 @@ jobs:
             "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
       - name: Install x86_64 build dependencies
-        run: arch -x86_64 /usr/local/bin/brew install cmake openssl@3
+        run: |
+          arch -x86_64 /usr/local/bin/brew install cmake
+          arch -x86_64 /usr/local/bin/brew install --build-from-source openssl@3
         env:
           HOMEBREW_NO_AUTO_UPDATE: 1
 
