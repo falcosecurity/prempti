@@ -104,6 +104,52 @@ bash install.sh
 
 The installer copies all components to `~/.prempti/`, starts a systemd user service, and registers the hook automatically.
 
+### NixOS / home-manager
+
+The prempti package can also be installed via a nix flakes. Using either home manager or Nixos Modules, the flake installs the same per-user systemd unit the Linux installer would. Instead of copying files with `install.sh`, the unit's `ExecStartPre` rebuilds `~/.prempti` from your Nix options on every start: symlinks into the Nix store for the binaries, generated config files, and links for the rule files.
+
+Add the flake as an input to your `flake.nix`:
+
+```nix
+inputs.prempti.url = "github:falcosecurity/prempti";
+```
+
+**home-manager** (one user):
+
+```nix
+{ inputs, ... }: {
+  imports = [ inputs.prempti.homeManagerModules.prempti ];
+  services.prempti.enable = true;
+}
+```
+
+**NixOS** (every user on the host gets the unit):
+
+```nix
+{ inputs, ... }: {
+  imports = [ inputs.prempti.nixosModules.prempti ];
+  services.prempti = {
+    enable = true;
+    mode = "guardrails";        # guardrails | monitor | passthrough
+    defaultAction = "allow";    # allow | defer
+    rules.no-git-push = ''
+      - rule: Deny git push
+        desc: Never push from an agent session
+        condition: tool.name = "Bash" and tool.input_command startswith "git push"
+        output: Falco blocked git push (%tool.input_command)
+        priority: CRITICAL
+        source: coding_agent
+        tags: [coding_agent_deny]
+    '';
+  };
+}
+```
+
+After `home-manager switch` / `nixos-rebuild switch` the unit is running and the hook is registered; `premptictl` is on your `PATH`, so the [Verify](#verify) and [Managing](#managing) sections apply unchanged. Configuration is done through options and a `switch`: `mode`, `defaultAction`, `httpPort`, `rules.<name>`, supervisor rotation, plus freeform `pluginSettings` (any `init_config` key) and `settings` (any top-level Falco key). All documented in [`nix/README.md`](nix/README.md).
+
+> [!NOTE]
+> The plugin config is regenerated from the Nix options on every service start, so `premptictl mode` / `premptictl default-action` edits do not survive a restart unless you set `services.prempti.mutableConfig = true`. Every `switch` that changes the unit restarts it; the supervisor removes the hook on stop and re-adds it on start, so that short window is unmonitored rather than fail-closed.
+
 ### Windows
 
 From the [latest release](https://github.com/falcosecurity/prempti/releases/latest), download the `.msi` for your CPU architecture and double-click it (or run `msiexec /i prempti-<version>-windows-<arch>.msi`).
@@ -274,6 +320,7 @@ The skill guides Claude through writing the rule, placing it in the right direct
 | Agent | Platform | Status |
 |-------|----------|--------|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Linux (x86_64, aarch64) | Supported |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | NixOS / home-manager (x86_64, aarch64) | Supported via flake |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | macOS (Apple Silicon, Intel) | Supported |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Windows (x86_64, ARM64) | Supported |
 | [Codex](https://openai.com/index/codex/) | Linux | Experimental |
