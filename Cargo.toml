@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "hooks/claude-code",
     "hooks/codex",
+    "hooks/copilot",
     "plugins/coding-agents-plugin",
     "tools/premptictl",
     "tests",
@@ -31,6 +32,11 @@ opt-level = "z"
 codegen-units = 1
 
 [profile.release.package.codex-interceptor]
+opt-level = "z"
+codegen-units = 1
+
+
+[profile.release.package.copilot-interceptor]
 opt-level = "z"
 codegen-units = 1
 

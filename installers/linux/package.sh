@@ -48,6 +48,7 @@ if [[ "$ARCH" == "$HOST_ARCH" ]]; then
     CARGO_TARGET_FLAG=""
     INTERCEPTOR_BIN="target/release/claude-interceptor"
     CODEX_INTERCEPTOR_BIN="target/release/codex-interceptor"
+    COPILOT_INTERCEPTOR_BIN="target/release/copilot-interceptor"
     PLUGIN_LIB="target/release/libcoding_agent.so"
     CTL_BIN="target/release/premptictl"
 else
@@ -55,6 +56,7 @@ else
     CARGO_TARGET_FLAG="--target $RUST_TARGET"
     INTERCEPTOR_BIN="target/$RUST_TARGET/release/claude-interceptor"
     CODEX_INTERCEPTOR_BIN="target/$RUST_TARGET/release/codex-interceptor"
+    COPILOT_INTERCEPTOR_BIN="target/$RUST_TARGET/release/copilot-interceptor"
     PLUGIN_LIB="target/$RUST_TARGET/release/libcoding_agent.so"
     CTL_BIN="target/$RUST_TARGET/release/premptictl"
 fi
@@ -64,11 +66,13 @@ BUILD_DIR="${ROOT_DIR}/build/${PACKAGE_NAME}"
 
 echo "=== Building Prempti ${VERSION} for linux/${ARCH} ==="
 
-# Step 1: Build interceptors (Claude Code + experimental Codex).
+# Step 1: Build interceptors (Claude Code + experimental Codex + experimental Copilot).
 echo "Building Claude Code interceptor..."
 (cd "$ROOT_DIR/hooks/claude-code" && cargo build --release $CARGO_TARGET_FLAG)
 echo "Building Codex interceptor (experimental)..."
 (cd "$ROOT_DIR/hooks/codex" && cargo build --release $CARGO_TARGET_FLAG)
+echo "Building Copilot interceptor (experimental)..."
+(cd "$ROOT_DIR/hooks/copilot" && cargo build --release $CARGO_TARGET_FLAG)
 
 # Step 2: Build plugin.
 echo "Building plugin..."
@@ -98,6 +102,7 @@ mkdir -p "$BUILD_DIR"/{bin,share,config,rules/default,rules/user,systemd}
 # Binaries.
 cp "$ROOT_DIR/$INTERCEPTOR_BIN" "$BUILD_DIR/bin/claude-interceptor"
 cp "$ROOT_DIR/$CODEX_INTERCEPTOR_BIN" "$BUILD_DIR/bin/codex-interceptor"
+cp "$ROOT_DIR/$COPILOT_INTERCEPTOR_BIN" "$BUILD_DIR/bin/copilot-interceptor"
 cp "$ROOT_DIR/$CTL_BIN" "$BUILD_DIR/bin/premptictl"
 cp "$ROOT_DIR/$PLUGIN_LIB" "$BUILD_DIR/share/libcoding_agent.so"
 

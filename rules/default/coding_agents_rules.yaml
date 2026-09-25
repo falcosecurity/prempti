@@ -8,8 +8,11 @@
 #   2. Sensitive paths
 #   3. Sandbox disable
 #   4. Threats — credentials, dangerous commands, exfiltration, supply chain
+#   4b. Copilot CLI tool-specific threats — web_fetch, skill, task, ask_user,
+#       shell sessions, PowerShell
 #   5. MCP and skill content
 #   6. Persistence vectors
+#   7. Self-protection (block agent attempts to disable Prempti)
 #
 # Output convention:
 #   The rule output is an LLM-friendly sentence that explains what happened and
@@ -102,8 +105,14 @@
 - macro: is_codex_patch_write
   condition: tool.name = "apply_patch" and tool.patch_op in ("Add", "Update", "Delete", "Move")
 
+- macro: is_copilot_write_tool
+  condition: tool.name in ("create", "edit")
+
+- macro: is_copilot_patch_write
+  condition: tool.name = "apply_patch" and tool.patch_op in ("Add", "Update", "Delete", "Move")
+
 - macro: is_write_tool
-  condition: is_claude_write_tool or is_codex_patch_write
+  condition: is_claude_write_tool or is_codex_patch_write or is_copilot_write_tool or is_copilot_patch_write
 
 # Extensible macro: each line is an "or" condition.
 # Users can append custom sensitive paths via override:
@@ -143,6 +152,12 @@
 #   ASK    — commands/, CLAUDE.md, agents/, skills/, plugins/, backups/
 - macro: is_claude_data_path
   condition: tool.real_file_path contains "/.claude/"
+
+# Copilot CLI data path macro, suppresses generic outside-cwd ASK across
+# the whole Copilot tree so the agent can manage its own state without
+# prompting. Sensitive subpaths are guarded by independent rules.
+- macro: is_copilot_data_path
+  condition: tool.real_file_path contains "/.copilot/"
 
 # IOC hosting domains observed in the ClawHavoc campaign (341 malicious skills,
 # 2024-2025) and similar AI-supply-chain attacks. Inlined into the macros below
@@ -197,10 +212,9 @@
   desc: >
     Requires user confirmation when a coding agent writes or edits a file
     outside the session's working directory. Claude Code's own data tree
-    (~/.claude/) is excluded as routine session bookkeeping — plans,
-    todos, memories, transcripts, caches. Sensitive subpaths under
-    ~/.claude/ (settings.json, policy-limits.json, agents/, skills/,
-    plugins/, backups/, commands/, CLAUDE.md) are still guarded by
+    (~/.claude/) and Copilot CLI's data tree (~/.copilot/) are excluded
+    as routine session bookkeeping — plans, todos, memories, transcripts,
+    caches. Sensitive subpaths under these trees are still guarded by
     dedicated deny/ask rules.
   condition: >
     is_write_tool
@@ -208,8 +222,34 @@
     and is_outside_cwd
     and not is_sensitive_path
     and not is_claude_data_path
+    and not is_copilot_data_path
   output: >
     Falco requires confirmation to write to %tool.real_file_path because it is outside the working directory %agent.real_cwd
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+# Shell redirections (bash > / >>) that write outside the working directory.
+- rule: Ask before shell redirection outside working directory
+  desc: >
+    Requires confirmation when a shell command redirects output to a file
+    outside the working directory. Sensitive paths are denied by the
+    separate sensitive-path Bash rule which takes precedence.
+  condition: >
+    is_bash
+    and (tool.input_command contains "> " or tool.input_command contains ">>")
+    and (tool.input_command contains "/tmp/"
+         or tool.input_command contains "/var/"
+         or tool.input_command contains "/root/"
+         or tool.input_command contains "/boot/"
+         or tool.input_command contains "/proc/"
+         or tool.input_command contains "/sys/"
+         or tool.input_command contains "/etc/"
+         or tool.input_command contains "/home/")
+    and not is_claude_data_path
+    and not is_copilot_data_path
+  output: >
+    Falco requires confirmation before shell redirection to %tool.input_command
   priority: WARNING
   source: coding_agent
   tags: [coding_agent_ask]
@@ -245,6 +285,26 @@
     and is_sensitive_path
   output: >
     Falco blocked writing to %tool.real_file_path because it is a sensitive path
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+# Bash/powershell redirections to sensitive paths.
+- rule: Deny writing to sensitive paths via Bash
+  desc: >
+    Blocks shell redirections (>, >>) that write to sensitive filesystem
+    locations. Catches the indirect write pattern where agents use bash.
+  condition: >
+    is_bash
+    and (tool.input_command contains "> " or tool.input_command contains ">>")
+    and (tool.input_command contains "/etc/"
+         or tool.input_command contains "/root/"
+         or tool.input_command contains "/var/"
+         or tool.input_command contains "/boot/"
+         or tool.input_command contains "/proc/"
+         or tool.input_command contains "/sys/")
+  output: >
+    Falco blocked shell redirection to sensitive path in %tool.input_command
   priority: CRITICAL
   source: coding_agent
   tags: [coding_agent_deny]
@@ -681,7 +741,10 @@
 # Macros — Bash threat detection
 
 - macro: is_bash
-  condition: tool.name = "Bash"
+  condition: tool.name in ("Bash", "bash")
+
+- macro: is_powershell
+  condition: tool.name = "powershell"
 
 - macro: references_credential
   condition: >
@@ -837,14 +900,15 @@
     or tool.real_file_path startswith "/var/tmp/"
     or tool.real_file_path startswith "/dev/shm/"
 
-# Matches Read tool calls targeting credential file paths.
+# Matches Read and view tool calls targeting credential file paths.
 # Uses real_file_path (canonicalized) so symlinked paths are also covered.
 # The Bash credential rule covers tool.input_command; this covers tool.real_file_path
 # for direct Read calls — closing the gap where the agent bypasses Bash entirely
 # by using the Read tool to exfiltrate secrets.
+# Copilot CLI's "view" tool is also a read operation and must be covered.
 - macro: is_read_credential_path
   condition: >
-    tool.name = "Read"
+    (tool.name = "Read" or tool.name = "view")
     and tool.real_file_path != ""
     and (tool.real_file_path contains "/.aws/credentials"
          or tool.real_file_path contains "/.aws/config"
@@ -989,13 +1053,23 @@
     tool.real_file_path contains "/.claude/oauth"
     and agent.name != "claude_code"
 
+# Copilot CLI auth/session files — block reads from non-copilot agents.
+- macro: is_copilot_auth_cross
+  condition: >
+    (tool.real_file_path contains "/.github/copilot/oauth"
+     or tool.real_file_path contains "/.github/copilot/sessions"
+     or tool.real_file_path contains "/.copilot/oauth"
+     or tool.real_file_path contains "/.copilot/sessions")
+    and agent.name != "copilot"
+
 - macro: is_cross_agent_auth_read
   condition: >
-    tool.name = "Read"
+    (tool.name = "Read" or tool.name = "view")
     and (is_gemini_auth_cross
          or is_codex_auth_cross
          or is_cursor_auth_cross
-         or is_claude_auth_cross)
+         or is_claude_auth_cross
+         or is_copilot_auth_cross)
 
 # Package/skill install commands referencing known malicious code hosts.
 # Dual-signal: install command + untrusted host. Legitimate installs from
@@ -1023,9 +1097,10 @@
 # Glob patterns that target credential directories or key files.
 # Matches absolute-path patterns (/.aws/, /.ssh/, etc.) in tool.input JSON.
 # Relative patterns like **/.env inside a project are not affected.
+# Copilot CLI uses lowercase "glob" (vs Claude Code's "Glob").
 - macro: is_credential_glob
   condition: >
-    tool.name = "Glob"
+    (tool.name = "Glob" or tool.name = "glob")
     and (tool.input contains "/.aws/"
          or tool.input contains "/.ssh/"
          or tool.input contains "/.gnupg/"
@@ -1446,6 +1521,307 @@
   tags: [coding_agent_ask, mitre_t1552_unsecured_credentials]
 
 # ===========================================================================
+# Section 4b — Copilot CLI tool-specific threats
+# ===========================================================================
+# Copilot CLI uses different tool names from Claude Code and Codex.
+# The plugin extraction functions (event.rs) now handle:
+#   - "bash" / "powershell" → tool.input_command (command field)
+#   - "create" / "edit" / "view" → tool.file_path (path/file_path field)
+#   - "apply_patch" → patch_path injected by broker (same as Codex)
+#
+# This section covers tools unique to Copilot CLI or with Copilot-specific
+# attack surfaces: web_fetch, skill, task, ask_user, shell session tools,
+# and PowerShell-specific threat patterns.
+
+# Macros — web_fetch threat detection
+
+# Matches web_fetch URLs targeting cloud instance metadata endpoints.
+# Same patterns as is_imds_access but applied to tool.input JSON.
+- macro: is_web_fetch_imds
+  condition: >
+    (tool.input contains "169.254.169.254"
+     or tool.input contains "metadata.google.internal"
+     or tool.input contains "metadata.azure.com"
+     or tool.input contains "fd00:ec2::254"
+     or tool.input contains "2852039166"
+     or tool.input contains "0xa9fea9fe"
+     or tool.input contains "0Xa9fea9fe"
+     or tool.input contains "0251.0376.0251.0376")
+
+# Matches web_fetch URLs pointing to known IOC hosting domains.
+- macro: is_web_fetch_ioc
+  condition: >
+    tool.input contains "pastebin.com"
+    or tool.input contains "transfer.sh"
+    or tool.input contains "file.io"
+    or tool.input contains "termbin.com"
+    or tool.input contains "ix.io"
+    or tool.input contains "glot.io"
+    or tool.input contains "hastebin.com"
+    or tool.input contains "ghostbin.co"
+
+# Macros — skill threat detection
+
+# Matches skill invocation with IOC domain in the skill name.
+- macro: is_skill_ioc
+  condition: >
+    tool.input contains "pastebin.com"
+    or tool.input contains "transfer.sh"
+    or tool.input contains "file.io"
+    or tool.input contains "termbin.com"
+    or tool.input contains "ix.io"
+    or tool.input contains "glot.io"
+    or tool.input contains "hastebin.com"
+    or tool.input contains "ghostbin.co"
+
+# Macros — task (subagent) threat detection
+
+# Matches task() invocations that include prompt injection patterns.
+- macro: is_task_prompt_injection
+  condition: >
+    tool.input contains "bypass"
+    or tool.input contains "ignore"
+    or tool.input contains "disregard"
+    or tool.input contains "sandbox"
+    or tool.input contains "prompt injection"
+    or tool.input contains "system prompt"
+
+# Macros — shell session management (Copilot CLI)
+
+- macro: is_shell_session_read
+  condition: tool.name in ("read_bash", "read_powershell")
+
+- macro: is_shell_session_list
+  condition: tool.name in ("list_bash", "list_powershell")
+
+- macro: is_shell_session_stop
+  condition: tool.name in ("stop_bash", "stop_powershell")
+
+# Macros — PowerShell-specific threat detection
+
+- macro: is_psh_pipe_to_shell
+  condition: >
+    tool.input_command contains "| IEX"
+    or tool.input_command contains "| iex"
+    or tool.input_command contains "| Invoke-Expression"
+    or tool.input_command contains "| invoke-expression"
+    or tool.input_command contains "Invoke-WebRequest" and tool.input_command contains "IEX"
+    or tool.input_command contains "iwr" and tool.input_command contains "IEX"
+    or tool.input_command contains "Invoke-RestMethod" and tool.input_command contains "IEX"
+
+- macro: is_psh_encoded_exec
+  condition: >
+    tool.input_command contains "[System.Text.Encoding]::UTF8.GetString"
+    or tool.input_command contains "[Convert]::FromBase64String"
+    or tool.input_command contains "[Convert]::ToBase64String"
+    or tool.input_command contains "(New-Object Net.WebClient).DownloadString"
+
+- macro: is_psh_credential_access
+  condition: >
+    tool.input_command contains "Get-Credential"
+    or tool.input_command contains "Get-AutomationConnection"
+    or tool.input_command contains "Get-StoredCredential"
+
+- macro: is_psh_imds
+  condition: >
+    (tool.input_command contains "Invoke-RestMethod" or tool.input_command contains "Invoke-WebRequest")
+    and (tool.input_command contains "169.254.169.254"
+         or tool.input_command contains "metadata.google.internal"
+         or tool.input_command contains "metadata.azure.com")
+
+- macro: is_psh_sandbox_escape
+  condition: >
+    tool.input_command contains "Start-Process"
+    and (tool.input_command contains "-WindowStyle Hidden"
+         or tool.input_command contains "-NoNewWindow")
+
+- macro: is_psh_service_stop
+  condition: >
+    (tool.input_command contains "Stop-Service" or tool.input_command contains "Disable-Service")
+    and (tool.input_command contains "falco"
+         or tool.input_command contains "prempti")
+
+# Rules — web_fetch
+
+- rule: Deny web_fetch to cloud metadata service
+  desc: >
+    Blocks Copilot's web_fetch tool from accessing cloud instance metadata
+    endpoints (AWS IMDS 169.254.169.254, GCP metadata.google.internal,
+    Azure metadata.azure.com). These endpoints expose IAM credentials.
+  condition: tool.name = "web_fetch" and is_web_fetch_imds
+  output: >
+    Falco blocked web_fetch from accessing cloud metadata endpoint (%tool.input)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny web_fetch to known malicious hosting domain
+  desc: >
+    Blocks Copilot's web_fetch tool from fetching content from known
+    malicious code-hosting domains (pastebin.com, transfer.sh, file.io, etc.).
+  condition: tool.name = "web_fetch" and is_web_fetch_ioc
+  output: >
+    Falco blocked web_fetch from known malicious hosting domain (%tool.input)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Ask before web_fetch
+  desc: >
+    Requires confirmation before the Copilot CLI web_fetch tool accesses
+    any URL. Web fetching is a new attack surface.
+  condition: tool.name = "web_fetch"
+  output: >
+    Falco requires confirmation before web_fetch from %agent.name (%tool.input)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+# Rules — skill
+
+- rule: Deny skill with IOC domain in skill name
+  desc: >
+    Blocks skill invocations where the skill name references a known
+    malicious code-hosting domain.
+  condition: tool.name = "skill" and is_skill_ioc
+  output: >
+    Falco blocked skill invocation referencing a malicious hosting domain (%tool.input)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Ask before skill invocation
+  desc: >
+    Requires confirmation before the Copilot CLI skill tool is invoked.
+  condition: tool.name = "skill"
+  output: >
+    Falco requires confirmation before skill invocation (%tool.input)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+# Rules — task (subagent delegation)
+
+- rule: Ask before subagent task delegation
+  desc: >
+    Requires confirmation before Copilot CLI task() subagent delegation.
+  condition: tool.name = "task"
+  output: >
+    Falco requires confirmation before subagent task delegation (%tool.input)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+- rule: Deny task with prompt injection patterns
+  desc: >
+    Blocks subagent task() invocations where the prompt field contains
+    prompt injection patterns.
+  condition: tool.name = "task" and is_task_prompt_injection
+  output: >
+    Falco blocked task() with prompt injection pattern (%tool.input)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+# Rules — ask_user
+
+- rule: Ask before ask_user tool
+  desc: >
+    Requires confirmation before the Copilot CLI ask_user tool is invoked.
+  condition: tool.name = "ask_user"
+  output: >
+    Falco requires confirmation before ask_user tool (%tool.input)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+# Rules — shell session management
+
+- rule: Monitor shell session listing
+  desc: >
+    Logs when the Copilot CLI lists active shell sessions. Informational only.
+  condition: is_shell_session_list
+  output: >
+    Falco detected shell session listing by %agent.name (%tool.input)
+  priority: NOTICE
+  source: coding_agent
+  tags: []
+
+- rule: Ask before reading shell session output
+  desc: >
+    Requires confirmation before reading output from a shell session.
+  condition: is_shell_session_read
+  output: >
+    Falco requires confirmation before reading shell session output (%tool.input)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+- rule: Ask before stopping shell session
+  desc: >
+    Requires confirmation before stopping a shell session.
+  condition: is_shell_session_stop
+  output: >
+    Falco requires confirmation before stopping shell session (%tool.input)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask]
+
+# Rules — PowerShell-specific threats
+
+- rule: Deny PowerShell pipe to shell interpreter
+  desc: >
+    Blocks PowerShell commands that pipe network-fetched or generated
+    content directly into a shell interpreter.
+  condition: is_powershell and is_psh_pipe_to_shell
+  output: >
+    Falco blocked PowerShell pipe to shell interpreter (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny PowerShell encoded payload execution
+  desc: >
+    Blocks PowerShell commands that decode and execute encoded payloads.
+  condition: is_powershell and is_psh_encoded_exec
+  output: >
+    Falco blocked PowerShell encoded payload execution (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny PowerShell credential access
+  desc: >
+    Blocks PowerShell commands that access credentials.
+  condition: is_powershell and is_psh_credential_access
+  output: >
+    Falco blocked PowerShell credential access (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny PowerShell cloud metadata access
+  desc: >
+    Blocks PowerShell commands that access cloud instance metadata endpoints.
+  condition: is_powershell and is_psh_imds
+  output: >
+    Falco blocked PowerShell cloud metadata access (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+- rule: Deny PowerShell sandbox escape
+  desc: >
+    Blocks PowerShell commands that spawn processes with hidden or
+    no-new-window flags.
+  condition: is_powershell and is_psh_sandbox_escape
+  output: >
+    Falco blocked PowerShell sandbox escape attempt (%tool.input_command)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny]
+
+# ===========================================================================
 # Section 5 — MCP and skill content
 # ===========================================================================
 # Detects supply chain attacks and prompt injection attempts that add or
@@ -1582,7 +1958,7 @@
 # tool with shell redirection bypasses that check entirely.
 - macro: is_bash_commands_write
   condition: >
-    tool.name = "Bash"
+    is_bash
     and tool.input_command contains "/.claude/commands/"
 
 # Rules
@@ -1917,7 +2293,7 @@
 # Rule 3 catches Write/Edit tool calls; shell redirection via Bash bypasses it.
 - macro: is_bash_git_hooks_write
   condition: >
-    tool.name = "Bash"
+    is_bash
     and tool.input_command contains "/.git/hooks/"
 
 # Macros: package registry redirect
@@ -2150,6 +2526,43 @@
   tags: [coding_agent_ask, AML.T0010_ml_supply_chain_compromise,
          mitre_t1195_supply_chain_compromise]
 
+# Shell redirection to registry config files (echo > .npmrc, etc.).
+- rule: Ask before Bash writing to registry config files
+  desc: >
+    Requires confirmation when a shell command redirects output to a package
+    manager registry config file (.npmrc, .pypirc, pip.conf, .pnpmrc, .yarnrc.yml).
+  condition: >
+    is_bash
+    and (tool.input_command contains "> " or tool.input_command contains ">>")
+    and (tool.input_command contains ".npmrc"
+         or tool.input_command contains ".pypirc"
+         or tool.input_command contains "pip.conf"
+         or tool.input_command contains ".pnpmrc"
+         or tool.input_command contains ".yarnrc.yml")
+  output: >
+    Falco requires confirmation before shell redirection to registry config (%tool.input_command)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0010_ml_supply_chain_compromise,
+         mitre_t1195_supply_chain_compromise]
+
+# Shell redirection to environment variable files (echo > .env, etc.).
+- rule: Ask before Bash writing to environment variable files
+  desc: >
+    Requires confirmation when a shell command redirects output to an
+    environment variable file (.env, .envrc, .env.local, etc.).
+  condition: >
+    is_bash
+    and (tool.input_command contains "> " or tool.input_command contains ">>")
+    and (tool.input_command contains ".env"
+         or tool.input_command contains ".envrc")
+  output: >
+    Falco requires confirmation before shell redirection to environment file (%tool.input_command)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0051_llm_prompt_injection,
+         AML.T0037_llm_adversarial_example, mitre_t1565_data_manipulation]
+
 # ===========================================================================
 # Section 7: Self-protection — block agent attempts to disable Prempti.
 #
@@ -2274,6 +2687,22 @@
   source: coding_agent
   tags: [coding_agent_deny, prempti_self_protection, mitre_t1562.001_impair_defenses_disable_or_modify_tools]
 
+# Bash redirections to the Prempti install prefix.
+- rule: Deny writes under Prempti install prefix via Bash
+  desc: >
+    Blocks shell redirections (>, >>) that write to the Prempti install
+    prefix (~/.prempti/ on Unix, %LOCALAPPDATA%\\prempti\\ on Windows).
+  condition: >
+    is_bash
+    and (tool.input_command contains "> " or tool.input_command contains ">>")
+    and (agent.os in (linux, macos) and tool.input_command contains "/.prempti/"
+         or agent.os = "windows" and tool.input_command icontains "/AppData/Local/prempti/")
+  output: >
+    Falco blocked shell redirection to Prempti install prefix in %tool.input_command
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, prempti_self_protection]
+
 - rule: Deny writes to Claude Code settings file
   desc: >
     Blocks Write/Edit on ~/.claude/settings.json. The Prempti hook lives
@@ -2318,3 +2747,33 @@
   priority: WARNING
   source: coding_agent
   tags: [coding_agent_ask, prempti_self_protection, mitre_t1562.001_impair_defenses_disable_or_modify_tools]
+
+# Copilot CLI self-protection rules
+
+- macro: is_copilot_settings_path
+  condition: >
+    tool.real_file_path endswith "/.copilot/settings.json"
+    or tool.real_file_path endswith "/.copilot/hooks/prempti.json"
+    or tool.real_file_path endswith "/.github/copilot/settings.json"
+    or tool.real_file_path endswith "/.github/copilot/settings.local.json"
+
+- rule: Deny writes to Copilot CLI settings files
+  desc: >
+    Blocks Write/Edit on Copilot CLI settings files where the Prempti
+    hook is registered.
+  condition: is_write_tool and is_copilot_settings_path
+  output: >
+    Falco blocked writing to Copilot CLI settings at %tool.real_file_path
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, prempti_self_protection]
+
+- rule: Ask before reading Copilot CLI settings files
+  desc: >
+    Asks before the agent reads Copilot CLI settings files.
+  condition: (tool.name = "Read" or tool.name = "view") and is_copilot_settings_path
+  output: >
+    Falco requires confirmation to read Copilot CLI settings at %tool.real_file_path
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, prempti_self_protection]

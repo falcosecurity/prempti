@@ -54,7 +54,7 @@ run() {
 # ---------------------------------------------------------------------------
 
 # Verify we have the package contents.
-for f in bin/falco bin/claude-interceptor bin/codex-interceptor bin/premptictl \
+for f in bin/falco bin/claude-interceptor bin/codex-interceptor bin/copilot-interceptor bin/premptictl \
          share/libcoding_agent.so \
          config/falco.yaml config/falco.coding_agents_plugin.yaml \
          config/supervisor.yaml \
@@ -110,6 +110,7 @@ info "Installing binaries..."
 run install -m 755 "$SCRIPT_DIR/bin/falco" "$PREFIX/bin/falco"
 run install -m 755 "$SCRIPT_DIR/bin/claude-interceptor" "$PREFIX/bin/claude-interceptor"
 run install -m 755 "$SCRIPT_DIR/bin/codex-interceptor" "$PREFIX/bin/codex-interceptor"
+run install -m 755 "$SCRIPT_DIR/bin/copilot-interceptor" "$PREFIX/bin/copilot-interceptor"
 run install -m 755 "$SCRIPT_DIR/bin/premptictl" "$PREFIX/bin/premptictl"
 
 info "Installing plugin..."
@@ -190,6 +191,7 @@ echo "  Install prefix:  $PREFIX"
 echo "  Falco binary:    $PREFIX/bin/falco"
 echo "  Interceptor:     $PREFIX/bin/claude-interceptor"
 echo "  Codex hook:      $PREFIX/bin/codex-interceptor (experimental; opt-in via 'premptictl hook add codex')"
+echo "  Copilot hook:    $PREFIX/bin/copilot-interceptor (experimental; opt-in via 'premptictl hook add copilot')"
 echo "  Plugin:          $PREFIX/share/libcoding_agent.so"
 echo "  Config:          $PREFIX/config/"
 echo "  Rules:           $PREFIX/rules/"

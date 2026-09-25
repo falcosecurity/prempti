@@ -6,6 +6,7 @@ use std::process::{self, Command};
 mod daemon;
 mod hook;
 mod hook_codex;
+mod hook_copilot;
 mod logs_pretty;
 
 #[cfg(target_os = "linux")]
@@ -1991,9 +1992,9 @@ fn print_usage() {
     eprintln!("Usage: premptictl <command>");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  hook add [claude|codex]      Register the interceptor hook (default: claude)");
-    eprintln!("  hook remove [claude|codex]   Remove the interceptor hook (default: claude)");
-    eprintln!("  hook status [claude|codex]   Check if the hook is registered (default: claude)");
+    eprintln!("  hook add [claude|codex|copilot]      Register the interceptor hook (default: claude)");
+    eprintln!("  hook remove [claude|codex|copilot]   Remove the interceptor hook (default: claude)");
+    eprintln!("  hook status [claude|codex|copilot]   Check if the hook is registered (default: claude)");
     eprintln!();
     eprintln!("  mode              Show current operational mode");
     eprintln!("  mode guardrails   Switch to guardrails mode (deny/ask enforced)");
@@ -2134,6 +2135,9 @@ fn main() {
         ["hook", "add", "codex"] => hook_codex::cli_add(&prefix),
         ["hook", "remove", "codex"] => hook_codex::cli_remove(&prefix),
         ["hook", "status", "codex"] => hook_codex::cli_status(&prefix),
+        ["hook", "add", "copilot"] => hook_copilot::cli_add(&prefix),
+        ["hook", "remove", "copilot"] => hook_copilot::cli_remove(&prefix),
+        ["hook", "status", "copilot"] => hook_copilot::cli_status(&prefix),
         ["mode"] => mode_get(&prefix),
         ["mode", mode] => mode_set(&prefix, mode),
         ["default-action"] => default_action_get(&prefix),

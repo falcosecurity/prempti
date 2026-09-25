@@ -14,6 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::hook;
 use crate::hook_codex;
+use crate::hook_copilot;
 use config::SupervisorConfig;
 use control::{ControlEvent, SharedState};
 
@@ -81,6 +82,31 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
         }
     }
 
+    // Copilot hook: opt-in via `premptictl hook add copilot` (which writes
+    // the marker file we check here). Only manage the JSON hook lifecycle
+    // when the marker is present; otherwise leave the user's
+    // `~/.copilot/hooks.json` untouched. The marker survives stop/start
+    // cycles; the JSON hook is re-asserted here on start and removed on
+    // stop (same failsafe pattern as Claude's hook — keeps Copilot tool
+    // calls fail-closed only while the broker is actually running).
+    let manage_copilot = hook_copilot::is_enabled(&prefix);
+    if manage_copilot {
+        match hook_copilot::add(&prefix) {
+            Ok(hook_copilot::AddResult::Added(p)) => {
+                eprintln!("supervisor: copilot hook registered in {}", p.display());
+            }
+            Ok(hook_copilot::AddResult::AlreadyRegistered) => {
+                eprintln!("supervisor: copilot hook already registered");
+            }
+            Err(e) => {
+                eprintln!(
+                    "supervisor: failed to (re-)register copilot hook: {e} \
+                     (continuing without it; Copilot tool calls will run unmonitored)"
+                );
+            }
+        }
+    }
+
     // Reset the process-wide signal flag in case a prior invocation in the
     // same process (tests, embedded use) left it set.
     SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
@@ -92,6 +118,9 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
             let _ = hook::remove(&prefix);
             if manage_codex {
                 let _ = hook_codex::remove(&prefix);
+            }
+            if manage_copilot {
+                let _ = hook_copilot::remove(&prefix);
             }
             cleanup_socket(&paths.supervisor_sock);
             return Err(e);
@@ -203,6 +232,12 @@ pub fn run(opts: DaemonOpts) -> Result<i32, String> {
     if manage_codex {
         if let Err(e) = hook_codex::remove(&prefix) {
             eprintln!("supervisor: failed to remove codex hook: {e}");
+        }
+    }
+    // Same for Copilot when the user opted in.
+    if manage_copilot {
+        if let Err(e) = hook_copilot::remove(&prefix) {
+            eprintln!("supervisor: failed to remove copilot hook: {e}");
         }
     }
     cleanup_socket(&paths.supervisor_sock);

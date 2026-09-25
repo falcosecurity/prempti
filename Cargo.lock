@@ -156,6 +156,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2550f75b8cfac212855f6b1885455df8eaee8fe8e246b647d69146142e016084"
 
 [[package]]
+name = "copilot-interceptor"
+version = "0.3.0"
+dependencies = [
+ "rustix",
+ "serde",
+ "serde_json",
+ "uds_windows",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

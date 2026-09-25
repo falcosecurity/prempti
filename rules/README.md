@@ -16,7 +16,9 @@ rules/
 
 ### `default/coding_agents_rules.yaml`
 
-The default security policies shipped with Prempti, organized into seven sections: working-directory boundary, sensitive paths, sandbox disable, threats (credentials, dangerous commands, exfiltration, supply chain), MCP and skill content, persistence vectors, and self-protection (block agent attempts to disable Prempti). The file also defines reusable lists (`sensitive_paths`, `sensitive_file_names`, `shell_startup_files`, `agent_instruction_files`, `env_file_names`, `registry_config_files`) and macros (`is_sensitive_path`, `is_outside_cwd`, `is_claude_data_path`, `is_write_tool`, `contains_ioc_domain`, `cmd_contains_ioc_domain`) that user rules can extend via `override: append`.
+The default security policies shipped with Prempti, organized into sections: working-directory boundary, sensitive paths, sandbox disable, threats (credentials, dangerous commands, exfiltration, supply chain), Copilot CLI tool-specific threats (web_fetch, skill, task, ask_user, shell sessions, PowerShell), MCP and skill content, persistence vectors, and self-protection (block agent attempts to disable Prempti). The file also defines reusable lists (`sensitive_paths`, `sensitive_file_names`, `shell_startup_files`, `agent_instruction_files`, `env_file_names`, `registry_config_files`) and macros (`is_sensitive_path`, `is_outside_cwd`, `is_claude_data_path`, `is_copilot_data_path`, `is_write_tool`, `contains_ioc_domain`, `cmd_contains_ioc_domain`) that user rules can extend via `override: append`.
+
+**Supported agents:** Claude Code (`claude_code`), Codex (`codex`), and GitHub Copilot CLI (`copilot`). The plugin extracts tool names, file paths, and shell commands from all three agents' hook events. Copilot CLI tools use lowercase names (`bash`, `create`, `edit`, `view`, `glob`, `grep`) while Claude Code uses PascalCase (`Bash`, `Write`, `Edit`, `Read`, `Glob`).
 
 This file is **overwritten on upgrade** — do not edit it directly. To customize behavior, add rules in the `user/` directory instead.
 
@@ -66,12 +68,12 @@ Rules use the standard [Falco rule language](https://falco.org/docs/rules/). Ava
 | `agent.real_cwd` | Working directory (resolved, absolute) |
 | `agent.real_cwd_prefix` | Resolved working directory with a trailing `/` for path-segment-aware prefix matching |
 | `tool.use_id` | Unique identifier for this tool call |
-| `tool.name` | Tool name (e.g., `Bash`, `Write`, `Edit`, `Read`) |
+| `tool.name` | Tool name (e.g., `Bash`, `Write`, `Edit`, `Read` for Claude Code; `bash`, `create`, `edit`, `view`, `glob`, `grep` for Copilot CLI; `apply_patch` for Codex) |
 | `tool.input` | Full tool input as JSON |
-| `tool.input_command` | Shell command (Bash only) |
-| `tool.file_path` | Target file path (raw, Write/Edit/Read only) |
+| `tool.input_command` | Shell command (Bash, bash, powershell only) |
+| `tool.file_path` | Target file path (raw, Write/Edit/Read/create/edit/view only) |
 | `tool.file_name` | Final component of the target path before symlink resolution |
-| `tool.real_file_path` | Target file path (resolved, absolute, Write/Edit/Read only) |
+| `tool.real_file_path` | Target file path (resolved, absolute, Write/Edit/Read/create/edit/view only) |
 | `tool.patch_op` | Codex `apply_patch` operation (`Add`, `Update`, `Delete`, or `Move`; empty otherwise) |
 
 All rules must:
@@ -104,16 +106,18 @@ A custom user rule that asks for confirmation before the agent edits a dependenc
 - rule: Ask before modifying dependency lockfiles
   desc: Require confirmation before the agent edits a generated lockfile.
   condition: >
-    tool.name in ("Write", "Edit")
+    is_write_tool
     and tool.real_file_path != ""
     and (tool.file_name in (dependency_lockfiles)
-         or basename(tool.real_file_path) in (dependency_lockfiles))
+        or basename(tool.real_file_path) in (dependency_lockfiles))
   output: >
     Falco requires confirmation before modifying dependency lockfile %tool.real_file_path
   priority: WARNING
   source: coding_agent
   tags: [coding_agent_ask]
 ```
+
+Note: Use `is_write_tool` instead of listing individual tool names — it covers `Write`, `Edit`, `create`, `edit`, `apply_patch` (with Add/Update/Delete/Move ops), and any future agent write tools. For read operations, use `is_read_credential_path` or pattern-match on `tool.name` directly.
 
 ### Tips
 
