@@ -820,15 +820,23 @@ mod tests {
         assert_eq!(resolve_path(""), "");
     }
 
+    /// Per-test scratch root under the canonical temp dir. On macOS
+    /// `std::env::temp_dir()` lives under `/var`, a symlink to `/private/var`,
+    /// so expectations built from the raw path never match the canonicalized
+    /// paths the resolvers return.
+    #[cfg(unix)]
+    fn canonical_temp_root(name: &str) -> PathBuf {
+        std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("{name}-{}", std::process::id()))
+    }
+
     #[cfg(unix)]
     #[test]
     fn resolve_path_canonicalizes_symlinked_ancestor_for_missing_suffix() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!(
-            "prempti-resolve-cwd-symlink-{}",
-            std::process::id()
-        ));
+        let root = canonical_temp_root("prempti-resolve-cwd-symlink");
         let target = root.join("target");
         let link = root.join("link");
         let _ = std::fs::remove_dir_all(&root);
@@ -885,10 +893,7 @@ mod tests {
     fn resolve_file_path_canonicalizes_symlinked_parent_for_missing_leaf() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!(
-            "prempti-resolve-missing-symlink-{}",
-            std::process::id()
-        ));
+        let root = canonical_temp_root("prempti-resolve-missing-symlink");
         let project = root.join("project");
         let sensitive = root.join("sensitive");
         let link = project.join("link");
@@ -908,10 +913,7 @@ mod tests {
     fn resolve_file_path_follows_broken_final_symlink() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!(
-            "prempti-resolve-broken-symlink-{}",
-            std::process::id()
-        ));
+        let root = canonical_temp_root("prempti-resolve-broken-symlink");
         let project = root.join("project");
         let sensitive = root.join("sensitive");
         let link = project.join("new-key");
@@ -932,10 +934,7 @@ mod tests {
     fn parsed_event_preserves_sensitive_symlink_access_name() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!(
-            "prempti-access-name-symlink-{}",
-            std::process::id()
-        ));
+        let root = canonical_temp_root("prempti-access-name-symlink");
         let target = root.join("ordinary-config");
         let alias = root.join(".env");
         let _ = std::fs::remove_dir_all(&root);
