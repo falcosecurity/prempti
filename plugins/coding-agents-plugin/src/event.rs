@@ -820,6 +820,26 @@ mod tests {
         assert_eq!(resolve_path(""), "");
     }
 
+    /// Expected resolution of a rooted, Unix-style test path. On Windows a
+    /// path like `/abs/path` has no drive letter, so canonicalizing its
+    /// existing ancestor (`/`) anchors it at the current drive, e.g.
+    /// `C:/abs/path`. Elsewhere the path is returned unchanged.
+    fn on_current_drive(path: &str) -> String {
+        #[cfg(windows)]
+        {
+            match std::env::current_dir().unwrap().components().next() {
+                Some(Component::Prefix(prefix)) => {
+                    format!("{}{path}", prefix.as_os_str().to_string_lossy())
+                }
+                _ => path.to_string(),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            path.to_string()
+        }
+    }
+
     /// Per-test scratch root under the canonical temp dir. On macOS
     /// `std::env::temp_dir()` lives under `/var`, a symlink to `/private/var`,
     /// so expectations built from the raw path never match the canonicalized
@@ -853,13 +873,13 @@ mod tests {
     fn resolve_file_path_joins_relative_to_cwd() {
         // Use a non-existent cwd so we exercise the lexical path.
         let resolved = resolve_file_path("foo/bar", "/nonexistent-cwd-1234");
-        assert_eq!(resolved, "/nonexistent-cwd-1234/foo/bar");
+        assert_eq!(resolved, on_current_drive("/nonexistent-cwd-1234/foo/bar"));
     }
 
     #[test]
     fn resolve_file_path_preserves_absolute() {
         let resolved = resolve_file_path("/abs/path", "/some/cwd");
-        assert_eq!(resolved, "/abs/path");
+        assert_eq!(resolved, on_current_drive("/abs/path"));
     }
 
     #[test]
@@ -989,12 +1009,21 @@ mod tests {
         assert_eq!(pe.agent_model(&p), Some(""));
         assert_eq!(pe.agent_turn_id(&p), Some(""));
         assert_eq!(pe.cwd(&p), Some("/nonexistent-cwd-999"));
-        assert_eq!(pe.real_cwd(&p), Some("/nonexistent-cwd-999"));
-        assert_eq!(pe.real_cwd_prefix(&p), Some("/nonexistent-cwd-999/"));
+        assert_eq!(
+            pe.real_cwd(&p),
+            Some(on_current_drive("/nonexistent-cwd-999").as_str())
+        );
+        assert_eq!(
+            pe.real_cwd_prefix(&p),
+            Some(on_current_drive("/nonexistent-cwd-999/").as_str())
+        );
         assert_eq!(pe.tool_name(&p), Some("Write"));
         assert_eq!(pe.file_path(&p), Some("out.txt"));
         assert_eq!(pe.file_name(&p), Some("out.txt"));
-        assert_eq!(pe.real_file_path(&p), Some("/nonexistent-cwd-999/out.txt"));
+        assert_eq!(
+            pe.real_file_path(&p),
+            Some(on_current_drive("/nonexistent-cwd-999/out.txt").as_str())
+        );
         assert_eq!(pe.tool_input_command(&p), Some(""));
 
         // tool_input round-trips as JSON string.
@@ -1157,7 +1186,10 @@ mod tests {
         assert_eq!(pe.file_path(&encoded), Some("src/new.rs"));
         assert_eq!(pe.file_name(&encoded), Some("new.rs"));
         // real_file_path resolves against agent.cwd as for any other event.
-        assert_eq!(pe.real_file_path(&encoded), Some("/work/src/new.rs"));
+        assert_eq!(
+            pe.real_file_path(&encoded),
+            Some(on_current_drive("/work/src/new.rs").as_str())
+        );
     }
 
     #[test]
