@@ -43,6 +43,7 @@ The plugin runs inside Falco and manages three background responsibilities:
 | `tool.name` | string | Tool name |
 | `tool.input` | string | Full tool input as JSON |
 | `tool.input_command` | string | Shell command (Bash only) |
+| `tool.input_url` | string | Target URL (WebFetch only; excludes the prompt) |
 | `tool.file_path` | string | File path (raw, Write/Edit/Read) |
 | `tool.file_name` | string | Final component of the file path before symlink resolution |
 | `tool.real_file_path` | string | File path (resolved, Write/Edit/Read) |

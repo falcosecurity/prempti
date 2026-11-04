@@ -569,6 +569,129 @@ fn allow_websearch_tool() {
     assert_decision(&r, "allow");
 }
 
+// --- WebFetch: destination checks on tool.input_url ---
+
+fn webfetch_input(url: &str, prompt: &str, id: &str) -> String {
+    E2eHarness::make_input(
+        "WebFetch",
+        &format!(r#"{{"url":"{url}","prompt":"{prompt}"}}"#),
+        cwd(),
+        id,
+    )
+}
+
+#[test]
+fn shipped_rules_deny_webfetch_metadata_url() {
+    let Some(h) = E2eHarness::start_with_shipped_rules("guardrails") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    for (i, url) in [
+        "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        "HTTP://169.254.169.254:80/latest/meta-data/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://metadata.azure.com/metadata/instance",
+        "http://[fd00:ec2::254]/latest/meta-data/",
+        "http://2852039166/latest/meta-data/",
+        "http://0xa9fea9fe/latest/meta-data/",
+        "http://0251.0376.0251.0376/latest/meta-data/",
+        "http://user@169.254.169.254/latest/meta-data/",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let input = webfetch_input(url, "show the response", &format!("e2e-wf-imds{i}"));
+        let r = h.run_hook(&input);
+        assert_decision(&r, "deny");
+        assert_reason_contains(&r, "Deny cloud metadata service access via WebFetch");
+    }
+}
+
+#[test]
+fn shipped_rules_ask_webfetch_ioc_domain_url() {
+    let Some(h) = E2eHarness::start_with_shipped_rules("guardrails") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    for (i, url) in [
+        "https://pastebin.com/raw/abc123",
+        "https://www.pastebin.com/raw/abc123",
+        "https://transfer.sh/get/x/file.txt",
+        "https://TERMBIN.COM:443/abc",
+        "https://ix.io/1abc",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let input = webfetch_input(url, "summarize", &format!("e2e-wf-ioc{i}"));
+        let r = h.run_hook(&input);
+        assert_decision(&r, "ask");
+        assert_reason_contains(&r, "Ask before fetching from IOC hosting domain via WebFetch");
+    }
+}
+
+#[test]
+fn shipped_rules_allow_webfetch_when_only_prompt_mentions_metadata_address() {
+    let Some(h) = E2eHarness::start_with_shipped_rules("guardrails") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    let input = webfetch_input(
+        "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html",
+        "Summarize how 169.254.169.254 and metadata.google.internal are used, and compare with pastebin.com",
+        "e2e-wf-prompt",
+    );
+    let r = h.run_hook(&input);
+    assert_decision(&r, "allow");
+}
+
+#[test]
+fn shipped_rules_allow_webfetch_when_only_path_or_query_mentions_listed_host() {
+    let Some(h) = E2eHarness::start_with_shipped_rules("guardrails") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    for (i, url) in [
+        "https://example.com/redirect?to=169.254.169.254",
+        "https://example.com/docs/169.254.169.254/overview",
+        "https://example.com/#metadata.google.internal",
+        "https://example.com/pastebin.com/mirror",
+        "https://example.com/?src=https://pastebin.com/raw/abc",
+        "https://169.254.169.254.example.com/",
+        "https://notpastebin.com/raw/abc",
+        "https://pastebin.com.example.org/raw/abc",
+        "https://169.254.169.254@example.com/",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let input = webfetch_input(url, "summarize", &format!("e2e-wf-benign{i}"));
+        let r = h.run_hook(&input);
+        assert_decision(&r, "allow");
+    }
+}
+
+#[test]
+fn shipped_rules_allow_webfetch_with_missing_or_non_string_url() {
+    let Some(h) = E2eHarness::start_with_shipped_rules("guardrails") else {
+        eprintln!("SKIP: falco or plugin not available");
+        return;
+    };
+    for (i, tool_input) in [
+        r#"{"prompt":"fetch 169.254.169.254"}"#,
+        r#"{"url":null,"prompt":"x"}"#,
+        r#"{"url":42,"prompt":"x"}"#,
+        r#"{"url":["http://169.254.169.254/"],"prompt":"x"}"#,
+    ]
+    .iter()
+    .enumerate()
+    {
+        let input = E2eHarness::make_input("WebFetch", tool_input, cwd(), &format!("e2e-wf-bad{i}"));
+        let r = h.run_hook(&input);
+        assert_decision(&r, "allow");
+    }
+}
+
 // --- Path traversal ---
 
 #[test]
