@@ -661,6 +661,8 @@ fn shipped_rules_allow_webfetch_when_only_path_or_query_mentions_listed_host() {
         "https://notpastebin.com/raw/abc",
         "https://pastebin.com.example.org/raw/abc",
         "https://169.254.169.254@example.com/",
+        "https://pastebin.com:password@example.com/",
+        "http://169.254.169.254:password@example.com/",
     ]
     .iter()
     .enumerate()

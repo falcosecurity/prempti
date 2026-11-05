@@ -899,21 +899,23 @@
 # WebFetch destination checks. These match tool.input_url (the WebFetch "url"
 # field only), never tool.input, so text in the "prompt" field cannot trigger
 # them. The regex is anchored to the URL authority: scheme, optional userinfo,
-# then the host, then a port, path, query, fragment or end of string. A listed
-# host that appears only in a path, query string or userinfo does not match.
+# then the host, then an optional numeric port, then a path, query, fragment or
+# end of string. A listed host that appears only in a path, query string or
+# userinfo does not match. Matching is case-insensitive through tolower(),
+# because Falco compiles regexes with RE2::POSIX, which rejects the (?i) flag.
 # Dots are written as [.] to avoid backslash escaping in the condition string.
 #
 # Cloud metadata hosts, including the numeric encodings of 169.254.169.254
 # (decimal, hex, octal) and the bracketed IPv6 form. Case-insensitive.
 - macro: is_webfetch_imds_url
   condition: >
-    tool.input_url regex "(?i)^[a-z][a-z0-9+.-]*://([^/?#@]*@)?(169[.]254[.]169[.]254|metadata[.]google[.]internal|metadata[.]azure[.]com|[[]fd00:ec2::254[]]|2852039166|0xa9fea9fe|0251[.]0376[.]0251[.]0376)[.]?([:/?#].*)?$"
+    tolower(tool.input_url) regex "^[a-z][a-z0-9+.-]*://([^/?#@]*@)?(169[.]254[.]169[.]254|metadata[.]google[.]internal|metadata[.]azure[.]com|[[]fd00:ec2::254[]]|2852039166|0xa9fea9fe|0251[.]0376[.]0251[.]0376)[.]?(:[0-9]+)?([/?#].*)?$"
 
 # IOC hosting domains (same set as contains_ioc_domain). Matches the domain
 # itself and any subdomain of it, as the URL host. Case-insensitive.
 - macro: is_webfetch_ioc_url
   condition: >
-    tool.input_url regex "(?i)^[a-z][a-z0-9+.-]*://([^/?#@]*@)?([a-z0-9-]+[.])*(pastebin[.]com|transfer[.]sh|file[.]io|termbin[.]com|ix[.]io|glot[.]io|hastebin[.]com|ghostbin[.]co)[.]?([:/?#].*)?$"
+    tolower(tool.input_url) regex "^[a-z][a-z0-9+.-]*://([^/?#@]*@)?([a-z0-9-]+[.])*(pastebin[.]com|transfer[.]sh|file[.]io|termbin[.]com|ix[.]io|glot[.]io|hastebin[.]com|ghostbin[.]co)[.]?(:[0-9]+)?([/?#].*)?$"
 
 # Archive commands that include credential directories in their paths.
 - macro: is_credential_archive
