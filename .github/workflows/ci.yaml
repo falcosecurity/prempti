@@ -51,6 +51,9 @@ jobs:
       - name: Verify Falco
         run: falco --version
 
+      - name: Run plugin unit tests
+        run: make test-plugin-unit
+
       - name: Run interceptor tests
         run: make test-interceptor
 
@@ -121,6 +124,9 @@ jobs:
 
       - name: Build Falco from source
         run: make falco-windows-${{ matrix.arch }}
+
+      - name: Run plugin unit tests
+        run: make test-plugin-unit
 
       - name: Run interceptor tests
         run: make test-interceptor
@@ -206,6 +212,9 @@ jobs:
 
       - name: Verify Falco
         run: falco --version
+
+      - name: Run plugin unit tests
+        run: make test-plugin-unit
 
       - name: Run interceptor tests
         run: make test-interceptor
