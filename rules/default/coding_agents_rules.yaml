@@ -896,6 +896,27 @@
          or tool.input_command contains "0Xa9fea9fe"
          or tool.input_command contains "0251.0376.0251.0376")
 
+# WebFetch destination checks. These match tool.input_url (the WebFetch "url"
+# field only), never tool.input, so text in the "prompt" field cannot trigger
+# them. The regex is anchored to the URL authority: scheme, optional userinfo,
+# then the host, then an optional numeric port, then a path, query, fragment or
+# end of string. A listed host that appears only in a path, query string or
+# userinfo does not match. Matching is case-insensitive through tolower(),
+# because Falco compiles regexes with RE2::POSIX, which rejects the (?i) flag.
+# Dots are written as [.] to avoid backslash escaping in the condition string.
+#
+# Cloud metadata hosts, including the numeric encodings of 169.254.169.254
+# (decimal, hex, octal) and the bracketed IPv6 form. Case-insensitive.
+- macro: is_webfetch_imds_url
+  condition: >
+    tolower(tool.input_url) regex "^[a-z][a-z0-9+.-]*://([^/?#@]*@)?(169[.]254[.]169[.]254|metadata[.]google[.]internal|metadata[.]azure[.]com|[[]fd00:ec2::254[]]|2852039166|0xa9fea9fe|0251[.]0376[.]0251[.]0376)[.]?(:[0-9]+)?([/?#].*)?$"
+
+# IOC hosting domains (same set as contains_ioc_domain). Matches the domain
+# itself and any subdomain of it, as the URL host. Case-insensitive.
+- macro: is_webfetch_ioc_url
+  condition: >
+    tolower(tool.input_url) regex "^[a-z][a-z0-9+.-]*://([^/?#@]*@)?([a-z0-9-]+[.])*(pastebin[.]com|transfer[.]sh|file[.]io|termbin[.]com|ix[.]io|glot[.]io|hastebin[.]com|ghostbin[.]co)[.]?(:[0-9]+)?([/?#].*)?$"
+
 # Archive commands that include credential directories in their paths.
 - macro: is_credential_archive
   condition: >
@@ -1444,6 +1465,36 @@
   priority: WARNING
   source: coding_agent
   tags: [coding_agent_ask, mitre_t1552_unsecured_credentials]
+
+- rule: Deny cloud metadata service access via WebFetch
+  desc: >
+    Blocks WebFetch calls whose URL host is a cloud instance metadata service
+    (AWS IMDS 169.254.169.254 and its decimal, hex and octal encodings, GCP
+    metadata.google.internal, Azure metadata.azure.com, fd00:ec2::254). These
+    endpoints expose IAM credentials. Only the url field is checked: a prompt
+    that merely mentions a metadata address, or a URL whose path or query
+    mentions one, does not match.
+  condition: tool.name = "WebFetch" and is_webfetch_imds_url
+  output: >
+    Falco blocked fetching a cloud metadata service URL (%tool.input_url)
+  priority: CRITICAL
+  source: coding_agent
+  tags: [coding_agent_deny, mitre_t1552.005_cloud_instance_metadata_api]
+
+- rule: Ask before fetching from IOC hosting domain via WebFetch
+  desc: >
+    Requires confirmation when WebFetch targets a known malicious or
+    abuse-prone hosting domain (the same list as contains_ioc_domain). Fetching
+    a page is weaker evidence of compromise than installing a package or skill
+    from the same host, so this asks rather than denies. Only the url host is
+    checked: a prompt, path or query that mentions a listed domain does not
+    match.
+  condition: tool.name = "WebFetch" and is_webfetch_ioc_url
+  output: >
+    Falco requires confirmation before fetching from a known malicious hosting domain (%tool.input_url)
+  priority: WARNING
+  source: coding_agent
+  tags: [coding_agent_ask, AML.T0010_ml_supply_chain_compromise]
 
 # ===========================================================================
 # Section 5 — MCP and skill content

@@ -69,6 +69,7 @@ Rules use the standard [Falco rule language](https://falco.org/docs/rules/). Ava
 | `tool.name` | Tool name (e.g., `Bash`, `Write`, `Edit`, `Read`) |
 | `tool.input` | Full tool input as JSON |
 | `tool.input_command` | Shell command (Bash only) |
+| `tool.input_url` | Target URL (WebFetch only; excludes the prompt) |
 | `tool.file_path` | Target file path (raw, Write/Edit/Read only) |
 | `tool.file_name` | Final component of the target path before symlink resolution |
 | `tool.real_file_path` | Target file path (resolved, absolute, Write/Edit/Read only) |

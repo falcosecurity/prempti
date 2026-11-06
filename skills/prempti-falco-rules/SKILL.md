@@ -38,6 +38,7 @@ Every tool call event exposes these fields for conditions and output:
 | `tool.use_id` | string | Unique identifier for this tool call |
 | `tool.input` | string | Full tool input as JSON |
 | `tool.input_command` | string | Shell command (Bash tool only, empty otherwise) |
+| `tool.input_url` | string | Target URL (WebFetch tool only, empty otherwise; excludes the prompt) |
 | `tool.file_path` | string | Target file path, raw (Write/Edit/Read only) |
 | `tool.file_name` | string | Final component of the target path before symlink resolution |
 | `tool.real_file_path` | string | Target file path resolved to absolute canonical path (Write/Edit/Read only) |

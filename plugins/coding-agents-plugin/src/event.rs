@@ -105,6 +105,7 @@ struct ParsedFields {
     tool_name: String,
     tool_input: serde_json::Value,
     tool_input_command: String,
+    tool_input_url: String,
 }
 
 /// Number of `\n` separators in the on-wire payload format. Kept in sync
@@ -268,6 +269,7 @@ impl ParsedEvent {
         let real_file_path = resolve_file_path(&file_path, &real_cwd);
 
         let tool_input_command = extract_command(&tool_name, &tool_input);
+        let tool_input_url = extract_url(&tool_name, &tool_input);
 
         Some(ParsedFields {
             agent_name: decoded.agent_name.to_string(),
@@ -291,6 +293,7 @@ impl ParsedEvent {
             tool_name,
             tool_input,
             tool_input_command,
+            tool_input_url,
         })
     }
 
@@ -374,6 +377,11 @@ impl ParsedEvent {
             .map(|f| f.tool_input_command.as_str())
     }
 
+    pub fn tool_input_url(&mut self, payload: &[u8]) -> Option<&str> {
+        self.ensure_parsed(payload)
+            .map(|f| f.tool_input_url.as_str())
+    }
+
     pub fn file_path(&mut self, payload: &[u8]) -> Option<&str> {
         self.ensure_parsed(payload).map(|f| f.file_path.as_str())
     }
@@ -398,6 +406,22 @@ fn extract_command(tool_name: &str, tool_input: &serde_json::Value) -> String {
     }
     tool_input
         .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Extract the target URL from tool_input (WebFetch only).
+///
+/// Only the `url` field is exposed. The sibling `prompt` field is free text
+/// written by the agent and must not influence destination checks. A missing
+/// or non-string `url` yields an empty string.
+fn extract_url(tool_name: &str, tool_input: &serde_json::Value) -> String {
+    if tool_name != "WebFetch" {
+        return String::new();
+    }
+    tool_input
+        .get("url")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
@@ -756,6 +780,60 @@ mod tests {
     }
 
     #[test]
+    fn tool_input_url_populated_for_webfetch() {
+        let p = payload_with(
+            r#"{"tool_name":"WebFetch","tool_input":{"url":"https://example.com/a?b=1","prompt":"summarize"}}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.tool_input_url(&p), Some("https://example.com/a?b=1"));
+    }
+
+    #[test]
+    fn tool_input_url_ignores_prompt() {
+        let p = payload_with(
+            r#"{"tool_name":"WebFetch","tool_input":{"url":"https://example.com/","prompt":"explain 169.254.169.254"}}"#,
+        );
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.tool_input_url(&p), Some("https://example.com/"));
+    }
+
+    #[test]
+    fn tool_input_url_empty_for_non_webfetch() {
+        for tool in ["Bash", "Write", "WebSearch"] {
+            let p = payload_with(&format!(
+                r#"{{"tool_name":"{tool}","tool_input":{{"url":"https://example.com/"}}}}"#
+            ));
+            let mut pe = ParsedEvent::default();
+            assert_eq!(pe.tool_input_url(&p), Some(""), "tool {tool}");
+        }
+    }
+
+    #[test]
+    fn tool_input_url_empty_when_url_missing() {
+        let p = payload_with(r#"{"tool_name":"WebFetch","tool_input":{"prompt":"x"}}"#);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.tool_input_url(&p), Some(""));
+    }
+
+    #[test]
+    fn tool_input_url_empty_when_url_not_a_string() {
+        for bad in ["null", "42", "true", "[\"https://example.com/\"]", "{\"u\":1}"] {
+            let p = payload_with(&format!(
+                r#"{{"tool_name":"WebFetch","tool_input":{{"url":{bad}}}}}"#
+            ));
+            let mut pe = ParsedEvent::default();
+            assert_eq!(pe.tool_input_url(&p), Some(""), "url={bad}");
+        }
+    }
+
+    #[test]
+    fn tool_input_url_empty_when_tool_input_not_an_object() {
+        let p = payload_with(r#"{"tool_name":"WebFetch","tool_input":"https://example.com/"}"#);
+        let mut pe = ParsedEvent::default();
+        assert_eq!(pe.tool_input_url(&p), Some(""));
+    }
+
+    #[test]
     fn file_path_populated_for_write_edit_read() {
         for tool in ["Write", "Edit", "Read"] {
             let json = format!(
@@ -1026,6 +1104,7 @@ mod tests {
         assert_eq!(pe.file_name(&p), Some(""));
         assert_eq!(pe.real_file_path(&p), Some(""));
         assert_eq!(pe.tool_input_command(&p), Some(""));
+        assert_eq!(pe.tool_input_url(&p), Some(""));
         // tool_input with no field serializes to the default empty object.
         assert_eq!(pe.tool_input(&p), Some("{}".to_string()));
     }

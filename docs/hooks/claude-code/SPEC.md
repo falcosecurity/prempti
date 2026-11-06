@@ -189,7 +189,7 @@ If JSON serialization fails, the interceptor emits a hardcoded deny JSON literal
 Since the interceptor is a thin passthrough, the following are broker responsibilities:
 
 - **Field extraction**: Parse `tool_name`, `tool_input`, `cwd`, `session_id`, etc. from the event JSON
-- **Derived fields**: Extract `tool.input_command` (Bash), `tool.file_path`/`tool.real_file_path` (Write/Edit/Read)
+- **Derived fields**: Extract `tool.input_command` (Bash), `tool.input_url` (WebFetch), `tool.file_path`/`tool.real_file_path` (Write/Edit/Read)
 - **Path resolution**: Resolve file paths to absolute canonical paths (`tool.real_file_path`, `agent.real_cwd`) via `canonicalize` with lexical normalization fallback
 - **Content validation**: Verify required fields are present (e.g., `tool_name`)
 - **Policy evaluation**: Forward events to Falco, collect alerts, resolve verdicts

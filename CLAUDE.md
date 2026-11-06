@@ -97,6 +97,7 @@ One Falco data source: **`coding_agent`**. Two field namespaces:
 | `tool.name` | string | Tool name (e.g., `Bash`, `Write`, `Edit` for Claude Code; `Bash`, `apply_patch`, `mcp__<server>__<tool>` for Codex) |
 | `tool.input` | string | Full tool input as JSON |
 | `tool.input_command` | string | Shell command (Bash tool calls) |
+| `tool.input_url` | string | Target URL (WebFetch tool calls only; excludes the prompt) |
 | `tool.file_path` | string | Target file path. Raw from `tool_input.file_path` for Claude Code's `Write`/`Edit`/`Read`; for Codex `apply_patch` synthetic events the broker injects the per-event path parsed from the patch envelope. Empty otherwise. |
 | `tool.file_name` | string | Final component of `tool.file_path` before symlink resolution. Use alongside the canonical basename for name-based policies. |
 | `tool.real_file_path` | string | Target file path, resolved to absolute canonical path. Relative paths resolved against `agent.cwd`. Populated whenever `tool.file_path` is. |

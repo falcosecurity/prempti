@@ -131,6 +131,12 @@ impl CodingAgentPlugin {
         Ok(CString::new(val)?)
     }
 
+    fn extract_tool_input_url(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
+        let payload = self.get_payload(&mut req)?;
+        let val = req.context.tool_input_url(payload).unwrap_or("");
+        Ok(CString::new(val)?)
+    }
+
     fn extract_file_path(&mut self, mut req: ExtractRequest<Self>) -> Result<CString, Error> {
         let payload = self.get_payload(&mut req)?;
         let val = req.context.file_path(payload).unwrap_or("");
@@ -214,6 +220,9 @@ impl ExtractPlugin for CodingAgentPlugin {
         field("tool.input_command", &Self::extract_tool_input_command)
             .with_display("Shell Command")
             .with_description("Shell command (Bash tool calls only)"),
+        field("tool.input_url", &Self::extract_tool_input_url)
+            .with_display("Fetch URL")
+            .with_description("Target URL from tool_input.url (WebFetch tool calls only; excludes the prompt)"),
         field("tool.file_path", &Self::extract_file_path)
             .with_display("File Path")
             .with_description("Target file path, raw from tool_input.file_path (Write/Edit/Read only)"),
