@@ -156,36 +156,59 @@ pub fn parse_apply_patch(text: &str) -> Result<Vec<PatchEntry>, ParseError> {
         .map(|l| l.trim_end_matches('\r').to_string())
         .collect();
 
-    // Phase 1: locate the envelope. The grammar requires Begin Patch and
-    // End Patch as anchored markers on their own lines; lines before Begin
+    // Phase 1: locate Begin Patch. Codex compares the trimmed line, so
+    // surrounding whitespace does not prevent a match. Lines before Begin
     // Patch (e.g. leading prose) are ignored.
     let begin_idx = lines
         .iter()
-        .position(|l| l == BEGIN_PATCH)
+        .position(|l| l.trim() == BEGIN_PATCH)
         .ok_or(ParseError::MissingBeginPatch)?;
-    let end_offset = lines[begin_idx + 1..]
-        .iter()
-        .position(|l| l == END_PATCH)
-        .ok_or(ParseError::MissingEndPatch)?;
-    let end_idx = begin_idx + 1 + end_offset;
 
-    // Phase 2: scan body for hunk headers. Headers open new hunks; Move-to
-    // attaches to the most recent Update hunk.
+    // Phase 2: scan body for hunk headers up to End Patch. Headers open new
+    // hunks; Move-to attaches to the most recent Update hunk.
+    //
+    // Whitespace handling mirrors Codex's parser
+    // (`codex-rs/apply-patch/src/streaming_parser.rs`): trailing whitespace
+    // is never part of a header, and leading whitespace is ignored too
+    // unless the current hunk is an Update hunk, where a leading space marks
+    // a context line. Matching the raw line instead would hand the rules a
+    // path such as `.env ` while Codex writes `.env`, or skip a header that
+    // Codex applies.
+    //
+    // One exception: Codex compares a final line that has no trailing LF
+    // with End Patch after a full trim, even inside an Update hunk.
+    //
+    // Normalization only decides which lines are headers. Anything that
+    // still does not match (an empty path, a Move-to outside an Update hunk)
+    // fails as before.
+    let unterminated_last = (!text.ends_with('\n')).then(|| lines.len().saturating_sub(1));
     let mut hunks: Vec<HunkSpan> = Vec::new();
-    for i in (begin_idx + 1)..end_idx {
-        let line = &lines[i];
+    let mut end_idx = None;
+    for (i, raw) in lines.iter().enumerate().skip(begin_idx + 1) {
+        let in_update = matches!(hunks.last(), Some(h) if h.primary_op == PatchOp::Update);
+        let line = if in_update {
+            raw.as_str()
+        } else {
+            raw.trim_start()
+        };
+        if line.trim_end() == END_PATCH || (unterminated_last == Some(i) && raw.trim() == END_PATCH)
+        {
+            end_idx = Some(i);
+            break;
+        }
         if let Some(path) = line.strip_prefix(ADD_FILE_PREFIX) {
-            push_hunk(&mut hunks, PatchOp::Add, path, i)?;
+            push_hunk(&mut hunks, PatchOp::Add, path.trim_end(), i)?;
         } else if let Some(path) = line.strip_prefix(DELETE_FILE_PREFIX) {
-            push_hunk(&mut hunks, PatchOp::Delete, path, i)?;
+            push_hunk(&mut hunks, PatchOp::Delete, path.trim_end(), i)?;
         } else if let Some(path) = line.strip_prefix(UPDATE_FILE_PREFIX) {
-            push_hunk(&mut hunks, PatchOp::Update, path, i)?;
+            push_hunk(&mut hunks, PatchOp::Update, path.trim_end(), i)?;
         } else if let Some(target) = line.strip_prefix(MOVE_TO_PREFIX) {
-            attach_move_to(&mut hunks, target)?;
+            attach_move_to(&mut hunks, target.trim_end())?;
         }
         // Other lines (`@@`, `+`, `-`, ` `, blank, `*** End of File`, etc.)
         // are hunk body and don't open new hunks.
     }
+    let end_idx = end_idx.ok_or(ParseError::MissingEndPatch)?;
 
     if hunks.is_empty() {
         return Err(ParseError::NoHunks);
@@ -454,6 +477,118 @@ ignored line two
         assert_eq!(
             op_paths(&parse_apply_patch(text).unwrap()),
             ops(&[(PatchOp::Update, "weird-*** End Patch -is-not-the-end.txt")])
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Header whitespace (mirrors codex-rs/apply-patch/src/streaming_parser.rs)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn header_trailing_whitespace_is_not_part_of_path() {
+        // Codex trims the header line before taking the path, so it deletes
+        // `.env`. The rules must see `.env`, not `.env `.
+        let text = "*** Begin Patch\n*** Delete File: .env \n*** End Patch\n";
+        assert_eq!(
+            op_paths(&parse_apply_patch(text).unwrap()),
+            ops(&[(PatchOp::Delete, ".env")])
+        );
+    }
+
+    #[test]
+    fn indented_header_after_add_hunk_is_recognized() {
+        // Outside Update hunks Codex trims leading whitespace, so it applies
+        // the indented Delete. The plugin must emit an event for it.
+        let text = "*** Begin Patch\n\
+                    *** Add File: ok.txt\n\
+                    +hello\n  \
+                    *** Delete File: secret.txt\n\
+                    *** End Patch\n";
+        assert_eq!(
+            op_paths(&parse_apply_patch(text).unwrap()),
+            ops(&[(PatchOp::Add, "ok.txt"), (PatchOp::Delete, "secret.txt")])
+        );
+    }
+
+    #[test]
+    fn end_patch_with_trailing_whitespace_is_accepted() {
+        let text = "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch \n";
+        assert_eq!(
+            op_paths(&parse_apply_patch(text).unwrap()),
+            ops(&[(PatchOp::Add, "a.txt")])
+        );
+    }
+
+    #[test]
+    fn indented_markers_and_first_header_are_recognized() {
+        let text = "  *** Begin Patch\n\t\
+                    *** Delete File: secret.txt\n  \
+                    *** End Patch\n";
+        assert_eq!(
+            op_paths(&parse_apply_patch(text).unwrap()),
+            ops(&[(PatchOp::Delete, "secret.txt")])
+        );
+    }
+
+    #[test]
+    fn move_to_trailing_whitespace_is_not_part_of_path() {
+        let text = "*** Begin Patch\n\
+                    *** Update File: a.txt \t\n\
+                    *** Move to: .env \t\n\
+                    @@\n-a\n+b\n\
+                    *** End Patch\n";
+        assert_eq!(
+            op_paths(&parse_apply_patch(text).unwrap()),
+            ops(&[(PatchOp::Update, "a.txt"), (PatchOp::Move, ".env")])
+        );
+    }
+
+    #[test]
+    fn indented_header_inside_update_hunk_is_context() {
+        // Inside an Update hunk Codex only trims trailing whitespace, and a
+        // leading space marks a context line, so these are not headers.
+        let text = "*** Begin Patch
+*** Update File: src/lib.rs
+@@
+ *** Delete File: not_a_header.txt
+ *** Move to: not_a_target.txt
+ *** End Patch
+-a
++b
+*** End Patch
+";
+        let entries = parse_apply_patch(text).unwrap();
+        assert_eq!(op_paths(&entries), ops(&[(PatchOp::Update, "src/lib.rs")]));
+        assert!(entries[0].hunk_text.ends_with("+b\n"));
+    }
+
+    #[test]
+    fn indented_end_patch_on_unterminated_last_line_closes_update_hunk() {
+        // Codex fully trims a final line that has no trailing LF before
+        // comparing it with End Patch, even inside an Update hunk.
+        let text = "*** Begin Patch\n*** Update File: a.txt\n@@\n-a\n+b\n *** End Patch";
+        let entries = parse_apply_patch(text).unwrap();
+        assert_eq!(op_paths(&entries), ops(&[(PatchOp::Update, "a.txt")]));
+        assert!(entries[0].hunk_text.ends_with("+b\n"));
+    }
+
+    #[test]
+    fn whitespace_only_paths_still_fail() {
+        for text in [
+            "*** Begin Patch\n*** Delete File:  \t\n*** End Patch\n",
+            "*** Begin Patch\n*** Update File: a.txt\n*** Move to:  \t\n@@\n-a\n+b\n*** End Patch\n",
+        ] {
+            assert_eq!(parse_apply_patch(text).unwrap_err(), ParseError::EmptyPath);
+        }
+    }
+
+    #[test]
+    fn indented_move_to_outside_update_hunk_still_fails() {
+        let text =
+            "*** Begin Patch\n*** Add File: a.txt\n+x\n  *** Move to: b.txt\n*** End Patch\n";
+        assert_eq!(
+            parse_apply_patch(text).unwrap_err(),
+            ParseError::OrphanMoveTo
         );
     }
 
